@@ -27,3 +27,7 @@ An agent app is a web service you own. Shortcut sends it signed webhooks when so
 ## Contributing
 
 Each demo is self-contained in its own top-level directory with its own README and dependencies. Keep them small and focused on one idea — the point is to be readable end to end, not to be production-ready.
+
+## License
+
+[MIT](./LICENSE) — use these as a starting point for your own agents.
