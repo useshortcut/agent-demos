@@ -1,0 +1,8 @@
+name = "shortcut-agent-service"
+main = "src/index.ts"
+compatibility_date = "2024-07-01"
+
+[[kv_namespaces]]
+binding = "TOKENS"
+id = "your-kv-namespace-id"
+preview_id = "your-kv-preview-namespace-id"

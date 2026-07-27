@@ -1,0 +1,16 @@
+# Copy this file to .dev.vars and fill in your values.
+# Never commit .dev.vars — it contains secrets.
+
+# From your agent app in Shortcut Settings → Developer
+CLIENT_ID=
+CLIENT_SECRET=
+WEBHOOK_SECRET=
+
+# Where Shortcut will redirect after OAuth — must match what's set on the agent app
+REDIRECT_URI=http://localhost:8787/oauth/callback
+
+# Set to "true" to log signature failures as warnings instead of returning 401
+DEV=true
+
+# Optional: override the Shortcut API host. Defaults to https://api.app.shortcut.com
+# SHORTCUT_API_BASE=
