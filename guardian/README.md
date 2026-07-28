@@ -44,6 +44,23 @@ There is no diff in the payload, so "did this story just move into a started sta
 
 The history entry is only trusted when its `adds[0].id` matches the story's current state. Otherwise it describes an older move, and reverting to its `removes` would send the story somewhere it never was.
 
+### Asking for as little as possible
+
+Every v4 endpoint takes a `fields` query param, and unrequested fields are never calculated — a story rendered whole resolves its description markdown and every nested collection. The first call here runs for *every story update in the workspace*, so it matters. One story bouncing looks like this end to end:
+
+```
+GET   /stories/123?fields=team,workflow_state
+GET   /stories/123/comments?fields=text,author,deleted&limit=100&page=1
+GET   /stories/123/history?fields=workflow_state&limit=1
+GET   /members/{actor}?fields=mention_name
+POST  /stories/123/comments?fields=id
+PATCH /stories/123?fields=id
+```
+
+Updates that don't concern Guardian cost exactly one two-field story read. Writes ask for `id` alone — just enough to tell success from failure.
+
+Unknown field names are a **400**, not a silently ignored param, so each `*_FIELDS` constant in `src/index.ts` sits directly above the type it fills and the two are meant to be edited together.
+
 ### Not reacting to itself
 
 Guardian's own comment and its own revert both come back as fresh observer deliveries. Three things stop the loop:

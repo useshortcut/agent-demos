@@ -55,25 +55,39 @@ type ObserverPayload = {
 
 type SlimRef<Id = number> = { id: Id; entity_type: string; name?: string };
 
+// Every v4 endpoint takes a `fields` query param. Unrequested fields are never
+// calculated — a story rendered whole resolves its description markdown and
+// every nested collection — so asking narrowly is worth doing on a hot path
+// like this one, which reads a story for every story update in the workspace.
+//
+// Unknown field names are a 400, so each constant below is the exact field list
+// for the type under it. Change one, change the other.
+
+const STORY_FIELDS = 'team,workflow_state';
 type Story = {
-  id: number;
-  name: string;
   team: SlimRef | null;
-  workflow_state: SlimRef | null;
+  workflow_state: SlimRef | null; // slim: id and name, no `type`
 };
 
+const WORKFLOW_STATE_FIELDS = 'id,type';
 type WorkflowState = {
   id: number;
-  name: string;
   type: 'unstarted' | 'started' | 'done';
 };
 
+const COMMENT_FIELDS = 'text,author,deleted';
 type StoryComment = {
-  id: number | null;
   text: string | null;
   deleted: boolean;
   author: SlimRef<string> | null;
 };
+
+const MEMBER_FIELDS = 'mention_name';
+type Member = { mention_name: string };
+
+// Writes need just enough of a response to tell success from failure.
+const ID_ONLY_FIELDS = 'id';
+type EntityId = { id: number | null };
 
 type HistoryChange = {
   attribute: string;
@@ -81,8 +95,6 @@ type HistoryChange = {
   adds: SlimRef[];
   removes: SlimRef[];
 };
-
-type Member = { id: string; mention_name: string; name: string };
 
 // v4 list endpoints are page-based and default to 10 items per page.
 type ListEnvelope<T> = {
@@ -245,7 +257,7 @@ async function startedStateIds(s: Session): Promise<Set<number>> {
   const cached = await s.kv.get(cacheKey);
   if (cached) return new Set(JSON.parse(cached) as number[]);
 
-  const states = await listAll<WorkflowState>(s, '/workflow-states');
+  const states = await listAll<WorkflowState>(s, `/workflow-states?fields=${WORKFLOW_STATE_FIELDS}`);
   // Don't cache a failed lookup as "no started states" — that would silently
   // disable the agent for an hour.
   if (states.length === 0) return new Set();
@@ -257,7 +269,10 @@ async function startedStateIds(s: Session): Promise<Set<number>> {
 
 /** True if this agent has already warned on the story. */
 async function alreadyWarned(s: Session, storyId: number): Promise<boolean> {
-  const comments = await listAll<StoryComment>(s, `/stories/${storyId}/comments`);
+  const comments = await listAll<StoryComment>(
+    s,
+    `/stories/${storyId}/comments?fields=${COMMENT_FIELDS}`,
+  );
   return comments.some(
     (comment) =>
       !comment.deleted &&
@@ -292,7 +307,11 @@ async function previousWorkflowStateId(
 
 async function resolveActorMention(s: Session, actor: ObserverActor): Promise<string> {
   if (!actor.member_id) return actor.displayable_name;
-  const member = await apiJson<Member>(s, 'GET', `/members/${actor.member_id}`);
+  const member = await apiJson<Member>(
+    s,
+    'GET',
+    `/members/${actor.member_id}?fields=${MEMBER_FIELDS}`,
+  );
   // Falling back to the display name keeps the comment readable even though it
   // won't render as a real mention.
   return member?.mention_name ? `@${member.mention_name}` : actor.displayable_name;
@@ -303,7 +322,7 @@ async function resolveActorMention(s: Session, actor: ObserverActor): Promise<st
  * Safe to call for any updated story — every guard exits quietly.
  */
 async function guardStory(s: Session, storyId: number, actorMention: () => Promise<string>) {
-  const story = await apiJson<Story>(s, 'GET', `/stories/${storyId}`);
+  const story = await apiJson<Story>(s, 'GET', `/stories/${storyId}?fields=${STORY_FIELDS}`);
   if (!story) return;
 
   if (story.team) return; // has a team — nothing to enforce
@@ -321,9 +340,12 @@ async function guardStory(s: Session, storyId: number, actorMention: () => Promi
 
   const previousStateId = await previousWorkflowStateId(s, storyId, currentStateId);
 
-  const posted = await apiJson<StoryComment>(s, 'POST', `/stories/${storyId}/comments`, {
-    text: warningText(await actorMention()),
-  });
+  const posted = await apiJson<EntityId>(
+    s,
+    'POST',
+    `/stories/${storyId}/comments?fields=${ID_ONLY_FIELDS}`,
+    { text: warningText(await actorMention()) },
+  );
   if (!posted) {
     // Without the comment there is no record of the warning, so a revert here
     // would look like the story moving on its own — and would repeat forever.
@@ -338,9 +360,12 @@ async function guardStory(s: Session, storyId: number, actorMention: () => Promi
     return;
   }
 
-  const reverted = await apiJson<Story>(s, 'PATCH', `/stories/${storyId}`, {
-    workflow_state_id: previousStateId,
-  });
+  const reverted = await apiJson<EntityId>(
+    s,
+    'PATCH',
+    `/stories/${storyId}?fields=${ID_ONLY_FIELDS}`,
+    { workflow_state_id: previousStateId },
+  );
   console.log(
     reverted
       ? `Story ${storyId} reverted to workflow state ${previousStateId}`
