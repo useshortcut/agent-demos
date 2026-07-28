@@ -9,6 +9,7 @@ An agent app is a web service you own. Shortcut sends it signed webhooks when so
 | Demo | Stack | What it shows |
 |---|---|---|
 | [`quote-agent`](./quote-agent) | Cloudflare Workers + Hono | The full lifecycle: OAuth install, HMAC webhook verification, token refresh, and threaded comment replies. Posts a random programming quote whenever it's assigned or mentioned. |
+| [`guardian`](./guardian) | Cloudflare Workers + Hono | Enforcing a workspace rule from observer webhooks. Blocks stories from being started without a team: comments at whoever moved it, then moves it back. Shows how to reconstruct *what changed* from a payload that carries no diff, and how to avoid reacting to your own writes. |
 
 ## Docs
 

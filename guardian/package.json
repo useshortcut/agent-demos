@@ -1,0 +1,17 @@
+{
+  "name": "shortcut-guardian-agent",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "hono": "^4.4.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260722.1",
+    "typescript": "^5.0.0",
+    "wrangler": "^4.113.0"
+  }
+}

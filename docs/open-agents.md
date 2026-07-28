@@ -86,8 +86,20 @@ Per-trigger fields:
 
 Builders can always install their own apps regardless of review status. Disabled apps are excluded from all deliveries.
 
-## Avoiding Feedback Loops
+## Working With Observer Deliveries
+
+### Actions carry no diff
+
+An action says *that* an entity changed, not *what* changed — there are no before/after values and no list of touched fields. An agent that needs the difference has to reconstruct it:
+
+- **Current values** — re-read the entity, e.g. `GET /api/v4/{slug}/stories/{id}`.
+- **Previous values** — ask story history, e.g. `GET /api/v4/{slug}/stories/{id}/history?fields=workflow_state&limit=1`. Each change entry has `adds` and `removes`. Confirm the entry's `adds` matches the entity's current value before trusting its `removes`, or you may be reading an older change.
+- **Nested references are slim** — a story's `workflow_state` has an id and a name but no `type`. Fetching `GET /api/v4/{slug}/workflow-states` gives the `type` (`unstarted`, `started`, `done`) for each state; it changes rarely and caches well.
+
+### Avoiding feedback loops
 
 An agent subscribed to observer deliveries will also see the changes it makes itself. Filter on `actor.member_id` against the agent's own member id (returned as `permission_id` in the OAuth token response) before acting on a delivery — otherwise a comment the agent posts triggers a delivery that prompts another comment.
 
-See [`quote-agent`](../quote-agent) for a worked example that records observer deliveries as stats and only comments in response to interaction triggers.
+For anything that both reads and writes, the actor check alone is thin. Pair it with a check of the durable effect — "have I already commented on this story?" — so a restart, a missed id, or a manual retry can't produce a second round of writes.
+
+See [`guardian`](../guardian) for a worked example of both, and [`quote-agent`](../quote-agent) for one that only responds to interaction triggers.
