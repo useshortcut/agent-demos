@@ -1,7 +1,7 @@
 # Copy this file to .dev.vars and fill in your values.
 # Never commit .dev.vars — it contains secrets.
 
-# From your agent app in Shortcut Settings → Developer
+# From your agent app on Shortcut's Agents page (in the sidebar)
 CLIENT_ID=
 CLIENT_SECRET=
 WEBHOOK_SECRET=

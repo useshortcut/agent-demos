@@ -18,7 +18,7 @@ An agent app is a web service you own. Shortcut sends it signed webhooks when so
 
 ## Building your own
 
-1. Create an agent app in Shortcut under **Settings → Developer**. You'll get a client ID, client secret, and webhook secret.
+1. Create an agent app in Shortcut from the **Agents** page in the sidebar (**Add an agent** under **Agents Built By Your Organization**). You'll get a client ID, client secret, and webhook secret.
 2. Stand up a service with two public endpoints — an OAuth redirect target and a webhook receiver — and register their URLs on the app.
 3. Install the app in a workspace from the integrations catalog and complete the OAuth flow.
 4. Verify the `Payload-Signature` header (HMAC-SHA256 over the raw request body) on every delivery before acting on it.

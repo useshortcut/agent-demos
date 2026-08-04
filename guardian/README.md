@@ -79,22 +79,80 @@ The comment is posted *before* the revert. If commenting fails, the revert is sk
 
 ---
 
-## Configuring the agent app
+## Setup
 
-In Shortcut, under **Settings → Developer**, the agent app needs:
+Setup bounces between two places: a terminal in this directory, and Shortcut's **Agents** page. The worker gets deployed first, because its URL is part of the agent app's configuration in Shortcut.
 
-- **Subscribed entity types**: `story`
-- **Interaction triggers**: none — Guardian is observer-only
-- **Webhook URL**: `https://<your-worker>.workers.dev/webhook`
-- **Redirect URI**: `https://<your-worker>.workers.dev/oauth/callback`
+### 1. Install dependencies and log in to Cloudflare
+
+```bash
+npm install
+npx wrangler login
+```
+
+### 2. Create the KV namespace
+
+```bash
+npx wrangler kv namespace create TOKENS
+npx wrangler kv namespace create TOKENS --preview
+```
+
+Each command prints an id — copy them into `wrangler.toml` as the `id` and `preview_id` of the existing `TOKENS` binding.
+
+### 3. Deploy the worker
+
+```bash
+npx wrangler deploy
+```
+
+Note the URL wrangler prints — `https://shortcut-guardian-agent.<your-subdomain>.workers.dev`. The next two steps need it. (The worker can't do anything useful yet; its secrets are still missing.)
+
+### 4. Create the agent app in Shortcut
+
+In Shortcut:
+
+1. Click **Agents** in the sidebar.
+2. Under **Agents Built By Your Organization**, click **Add an agent**.
+3. Fill out the form:
+   - **Name**, **icon**, and **mention handle** — your choice; something like "Guardian".
+   - **Webhook URL**: `https://<your-worker>.workers.dev/webhook`
+   - **Redirect URI**: `https://<your-worker>.workers.dev/oauth/callback`
+   - **Subscribed entity types**: `story`
+   - **Interaction triggers**: none — Guardian is observer-only
 
 The OAuth token needs to be able to read stories, workflow states, members, and history, and to write comments and story updates.
+
+Creating the app gives you its **client id**, **client secret**, and **webhook secret** — keep them at hand for the next step.
+
+### 5. Push the secrets
+
+```bash
+echo "<client-id>"      | npx wrangler secret put CLIENT_ID
+echo "<client-secret>"  | npx wrangler secret put CLIENT_SECRET
+echo "<webhook-secret>" | npx wrangler secret put WEBHOOK_SECRET
+echo "https://<your-worker>.workers.dev/oauth/callback" \
+                         | npx wrangler secret put REDIRECT_URI
+```
+
+Do **not** set `DEV` or `SHORTCUT_API_BASE` in production — the defaults are correct.
+
+### 6. Install the app in your workspace
+
+Install the agent app in the workspace you want guarded — as its builder you can always install it, regardless of review status. Shortcut runs the OAuth flow and redirects to the worker's `/oauth/callback`, which stores the workspace credentials and shows a "Connected!" page.
+
+### 7. Verify
+
+```bash
+curl https://<your-worker>.workers.dev/
+```
+
+The response lists each workspace with stored credentials. If yours is there, Guardian is live — see [Trying it out](#trying-it-out).
 
 ---
 
 ## Local development
 
-Copy `.dev.vars.example` to `.dev.vars` and fill it in:
+Local dev reuses the agent app from step 4. Copy `.dev.vars.example` to `.dev.vars` and fill it in with that app's credentials:
 
 ```
 CLIENT_ID=<your-agent-app-client-id>
@@ -111,40 +169,7 @@ npm install
 npx wrangler dev
 ```
 
-The worker runs at `http://localhost:8787`. With `DEV=true`, signature failures are logged as warnings instead of returning 401.
-
----
-
-## Deployment
-
-1. Authenticate Wrangler:
-   ```bash
-   npx wrangler login
-   ```
-
-2. Create the KV namespace and put the printed ids into `wrangler.toml`:
-   ```bash
-   npx wrangler kv namespace create TOKENS
-   npx wrangler kv namespace create TOKENS --preview
-   ```
-
-3. Push the secrets:
-   ```bash
-   echo "<client-id>"      | npx wrangler secret put CLIENT_ID
-   echo "<client-secret>"  | npx wrangler secret put CLIENT_SECRET
-   echo "<webhook-secret>" | npx wrangler secret put WEBHOOK_SECRET
-   echo "https://<your-worker>.workers.dev/oauth/callback" \
-                            | npx wrangler secret put REDIRECT_URI
-   ```
-
-   Do **not** set `DEV` or `SHORTCUT_API_BASE` in production — the defaults are correct.
-
-4. Deploy, install the app in a workspace, and complete the OAuth flow:
-   ```bash
-   npx wrangler deploy
-   ```
-
-`GET /` reports which workspaces have stored credentials.
+The worker runs at `http://localhost:8787`. With `DEV=true`, signature failures are logged as warnings instead of returning 401. For the OAuth flow to land locally, the redirect URI registered on the agent app has to match the localhost one above.
 
 ---
 
