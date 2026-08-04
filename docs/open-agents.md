@@ -1,10 +1,10 @@
 # Open Agents in Shortcut
 
-Open Agents is a platform that lets developers create, publish, and install first-class AI agent integrations in Shortcut. Unlike the built-in agents, user-created agent apps are self-serve: builders configure them in Developer Settings and workspace admins install them from the integrations catalog.
+Open Agents is a platform that lets developers create, publish, and install first-class AI agent integrations in Shortcut. Unlike the built-in agents, user-created agent apps are self-serve: builders configure them from the Agents page in the sidebar and workspace admins install them from the integrations catalog.
 
 ## Key Concepts
 
-**Agent Application** — A globally-registered agent. Stores credentials, webhook URL, icon, mention handle, subscribed entity types, and interaction triggers. Created from Settings → Developer.
+**Agent Application** — A globally-registered agent. Stores credentials, webhook URL, icon, mention handle, subscribed entity types, and interaction triggers. Created from the **Agents** page in the sidebar (**Add an agent** under **Agents Built By Your Organization**).
 
 **Installation** — A per-workspace record linking an agent app to a workspace. On install, the agent gets its own member identity, so it can be @-mentioned, assigned stories, and post comments.
 
