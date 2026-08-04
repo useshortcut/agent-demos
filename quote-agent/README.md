@@ -70,10 +70,12 @@ In Shortcut:
 
 1. Click **Agents** in the sidebar.
 2. Under **Agents Built By Your Organization**, click **Add an agent**.
-3. Fill out the form:
-   - **Name**, **icon**, and **mention handle** — your choice; something like "Wise Bot".
+3. Fill out the **New Application** form:
+   - **Name** and **Mention Handle** — your choice; something like "Wise Bot". Icon and descriptions are optional.
+   - **OAuth Scopes**: **Read** and **Write** — the agent comments on both stories and epics, and the narrower **Create Comments** scope only covers story comments.
+   - **Redirect URIs**: `https://<your-worker>.workers.dev/oauth/callback`
+4. Click **Create Application**, then set the delivery settings on the application:
    - **Webhook URL**: `https://<your-worker>.workers.dev/webhook`
-   - **Redirect URI**: `https://<your-worker>.workers.dev/oauth/callback`
    - **Interaction triggers**: `assigned`, `comment-reply`, and `mentioned` — these are what make the agent respond.
    - **Subscribed entity types**: optional — observer deliveries only feed the `/stats` page. Subscribe to `story` and `epic` if you want them counted.
 
@@ -132,7 +134,7 @@ npm install
 npx wrangler dev
 ```
 
-The worker runs at `http://localhost:8787`. With `DEV=true`, webhook signature verification runs but failures are logged as warnings rather than 401s. For the OAuth flow to land locally, the redirect URI registered on the agent app has to match the localhost one above.
+The worker runs at `http://localhost:8787`. With `DEV=true`, webhook signature verification runs but failures are logged as warnings rather than 401s. The agent app's **Redirect URIs** field takes one per line — add `http://localhost:8787/oauth/callback` as a second entry so the local OAuth flow can land.
 
 ---
 

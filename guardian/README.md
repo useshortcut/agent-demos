@@ -113,14 +113,14 @@ In Shortcut:
 
 1. Click **Agents** in the sidebar.
 2. Under **Agents Built By Your Organization**, click **Add an agent**.
-3. Fill out the form:
-   - **Name**, **icon**, and **mention handle** — your choice; something like "Guardian".
+3. Fill out the **New Application** form:
+   - **Name** and **Mention Handle** — your choice; something like "Guardian". Icon and descriptions are optional.
+   - **OAuth Scopes**: **Read**, plus **Create Stories** (Guardian updates stories to move them back) and **Create Comments** (it posts the warning comment).
+   - **Redirect URIs**: `https://<your-worker>.workers.dev/oauth/callback`
+4. Click **Create Application**, then set the delivery settings on the application:
    - **Webhook URL**: `https://<your-worker>.workers.dev/webhook`
-   - **Redirect URI**: `https://<your-worker>.workers.dev/oauth/callback`
    - **Subscribed entity types**: `story`
    - **Interaction triggers**: none — Guardian is observer-only
-
-The OAuth token needs to be able to read stories, workflow states, members, and history, and to write comments and story updates.
 
 Creating the app gives you its **client id**, **client secret**, and **webhook secret** — keep them at hand for the next step.
 
@@ -169,7 +169,7 @@ npm install
 npx wrangler dev
 ```
 
-The worker runs at `http://localhost:8787`. With `DEV=true`, signature failures are logged as warnings instead of returning 401. For the OAuth flow to land locally, the redirect URI registered on the agent app has to match the localhost one above.
+The worker runs at `http://localhost:8787`. With `DEV=true`, signature failures are logged as warnings instead of returning 401. The agent app's **Redirect URIs** field takes one per line — add `http://localhost:8787/oauth/callback` as a second entry so the local OAuth flow can land.
 
 ---
 
