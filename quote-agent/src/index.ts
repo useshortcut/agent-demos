@@ -23,11 +23,26 @@ type WorkspaceCredentials = {
   memberId: string;  // agent's permission_id — used to filter self-actions
 };
 
+// One entry per tracked attribute the transaction touched, in the same shape
+// as the v4 story history API (`attribute` / `adds` / `removes`).
+type ShortcutChange = {
+  attribute: string;
+  adds: unknown[];
+  removes: unknown[];
+  truncated?: boolean;
+};
+
 type ShortcutAction = {
   action: 'create' | 'update' | 'delete';
   entity_type: string;
-  id: number;
-  changes?: Record<string, unknown>;
+  id: number | string;
+  global_id: string;
+  app_url: string | null;
+  /** @deprecated Frozen for legacy consumers — read `app_url`. */
+  uri?: string | null;
+  // Story update actions only. Absent means the diff was unavailable for this
+  // delivery, not that nothing changed.
+  changes?: ShortcutChange[];
 };
 
 // Observer delivery payload (webhook2)
@@ -92,7 +107,8 @@ function shortcutApi(env: Env, slug: string) {
 // KV helpers
 // ---------------------------------------------------------------------------
 
-type ActionCounts = { create: number; update: number; delete: number };
+// `changed` tallies the attributes reported in update actions' `changes`.
+type ActionCounts = { create: number; update: number; delete: number; changed?: Record<string, number> };
 type WorkspaceStats = Record<string, ActionCounts>;
 
 async function getStats(kv: KVNamespace, workspaceId: string): Promise<WorkspaceStats> {
@@ -104,8 +120,12 @@ async function recordStats(kv: KVNamespace, workspaceId: string, actions: Shortc
   const stats = await getStats(kv, workspaceId);
   for (const action of actions) {
     const { entity_type, action: verb } = action;
-    if (!stats[entity_type]) stats[entity_type] = { create: 0, update: 0, delete: 0 };
-    stats[entity_type][verb] = (stats[entity_type][verb] ?? 0) + 1;
+    const counts = (stats[entity_type] ??= { create: 0, update: 0, delete: 0 });
+    counts[verb] = (counts[verb] ?? 0) + 1;
+    for (const change of action.changes ?? []) {
+      const changed = (counts.changed ??= {});
+      changed[change.attribute] = (changed[change.attribute] ?? 0) + 1;
+    }
   }
   await kv.put(`stats:${workspaceId}`, JSON.stringify(stats));
 }
@@ -419,6 +439,10 @@ app.get('/stats', async (c) => {
     const sorted = Object.entries(stats).sort(([a], [b]) => a.localeCompare(b));
     for (const [entityType, counts] of sorted) {
       lines.push(`  ${entityType.padEnd(20)} create=${counts.create}  update=${counts.update}  delete=${counts.delete}`);
+      const changed = Object.entries(counts.changed ?? {}).sort(([, a], [, b]) => b - a);
+      if (changed.length > 0) {
+        lines.push(`  ${''.padEnd(20)} changed: ${changed.map(([attribute, n]) => `${attribute}=${n}`).join('  ')}`);
+      }
     }
     lines.push('');
   }

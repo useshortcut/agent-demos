@@ -35,11 +35,29 @@ Open Agents is a platform that lets developers create, publish, and install firs
       "id": 123,
       "entity_type": "story",
       "global_id": "v2:s:<workspace-id>:123",
-      "uri": "https://app.shortcut.com/my-workspace/story/123"
+      "app_url": "https://app.shortcut.com/my-workspace/story/123",
+      "uri": "https://app.shortcut.com/my-workspace/story/123",
+      "changes": [
+        {
+          "attribute": "workflow_state",
+          "adds": [{ "entity_type": "workflow-state:slim", "id": 500000002, "name": "In Progress", "workflow_name": "Standard", "uri": "..." }],
+          "removes": [{ "entity_type": "workflow-state:slim", "id": 500000001, "name": "To Do", "workflow_name": "Standard", "uri": "..." }]
+        },
+        { "attribute": "estimate", "adds": [8], "removes": [5] }
+      ]
     }
   ]
 }
 ```
+
+Action fields:
+
+- **`app_url`** — the entity's URL in the Shortcut app, the same value the REST API returns as `app_url`. Can be `null` when no URL could be built.
+- **`uri`** is **deprecated** — read `app_url` instead. Its value and entity-type coverage are frozen for legacy consumers; entity types added since (labels, for instance) get `app_url` only.
+- **`changes`** — the diff, on **update actions only** and currently for **stories** only. See [Reading what changed](#reading-what-changed) below for the three states it can be in and what each means.
+- **`changes` format** — the same as the v4 story history API's change entries: `attribute`, `adds`, `removes`, with slim entities for references and plain scalars otherwise (instants as ISO-8601). A cardinality-one replacement is `adds: [new], removes: [old]`; setting a previously-unset attribute has `removes: []`; clearing one has `adds: []`. Exception: `blocked` and `blocker` render `false` when unset, so first-time blocking reports `adds: [true], removes: [false]`.
+- **Tracked attributes** — `workflow_state`, `owners`, `epic`, `iterations`, `labels`, `project`, `team`, `estimate`, `story_type`, `deadline`, `started`, `completed`, `archived`, `name`, `description`, `blocked`, `blocker`, `requester`, `followers`, `branches`, `commits`. `custom_field_values` and everything else (comments, tasks, parent story, position, …) are not reported.
+- **Size limits** — string values longer than 8,192 characters (in practice, `description`) are cut and the entry carries `"truncated": true`; fetch the story for the full after-value or story history for the before-value. A transaction that touches more than 100 stories only through references (deleting a project with hundreds of stories, say) emits no actions for those indirectly-touched stories. If a delivery's actions would exceed about 1 MB, it is sent without `changes` at all.
 
 ### Interaction (same envelope, `trigger` instead of `actions`)
 
@@ -88,13 +106,26 @@ Builders can always install their own apps regardless of review status. Disabled
 
 ## Working With Observer Deliveries
 
-### Actions carry no diff
+### Reading what changed
 
-An action says *that* an entity changed, not *what* changed — there are no before/after values and no list of touched fields. An agent that needs the difference has to reconstruct it:
+A story `update` action carries a `changes` list describing the transaction's diff. It has three states, and the difference between the last two matters:
+
+| `changes` | Meaning |
+|---|---|
+| Non-empty list | These tracked attributes changed, with before (`removes`) and after (`adds`) values. |
+| `[]` | The update touched nothing that is tracked — a comment, a task, a custom field. |
+| Key absent | **Unavailable**, not unchanged. The entity type isn't covered yet, or the delivery degraded (a size limit, or a rendering failure for that story). |
+
+Two habits follow from that:
+
+- **Filter on `changes` before calling the API.** An agent that only cares about, say, `workflow_state` and `team` can drop every other update without a request. When the key is absent, assume anything could have changed and fall through to the slow path.
+- **Trust an entry's `removes` only after matching its `adds`.** Deliveries are handled asynchronously, so by the time an agent re-reads the story it may have moved again. If `adds[0].id` isn't the story's current value, the entry describes an older change and reverting to its `removes` would send the story somewhere it never was.
+
+Actions for other entity types, and story updates whose `changes` key is absent, say *that* an entity changed but not *what*. An agent that still needs the difference reconstructs it:
 
 - **Current values** — re-read the entity, e.g. `GET /api/v4/{slug}/stories/{id}`.
-- **Previous values** — ask story history, e.g. `GET /api/v4/{slug}/stories/{id}/history?fields=workflow_state&limit=1`. Each change entry has `adds` and `removes`. Confirm the entry's `adds` matches the entity's current value before trusting its `removes`, or you may be reading an older change.
-- **Nested references are slim** — a story's `workflow_state` has an id and a name but no `type`. Fetching `GET /api/v4/{slug}/workflow-states` gives the `type` (`unstarted`, `started`, `done`) for each state; it changes rarely and caches well.
+- **Previous values** — ask story history, e.g. `GET /api/v4/{slug}/stories/{id}/history?fields=workflow_state&limit=1`. History entries have the same `attribute` / `adds` / `removes` shape as `changes`, so one code path can read both — with the same rule about matching `adds` first.
+- **Nested references are slim** — a `workflow_state` in either source has an id and a name but no `type`. Fetching `GET /api/v4/{slug}/workflow-states` gives the `type` (`unstarted`, `started`, `done`) for each state; it changes rarely and caches well.
 
 ### Avoiding feedback loops
 
