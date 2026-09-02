@@ -1,6 +1,6 @@
 # Shortcut Agent Demos
 
-Reference implementations for [Shortcut](https://shortcut.com) Open Agents — the platform for building AI agent integrations that live inside a Shortcut workspace.
+Reference implementations for [Shortcut Custom Agents](https://shortcut.com) — the platform for building AI agent integrations that live inside a Shortcut workspace.
 
 An agent app is a web service you own. Shortcut sends it signed webhooks when someone assigns it a story, @-mentions it, or replies to one of its comments, and the agent calls back into the Shortcut API to do the work. These demos are small, complete examples of that loop.
 
@@ -13,7 +13,7 @@ An agent app is a web service you own. Shortcut sends it signed webhooks when so
 
 ## Docs
 
-- [Open Agents overview](./docs/open-agents.md) — key concepts, webhook payload shapes, interaction triggers, and the app review lifecycle.
+- [Shortcut Custom Agents overview](./docs/custom-agents.md) — key concepts, webhook payload shapes, interaction triggers, and the app review lifecycle.
 - [Shortcut REST API](https://developer.shortcut.com/api/rest/v3) — full API reference.
 
 ## Building your own

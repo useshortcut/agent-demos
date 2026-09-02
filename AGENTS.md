@@ -4,11 +4,11 @@ This file provides guidance to coding agents when working with code in this repo
 
 ## What this repo is
 
-Reference implementations for Shortcut Open Agents — web services that receive signed webhooks from a Shortcut workspace and call back into the Shortcut v4 API. Each demo lives in its own top-level directory with its own `package.json` and README, and is meant to be small, readable end to end, and focused on one idea (per the root README's contributing note — not production-ready).
+Reference implementations for Shortcut Custom Agents — web services that receive signed webhooks from a Shortcut workspace and call back into the Shortcut v4 API. Each demo lives in its own top-level directory with its own `package.json` and README, and is meant to be small, readable end to end, and focused on one idea (per the root README's contributing note — not production-ready).
 
 - `guardian/` — observer-only agent: blocks stories from being started without a team (comments at the mover, reverts the state).
 - `quote-agent/` — interaction-triggered agent: posts a random quote when assigned, @-mentioned, or replied to. Shows the full lifecycle including threaded replies.
-- `docs/open-agents.md` — the platform reference: payload shapes (observer vs. interaction envelopes), trigger semantics, review lifecycle. Read this before touching webhook-handling code.
+- `docs/custom-agents.md` — the platform reference: payload shapes (observer vs. interaction envelopes), trigger semantics, review lifecycle. Read this before touching webhook-handling code.
 
 ## Commands
 

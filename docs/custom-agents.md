@@ -1,6 +1,6 @@
-# Open Agents in Shortcut
+# Shortcut Custom Agents
 
-Open Agents is a platform that lets developers create, publish, and install first-class AI agent integrations in Shortcut. Unlike the built-in agents, user-created agent apps are self-serve: builders configure them from the Agents page in the sidebar and workspace admins install them from the integrations catalog.
+Shortcut Custom Agents is a platform that lets developers create, publish, and install first-class AI agent integrations in Shortcut. Unlike the built-in agents, user-created agent apps are self-serve: builders configure them from the Agents page in the sidebar and workspace admins install them from the integrations catalog.
 
 ## Key Concepts
 

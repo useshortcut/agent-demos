@@ -6,7 +6,7 @@ When a story moves into a started workflow state while its team is empty, Guardi
 
 > `@ada Stories need a team before being started! Please add a team and start again!`
 
-For background on the platform — payload shapes, trigger semantics, and the app review lifecycle — see [../docs/open-agents.md](../docs/open-agents.md).
+For background on the platform — payload shapes, trigger semantics, and the app review lifecycle — see [../docs/custom-agents.md](../docs/custom-agents.md).
 
 ---
 
