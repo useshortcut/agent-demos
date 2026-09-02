@@ -4,11 +4,11 @@ This file provides guidance to coding agents when working with code in this repo
 
 ## What this repo is
 
-Reference implementations for Shortcut Open Agents — web services that receive signed webhooks from a Shortcut workspace and call back into the Shortcut v4 API. Each demo lives in its own top-level directory with its own `package.json` and README, and is meant to be small, readable end to end, and focused on one idea (per the root README's contributing note — not production-ready).
+Reference implementations for Shortcut Custom Agents — web services that receive signed webhooks from a Shortcut workspace and call back into the Shortcut v4 API. Each demo lives in its own top-level directory with its own `package.json` and README, and is meant to be small, readable end to end, and focused on one idea (per the root README's contributing note — not production-ready).
 
 - `guardian/` — observer-only agent: blocks stories from being started without a team (comments at the mover, reverts the state).
 - `quote-agent/` — interaction-triggered agent: posts a random quote when assigned, @-mentioned, or replied to. Shows the full lifecycle including threaded replies.
-- `docs/open-agents.md` — the platform reference: payload shapes (observer vs. interaction envelopes), trigger semantics, review lifecycle. Read this before touching webhook-handling code.
+- `docs/custom-agents.md` — the platform reference: payload shapes (observer vs. interaction envelopes), trigger semantics, review lifecycle. Read this before touching webhook-handling code.
 
 ## Commands
 
@@ -37,7 +37,8 @@ Both demos are single-file Cloudflare Workers (`src/index.ts`) using Hono, and s
 
 ### Invariants that matter when editing
 
-- **Observer payloads carry no diff.** An action says an entity changed, not what changed. Current state comes from re-reading the entity; previous state from `GET /stories/{id}/history`. A history entry's `removes` is only trustworthy when its `adds[0].id` matches the entity's current value — otherwise it describes an older change.
+- **Only story update actions carry a diff.** `changes` (same `attribute`/`adds`/`removes` shape as v4 history entries) is on story `update` actions only. An absent key means *unavailable* (degraded delivery or uncovered entity type), never *unchanged*; `[]` means nothing tracked changed. Guardian filters on it before any API call (`couldBreachRule`) and reads the previous workflow state from it, falling back to `GET /stories/{id}/history` when absent. From either source, `removes` is only trustworthy when `adds[0].id` matches the entity's current value — otherwise it describes an older change. Current state always comes from re-reading the entity.
+- **`uri` on actions is deprecated.** Read `app_url`; `uri` is frozen and not present for newer entity types.
 - **Agents see their own writes.** Every write comes back as a fresh observer delivery. Two defenses, both required: drop deliveries where `actor.member_id` equals the stored `memberId`, and check for the durable effect of a past run (guardian scans for its own warning comment via `WARNING_MARKER`) so retries/restarts can't double-write.
 - **`fields` query params are load-bearing.** Every v4 endpoint takes `fields`; unrequested fields are never calculated, and unknown field names are a 400 (not ignored). In guardian, each `*_FIELDS` constant sits directly above the TypeScript type it fills — change one, change the other. Writes request `fields=id` only.
 - **Guardian's ordering: comment before revert.** If the comment fails, the revert is skipped — an unexplained revert would repeat on every subsequent update because there'd be no comment to find. The webhook handler returns immediately; all API work runs via `c.executionCtx.waitUntil`.

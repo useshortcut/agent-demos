@@ -6,7 +6,7 @@ When a story moves into a started workflow state while its team is empty, Guardi
 
 > `@ada Stories need a team before being started! Please add a team and start again!`
 
-For background on the platform — payload shapes, trigger semantics, and the app review lifecycle — see [../docs/open-agents.md](../docs/open-agents.md).
+For background on the platform — payload shapes, trigger semantics, and the app review lifecycle — see [../docs/custom-agents.md](../docs/custom-agents.md).
 
 ---
 
@@ -15,49 +15,60 @@ For background on the platform — payload shapes, trigger semantics, and the ap
 Guardian subscribes to **observer** deliveries for the `story` entity type. On each `update` action it:
 
 1. Ignores the delivery if the actor was Guardian itself.
-2. Re-reads the story. If it has a team, stops.
-3. Looks up whether the story's workflow state is of type `started`. If not, stops.
-4. Scans the story's comments for a warning it already left. If found, stops.
-5. Resolves the actor's `mention_name` and posts the warning comment.
-6. Reads story history to find the state the story came from, and moves it back.
+2. Checks the action's `changes`. If neither `workflow_state` nor `team` changed, stops — without calling the API.
+3. Re-reads the story. If it has a team, stops.
+4. Looks up whether the story's workflow state is of type `started`. If not, stops.
+5. Scans the story's comments for a warning it already left. If found, stops.
+6. Resolves the actor's `mention_name` and posts the warning comment.
+7. Takes the state the story came from out of `changes`, and moves it back.
 
-Steps 2–6 all run off the request path via `waitUntil`, so the webhook returns immediately.
+Steps 3–7 all run off the request path via `waitUntil`, so the webhook returns immediately.
 
-### Why it re-reads everything
+### Reading the diff
 
-Observer actions tell you *that* a story changed, not *what* changed:
+A story update action carries the transaction's diff in `changes`, one entry per tracked attribute, in the same shape as the v4 story history API:
 
 ```json
 { "action": "update", "id": 123, "entity_type": "story",
-  "global_id": "v2:s:<workspace-id>:123", "uri": "https://app.shortcut.com/..." }
+  "global_id": "v2:s:<workspace-id>:123", "app_url": "https://app.shortcut.com/...",
+  "changes": [
+    { "attribute": "workflow_state",
+      "adds":    [{ "entity_type": "workflow-state:slim", "id": 500000002, "name": "In Development" }],
+      "removes": [{ "entity_type": "workflow-state:slim", "id": 500000001, "name": "Ready" }] }
+  ] }
 ```
 
-There is no diff in the payload, so "did this story just move into a started state, and where from?" has to be reconstructed:
+That answers two of Guardian's questions from the payload alone. *Did this update touch anything I care about?* — only if there's a `workflow_state` or `team` entry, so the great majority of story updates (edits, comments, estimates, owners) are dropped before any request is made. *Where did the story come from?* — `removes[0].id` of the `workflow_state` entry.
+
+The rest is still re-read, because the delivery is handled asynchronously and describes the story as it *was*, not as it is now:
 
 | Question | Source |
 |---|---|
 | Does it have a team? | `GET /stories/{id}` → `team` |
 | What state is it in? | `GET /stories/{id}` → `workflow_state` (slim — no `type`) |
 | Is that state a *started* state? | `GET /workflow-states` → `type`, cached per workspace for an hour |
-| Where did it come from? | `GET /stories/{id}/history?fields=workflow_state&limit=1` → `removes[0].id` |
+| Where did it come from? | `changes` → `workflow_state` entry → `removes[0].id` |
 | Who moved it? | `GET /members/{actor.member_id}` → `mention_name` |
 
-The history entry is only trusted when its `adds[0].id` matches the story's current state. Otherwise it describes an older move, and reverting to its `removes` would send the story somewhere it never was.
+The `workflow_state` entry is only trusted when its `adds[0].id` matches the story's current state. Otherwise the story has moved again since the delivery was queued, and reverting to that entry's `removes` would send it somewhere it never was.
+
+#### When `changes` is missing
+
+An absent `changes` key means the diff was **unavailable** for that delivery — the payload hit a size limit, or rendering failed for that story — and never that nothing changed. Guardian then does what it did before the field existed: it checks the story regardless of what changed, and reconstructs the previous state from `GET /stories/{id}/history?fields=workflow_state&limit=1`. History entries have the same `attribute` / `adds` / `removes` shape, so the same code reads both, with the same rule about matching `adds` first. The history path also covers a `team` change on a story that was already started, where there is no move in the delivery to read.
 
 ### Asking for as little as possible
 
-Every v4 endpoint takes a `fields` query param, and unrequested fields are never calculated — a story rendered whole resolves its description markdown and every nested collection. The first call here runs for *every story update in the workspace*, so it matters. One story bouncing looks like this end to end:
+Every v4 endpoint takes a `fields` query param, and unrequested fields are never calculated — a story rendered whole resolves its description markdown and every nested collection. The first call here runs for *every move or team change in the workspace*, so it matters. One story bouncing looks like this end to end:
 
 ```
 GET   /stories/123?fields=team,workflow_state
 GET   /stories/123/comments?fields=text,author,deleted&limit=100&page=1
-GET   /stories/123/history?fields=workflow_state&limit=1
 GET   /members/{actor}?fields=mention_name
 POST  /stories/123/comments?fields=id
 PATCH /stories/123?fields=id
 ```
 
-Updates that don't concern Guardian cost exactly one two-field story read. Writes ask for `id` alone — just enough to tell success from failure.
+Updates that don't touch the workflow state or team cost nothing; moves and team changes that turn out to be fine cost exactly one two-field story read. Writes ask for `id` alone — just enough to tell success from failure.
 
 Unknown field names are a **400**, not a silently ignored param, so each `*_FIELDS` constant in `src/index.ts` sits directly above the type it fills and the two are meant to be edited together.
 
@@ -67,13 +78,13 @@ Guardian's own comment and its own revert both come back as fresh observer deliv
 
 - **Actor check** — deliveries where `actor.member_id` is Guardian's own member id are dropped immediately.
 - **Comment check** — a story that already carries the warning is left alone. This is also what makes the rule fire once per story rather than once per move.
-- **State check** — after a revert the story is no longer in a started state, so the next delivery exits at step 3 anyway.
+- **State check** — after a revert the story is no longer in a started state, so the next delivery exits at step 4 anyway.
 
 The comment is posted *before* the revert. If commenting fails, the revert is skipped — an unexplained revert would look like the story moving on its own, and with no comment to find, it would repeat on every subsequent update.
 
 ### Known gaps
 
-- **Stories created directly into a started state** are warned but not moved, because there is no previous state to return to. Handling this would mean picking a destination (the workflow's default state, say) rather than restoring one.
+- **Stories created directly into a started state** are warned but not moved, because there is no previous state to return to. Handling this would mean picking a destination (the workflow's default state, say) rather than restoring one. (Create actions carry no `changes` either way — the diff is on updates only.)
 - **Deleting the warning comment re-arms the rule.** The comment *is* the record. A KV flag keyed by story id would survive deletion, at the cost of the state being invisible to anyone reading the story.
 - **A rename of the marker sentence orphans old warnings**, since matching is on visible text. That's the trade for not putting hidden markup in people's comments.
 

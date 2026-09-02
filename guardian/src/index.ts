@@ -24,14 +24,31 @@ type WorkspaceCredentials = {
 
 // --- Observer webhook (v2 envelope) ----------------------------------------
 
-// Actions identify what changed but carry no diff, so the worker re-reads the
-// story from the API and asks the history endpoint what the previous state was.
+// One entry per tracked attribute a transaction touched, in the same shape as
+// the v4 story history API: refs render as slim entities, everything else as
+// plain scalars. A cardinality-one replacement is adds=[new] removes=[old];
+// setting a previously-unset attribute has removes=[], clearing one has adds=[].
+type ChangeEntry = {
+  attribute: string;
+  adds: ChangeValue[];
+  removes: ChangeValue[];
+  truncated?: boolean; // a string value was cut at 8,192 chars
+};
+
+type ChangeValue = SlimRef<number | string> | string | number | boolean;
+
 type ObserverAction = {
   action: 'create' | 'update' | 'delete';
   id: number | string;
   entity_type: string;
   global_id: string;
-  uri: string | null;
+  app_url: string | null;
+  /** @deprecated Frozen for legacy consumers — read `app_url`. */
+  uri?: string | null;
+  // Story update actions only. `[]` means nothing tracked changed. An absent
+  // key means the diff was unavailable for this delivery, never that nothing
+  // changed — Guardian falls back to story history in that case.
+  changes?: ChangeEntry[];
 };
 
 type ObserverActor = {
@@ -58,7 +75,8 @@ type SlimRef<Id = number> = { id: Id; entity_type: string; name?: string };
 // Every v4 endpoint takes a `fields` query param. Unrequested fields are never
 // calculated — a story rendered whole resolves its description markdown and
 // every nested collection — so asking narrowly is worth doing on a hot path
-// like this one, which reads a story for every story update in the workspace.
+// like this one, which reads a story for every move or team change in the
+// workspace.
 //
 // Unknown field names are a 400, so each constant below is the exact field list
 // for the type under it. Change one, change the other.
@@ -89,12 +107,9 @@ type Member = { mention_name: string };
 const ID_ONLY_FIELDS = 'id';
 type EntityId = { id: number | null };
 
-type HistoryChange = {
-  attribute: string;
-  timestamp: string;
-  adds: SlimRef[];
-  removes: SlimRef[];
-};
+// `GET /stories/{id}/history` returns entries in the same shape as an action's
+// `changes` (plus a timestamp), so one type covers both sources.
+type StoryHistory = { changes: ChangeEntry[] };
 
 // v4 list endpoints are page-based and default to 10 items per page.
 type ListEnvelope<T> = {
@@ -281,28 +296,58 @@ async function alreadyWarned(s: Session, storyId: number): Promise<boolean> {
   );
 }
 
+/** The id carried by a slim ref, or null for scalars and missing values. */
+function refId(value: ChangeValue | undefined): number | null {
+  return typeof value === 'object' && typeof value.id === 'number' ? value.id : null;
+}
+
+/**
+ * True if the update could have put the story in breach of the rule.
+ *
+ * Only a move or a team change can, and the delivery's `changes` says which
+ * attributes the update touched — so everything else exits before touching
+ * the API. When the key is absent the diff was unavailable for this delivery,
+ * and the story has to be checked the slow way.
+ */
+function couldBreachRule(action: ObserverAction): boolean {
+  if (!action.changes) return true;
+  return action.changes.some(
+    (change) => change.attribute === 'workflow_state' || change.attribute === 'team',
+  );
+}
+
 /**
  * The state the story was in before it landed in `currentStateId`.
  *
- * Observer payloads carry no diff, so the move has to be reconstructed from
- * story history. The newest `workflow_state` change is only trusted when what
- * it added matches where the story is now — otherwise it describes some older
- * move and its `removes` would send the story somewhere it never was.
+ * The delivery's own `workflow_state` change entry is the first choice. Without
+ * one — `changes` absent, or the update didn't move the story — the move is
+ * reconstructed from story history, which returns entries in the same shape.
+ *
+ * Either way the entry is only trusted when what it added matches where the
+ * story is now. The story is re-read at handling time and can have moved again
+ * since the delivery was queued; an entry describing some other move would
+ * send it somewhere it never was.
  */
 async function previousWorkflowStateId(
   s: Session,
+  action: ObserverAction,
   storyId: number,
   currentStateId: number,
 ): Promise<number | null> {
-  const history = await apiJson<{ changes: HistoryChange[] }>(
-    s,
-    'GET',
-    `/stories/${storyId}/history?fields=workflow_state&limit=1`,
-  );
+  const isMove = (change: ChangeEntry) => change.attribute === 'workflow_state';
 
-  const latest = history?.changes?.find((change) => change.attribute === 'workflow_state');
-  if (!latest || latest.adds[0]?.id !== currentStateId) return null;
-  return latest.removes[0]?.id ?? null;
+  let latest = action.changes?.find(isMove);
+  if (!latest) {
+    const history = await apiJson<StoryHistory>(
+      s,
+      'GET',
+      `/stories/${storyId}/history?fields=workflow_state&limit=1`,
+    );
+    latest = history?.changes?.find(isMove);
+  }
+
+  if (!latest || refId(latest.adds[0]) !== currentStateId) return null;
+  return refId(latest.removes[0]);
 }
 
 async function resolveActorMention(s: Session, actor: ObserverActor): Promise<string> {
@@ -320,8 +365,13 @@ async function resolveActorMention(s: Session, actor: ObserverActor): Promise<st
 /**
  * Warn and revert if the story is sitting in a started state with no team.
  * Safe to call for any updated story — every guard exits quietly.
+ *
+ * The delivery says what changed, but the story is still re-read for where it
+ * is *now*: deliveries are handled asynchronously, and the story may have
+ * gained a team or moved again since this one was queued.
  */
-async function guardStory(s: Session, storyId: number, actorMention: () => Promise<string>) {
+async function guardStory(s: Session, action: ObserverAction, actorMention: () => Promise<string>) {
+  const storyId = Number(action.id);
   const story = await apiJson<Story>(s, 'GET', `/stories/${storyId}?fields=${STORY_FIELDS}`);
   if (!story) return;
 
@@ -338,7 +388,7 @@ async function guardStory(s: Session, storyId: number, actorMention: () => Promi
     return;
   }
 
-  const previousStateId = await previousWorkflowStateId(s, storyId, currentStateId);
+  const previousStateId = await previousWorkflowStateId(s, action, storyId, currentStateId);
 
   const posted = await apiJson<EntityId>(
     s,
@@ -368,8 +418,8 @@ async function guardStory(s: Session, storyId: number, actorMention: () => Promi
   );
   console.log(
     reverted
-      ? `Story ${storyId} reverted to workflow state ${previousStateId}`
-      : `Story ${storyId} warned but revert to ${previousStateId} failed`,
+      ? `Story ${storyId} reverted to workflow state ${previousStateId} — ${action.app_url}`
+      : `Story ${storyId} warned but revert to ${previousStateId} failed — ${action.app_url}`,
   );
 }
 
@@ -508,14 +558,13 @@ app.post('/webhook', async (c) => {
     return c.json({ ok: true });
   }
 
-  const storyIds = [
-    ...new Set(
-      payload.actions
-        .filter((action) => action.entity_type === 'story' && action.action === 'update')
-        .map((action) => Number(action.id)),
-    ),
-  ];
-  if (storyIds.length === 0) return c.json({ ok: true });
+  // Most updates are settled here, from the payload alone: one that touched
+  // neither the workflow state nor the team can't have broken the rule.
+  const updates = payload.actions.filter(
+    (action) =>
+      action.entity_type === 'story' && action.action === 'update' && couldBreachRule(action),
+  );
+  if (updates.length === 0) return c.json({ ok: true });
 
   const session: Session = { env: c.env, kv: c.env.TOKENS, workspaceId, creds };
 
@@ -526,11 +575,11 @@ app.post('/webhook', async (c) => {
   // Each story is checked in sequence so they share one refreshed token.
   c.executionCtx.waitUntil(
     (async () => {
-      for (const storyId of storyIds) {
+      for (const action of updates) {
         try {
-          await guardStory(session, storyId, actorMention);
+          await guardStory(session, action, actorMention);
         } catch (err) {
-          console.error(`Error guarding story ${storyId}:`, err);
+          console.error(`Error guarding story ${action.id}:`, err);
         }
       }
     })(),

@@ -1,10 +1,10 @@
 # Shortcut Quote Agent Service
 
-A toy Cloudflare Worker that demonstrates the Open Agents platform. When installed in a Shortcut workspace it responds to interaction triggers (assigned, @-mentioned, comment-reply) by posting a random quote as a comment on the relevant story or epic.
+A toy Cloudflare Worker that demonstrates the Shortcut Custom Agents platform. When installed in a Shortcut workspace it responds to interaction triggers (assigned, @-mentioned, comment-reply) by posting a random quote as a comment on the relevant story or epic.
 
-It also tracks observer webhook deliveries (entity create/update/delete counts by type) and exposes them at `/stats`.
+It also tracks observer webhook deliveries — entity create/update/delete counts by type, and which story attributes the update actions' `changes` reported — and exposes them at `/stats`.
 
-For background on the platform itself — payload shapes, trigger semantics, and the app review lifecycle — see [../docs/open-agents.md](../docs/open-agents.md).
+For background on the platform itself — payload shapes, trigger semantics, and the app review lifecycle — see [../docs/custom-agents.md](../docs/custom-agents.md).
 
 ---
 
@@ -32,7 +32,7 @@ For background on the platform itself — payload shapes, trigger semantics, and
 | `comment-reply` | Replies in the same thread (under the original agent comment) |
 | `mentioned` in a top-level comment | Replies nested under that comment |
 | `mentioned` in a nested comment | Replies under the thread root (max depth 1) |
-| Observer delivery | Records action counts in KV, no comment posted |
+| Observer delivery | Records action counts and changed attributes in KV, no comment posted |
 
 ---
 
