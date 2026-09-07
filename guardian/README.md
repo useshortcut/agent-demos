@@ -62,13 +62,17 @@ Every v4 endpoint takes a `fields` query param, and unrequested fields are never
 
 ```
 GET   /stories/123?fields=team,workflow_state
-GET   /stories/123/comments?fields=text,author,deleted&limit=100&page=1
+GET   /stories/123/comments?fields=text,author,deleted&limit=100
 GET   /members/{actor}?fields=mention_name
 POST  /stories/123/comments?fields=id
 PATCH /stories/123?fields=id
 ```
 
 Updates that don't touch the workflow state or team cost nothing; moves and team changes that turn out to be fine cost exactly one two-field story read. Writes ask for `id` alone — just enough to tell success from failure.
+
+List requests follow `next_page_url` cursors, retaining the requested `fields` and omitting `limit` after the first page. Cursor URLs must stay on the same API origin and endpoint. Failed, malformed, incomplete, or looping lists stop processing: Guardian never treats an unavailable comment list as "no warning," nor caches a partial workflow-state list. The versioned state-cache key bypasses potentially partial caches written by earlier releases.
+
+Single-entity API responses are unwrapped from `{ entity: ... }`; list envelopes remain intact for pagination.
 
 Unknown field names are a **400**, not a silently ignored param, so each `*_FIELDS` constant in `src/index.ts` sits directly above the type it fills and the two are meant to be edited together.
 
@@ -84,6 +88,7 @@ The comment is posted *before* the revert. If commenting fails, the revert is sk
 
 ### Known gaps
 
+- **Concurrent duplicate deliveries can race the comment check.** Guardian's KV-based, background-processing demo does not serialize deliveries or provide a durable retry queue. A failed lookup leaves the story unchanged and is logged, but the already-acknowledged webhook is not automatically retried.
 - **Stories created directly into a started state** are warned but not moved, because there is no previous state to return to. Handling this would mean picking a destination (the workflow's default state, say) rather than restoring one. (Create actions carry no `changes` either way — the diff is on updates only.)
 - **Deleting the warning comment re-arms the rule.** The comment *is* the record. A KV flag keyed by story id would survive deletion, at the cost of the state being invisible to anyone reading the story.
 - **A rename of the marker sentence orphans old warnings**, since matching is on visible text. That's the trade for not putting hidden markup in people's comments.
@@ -157,7 +162,9 @@ Install the agent app in the workspace you want guarded — as its builder you c
 curl https://<your-worker>.workers.dev/
 ```
 
-The response lists each workspace with stored credentials. If yours is there, Guardian is live — see [Trying it out](#trying-it-out).
+The response lists each workspace with stored credentials and granted OAuth `scopes`, never token values. Credentials saved by older versions report `"unknown"` scopes until OAuth or a refresh returns them; a refresh that omits `scope` preserves the previous value. OAuth connect and refresh also log scopes. If your workspace is there, Guardian is live — see [Trying it out](#trying-it-out).
+
+API and OAuth requests time out after 15 seconds. `npx wrangler tail` shows bounded, redacted error details with method, endpoint pathname, HTTP status, and provider error tag/message when available. Query strings, callback codes/state, credentials, submitted comment text, and raw errors are not logged by the application. Cloudflare's own invocation traces may still show request URLs; redact OAuth callback URLs before sharing logs.
 
 ---
 
@@ -179,6 +186,8 @@ Then:
 npm install
 npx wrangler dev
 ```
+
+Before deploying changes, run `npm test`, `npx tsc --noEmit`, and `npx wrangler deploy --dry-run` from this directory. Tests cover cursor validation, failed lookups, comment-before-revert behavior, warning suppression, token refresh/scopes, and safe diagnostics.
 
 The worker runs at `http://localhost:8787`. With `DEV=true`, signature failures are logged as warnings instead of returning 401. The agent app's **Redirect URIs** field takes one per line — add `http://localhost:8787/oauth/callback` as a second entry so the local OAuth flow can land.
 

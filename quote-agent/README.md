@@ -12,6 +12,7 @@ For background on the platform itself — payload shapes, trigger semantics, and
 
 - **Runtime**: Cloudflare Workers (Hono framework)
 - **Storage**: Cloudflare KV (`TOKENS` namespace) — stores OAuth credentials and action stats per workspace
+- **Delivery coordination**: SQLite Durable Object (`QUOTE_DELIVERIES`) — serializes interactions per workspace and stores completed-delivery receipts
 - **Auth**: OAuth 2.0 authorization code flow with the Shortcut v4 API
 - **Webhooks**: Receives signed HMAC-SHA256 payloads from Shortcut
 
@@ -33,6 +34,22 @@ For background on the platform itself — payload shapes, trigger semantics, and
 | `mentioned` in a top-level comment | Replies nested under that comment |
 | `mentioned` in a nested comment | Replies under the thread root (max depth 1) |
 | Observer delivery | Records action counts and changed attributes in KV, no comment posted |
+
+Each interaction is identified by its installation, workspace, and delivery ID.
+Redelivery of that interaction does not post again; a new mention, assignment, or
+reply still gets a new quote, even on the same Story or Epic. The coordinator
+serializes concurrent interactions, including token refresh. Before posting, it
+scans current comments for a matching `external_id` authored by this agent. This
+recovers a successful POST if execution stopped before its receipt was saved.
+The API comment lists include threaded replies, so this works for replies too.
+Cursor pages stay on the same API origin and resource; malformed, incomplete,
+or failed scans abort processing instead of being treated as an empty list.
+
+Failures return HTTP 503 without storing a receipt. This demo does not enqueue
+its own retries or guarantee that Shortcut redelivers failures. It also cannot
+guarantee exactly-once external writes if a timed-out POST is still in flight
+when another attempt checks comments. Completed receipts currently have no
+retention cleanup; adapt this reference implementation for sustained traffic.
 
 ---
 
@@ -63,6 +80,12 @@ npx wrangler deploy
 ```
 
 Note the URL wrangler prints — `https://shortcut-agent-service.<your-subdomain>.workers.dev`. The next two steps need it. (The worker can't do anything useful yet; its secrets are still missing.)
+
+Wrangler creates the SQLite Durable Object class using the included `v1`
+migration. Keep the `TOKENS` namespace IDs unchanged when upgrading an existing
+deployment; OAuth credentials remain in KV, so this change does not require
+reauthorization. Existing interactions processed by the old version have no
+receipt or per-delivery comment marker and cannot be retroactively deduplicated.
 
 ### 4. Create the agent app in Shortcut
 
@@ -105,6 +128,17 @@ curl https://<your-worker>.workers.dev/
 
 The response lists each workspace with stored credentials. If yours is there, the agent is live.
 
+Scopes are logged on connection and refresh and included in the credential
+summary at `/`. Older stored credentials report `unknown` until a token response
+supplies scopes; a refresh without a scope field preserves previously known
+scopes. All Shortcut requests use a 15-second timeout. Request error logs include
+method, pathname, status, and bounded API error codes (`tag`, `error`, `code`).
+Free-form error messages/descriptions and response bodies are intentionally
+omitted because they can echo user content or credentials. OAuth state, codes,
+tokens, and query strings are not application-logged. Automatic invocation logs
+are disabled to avoid storing callback URLs, but interactive `wrangler tail`
+can still display those URLs: redact codes and state before sharing a tail.
+
 ---
 
 ## Trying it out
@@ -135,6 +169,14 @@ npx wrangler dev
 ```
 
 The worker runs at `http://localhost:8787`. With `DEV=true`, webhook signature verification runs but failures are logged as warnings rather than 401s. The agent app's **Redirect URIs** field takes one per line — add `http://localhost:8787/oauth/callback` as a second entry so the local OAuth flow can land.
+
+Run checks from this directory:
+
+```bash
+npm test
+npx tsc --noEmit
+npx wrangler deploy --dry-run
+```
 
 ---
 

@@ -20,6 +20,7 @@ type WorkspaceCredentials = {
   refreshToken: string;
   expiresAt: string; // ISO8601 — access_token_expires_at from token response
   memberId: string; // the agent's own permission_id — used to ignore its own edits
+  scopes?: string[]; // absent for credentials issued before scope reporting
 };
 
 // --- Observer webhook (v2 envelope) ----------------------------------------
@@ -111,11 +112,12 @@ type EntityId = { id: number | null };
 // `changes` (plus a timestamp), so one type covers both sources.
 type StoryHistory = { changes: ChangeEntry[] };
 
-// v4 list endpoints are page-based and default to 10 items per page.
+// v4 requests use cursors; page numbers are response metadata only.
 type ListEnvelope<T> = {
   entities: T[];
-  current_page: number;
-  total_pages: number;
+  current_page?: number;
+  total_pages?: number;
+  next_page_url?: string | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -150,6 +152,68 @@ function shortcutApiBase(env: Env) {
   return env.SHORTCUT_API_BASE ?? 'https://api.app.shortcut.com';
 }
 
+const REQUEST_TIMEOUT_MS = 15_000;
+
+// Only these diagnostics are ever logged. Never log an Error object: fetch
+// errors and provider responses can contain credentials, URLs, or user text.
+class ShortcutRequestError extends Error {}
+
+function sensitiveStrings(value: unknown): string[] {
+  if (typeof value === 'string') return [value];
+  if (value && typeof value === 'object') return Object.values(value).flatMap(sensitiveStrings);
+  return [];
+}
+
+function safeErrorDetails(body: unknown, sensitive: string[]): Record<string, string> {
+  if (!body || typeof body !== 'object') return {};
+  const redactions = [...new Set(sensitive.filter(Boolean).flatMap((value) =>
+    [value, encodeURIComponent(value), encodeURIComponent(value).replace(/%20/g, '+'), JSON.stringify(value).slice(1, -1)],
+  ))].sort((a, b) => b.length - a.length);
+  const details: Record<string, string> = {};
+  for (const key of ['tag', 'error', 'message', 'error_description']) {
+    const raw = (body as Record<string, unknown>)[key];
+    if (typeof raw !== 'string') continue;
+    // Strip URLs before replacing a redirect URI prefix, otherwise its query
+    // string could survive without the URL prefix that identifies it.
+    let value = raw.replace(/https?:\/\/\S+/gi, '[redacted URL]');
+    for (const secret of redactions) value = value.split(secret).join('[redacted]');
+    details[key] = value.replace(/Bearer\s+\S+/gi, '[redacted]')
+      .replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 500);
+  }
+  return details;
+}
+
+async function request(url: string, init: RequestInit, sensitive: string[]): Promise<Response> {
+  const endpoint = new URL(url);
+  const diagnostics = { method: init.method ?? 'GET', path: endpoint.pathname };
+  let res: Response;
+  try {
+    res = await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  } catch {
+    console.error('Shortcut request failed', { ...diagnostics, message: 'Network request failed or timed out' });
+    throw new ShortcutRequestError('Network request failed or timed out');
+  }
+  if (!res.ok) {
+    let body: unknown;
+    try { body = await res.clone().json(); } catch { /* No raw HTML/text logging. */ }
+    console.error('Shortcut request rejected', {
+      ...safeErrorDetails(body, [...sensitive, ...[...endpoint.searchParams].filter(([key]) => key !== 'fields' && key !== 'limit').map(([, value]) => value)]),
+      ...diagnostics, status: res.status,
+    });
+  }
+  return res;
+}
+
+async function responseJson<T>(res: Response): Promise<T> {
+  try { return await res.json() as T; } catch {
+    throw new ShortcutRequestError('Response body could not be read as JSON');
+  }
+}
+
+function grantedScopes(data: { scope?: unknown }, fallback?: string[]): string[] | undefined {
+  return typeof data.scope === 'string' ? [...new Set(data.scope.trim().split(/\s+/).filter(Boolean))] : fallback;
+}
+
 // ---------------------------------------------------------------------------
 // KV helpers
 // ---------------------------------------------------------------------------
@@ -169,7 +233,7 @@ async function storeCredentials(kv: KVNamespace, workspaceId: string, creds: Wor
 
 async function refreshCredentials(s: Session): Promise<WorkspaceCredentials | null> {
   console.log(`Refreshing token for workspace ${s.workspaceId}`);
-  const res = await fetch(`${shortcutApiBase(s.env)}/oauth-authorization-code-flow/token`, {
+  const res = await request(`${shortcutApiBase(s.env)}/oauth-authorization-code-flow/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -178,18 +242,18 @@ async function refreshCredentials(s: Session): Promise<WorkspaceCredentials | nu
       client_id: s.env.CLIENT_ID,
       client_secret: s.env.CLIENT_SECRET,
     }),
-  });
+  }, [s.env.CLIENT_SECRET, s.env.CLIENT_ID, s.creds.token, s.creds.refreshToken]);
 
   if (!res.ok) {
-    console.error(`Token refresh failed: ${res.status} ${await res.text()}`);
     return null;
   }
 
-  const data = (await res.json()) as {
+  const data = await responseJson<{
     access_token: string;
     refresh_token: string;
     access_token_expires_at: string;
-  };
+    scope?: string;
+  }>(res);
 
   const updated: WorkspaceCredentials = {
     token: data.access_token,
@@ -197,10 +261,12 @@ async function refreshCredentials(s: Session): Promise<WorkspaceCredentials | nu
     refreshToken: data.refresh_token,
     expiresAt: data.access_token_expires_at,
     memberId: s.creds.memberId, // preserved from the original OAuth flow
+    scopes: grantedScopes(data, s.creds.scopes),
   };
 
   await storeCredentials(s.kv, s.workspaceId, updated);
   s.creds = updated;
+  console.log('Guardian OAuth refreshed', { workspaceId: s.workspaceId, scopes: updated.scopes ?? 'unknown' });
   return updated;
 }
 
@@ -214,9 +280,12 @@ function isExpiringSoon(creds: WorkspaceCredentials): boolean {
 // ---------------------------------------------------------------------------
 
 async function apiFetch(s: Session, method: string, path: string, body?: unknown): Promise<Response> {
-  if (isExpiringSoon(s.creds)) await refreshCredentials(s);
+  const sensitive = [s.env.CLIENT_SECRET, s.env.CLIENT_ID, s.creds.token, s.creds.refreshToken, ...sensitiveStrings(body)];
+  if (isExpiringSoon(s.creds) && !(await refreshCredentials(s))) {
+    throw new ShortcutRequestError('Token refresh failed');
+  }
 
-  const url = `${shortcutApiBase(s.env)}/api/v4/${s.creds.slug}${path}`;
+  const url = `${shortcutApiBase(s.env)}/api/v4/${encodeURIComponent(s.creds.slug)}${path}`;
   const init = (): RequestInit => ({
     method,
     headers: {
@@ -226,12 +295,13 @@ async function apiFetch(s: Session, method: string, path: string, body?: unknown
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 
-  let res = await fetch(url, init());
+  const send = () => request(url, init(), [...sensitive, s.creds.token, s.creds.refreshToken]);
+  let res = await send();
 
   // The token can expire between the check above and the call itself.
   if (res.status === 401) {
     if (!(await refreshCredentials(s))) return res;
-    res = await fetch(url, init());
+    res = await send();
   }
   return res;
 }
@@ -239,23 +309,56 @@ async function apiFetch(s: Session, method: string, path: string, body?: unknown
 async function apiJson<T>(s: Session, method: string, path: string, body?: unknown): Promise<T | null> {
   const res = await apiFetch(s, method, path, body);
   if (!res.ok) {
-    console.error(`${method} ${path} -> ${res.status} ${await res.text()}`);
     return null;
   }
-  return (await res.json()) as T;
+  const data = await responseJson<T | { entity: T | null }>(res);
+  // Detail and write responses use { entity }; list responses use { entities }.
+  return data && typeof data === 'object' && 'entity' in data ? data.entity : data as T;
 }
 
 /** Walks every page of a v4 list endpoint. */
 async function listAll<T>(s: Session, path: string): Promise<T[]> {
   const out: T[] = [];
+  const prefix = `/api/v4/${encodeURIComponent(s.creds.slug)}`;
+  const endpoint = new URL(`${shortcutApiBase(s.env)}${prefix}${path}`);
+  const fields = endpoint.searchParams.get('fields');
+  const seen = new Set<string>();
+  let nextPath = `${path}${path.includes('?') ? '&' : '?'}limit=100`;
   for (let page = 1; ; page += 1) {
-    const sep = path.includes('?') ? '&' : '?';
-    const envelope = await apiJson<ListEnvelope<T>>(s, 'GET', `${path}${sep}limit=100&page=${page}`);
-    if (!envelope) break;
+    const envelope = await apiJson<ListEnvelope<T>>(s, 'GET', nextPath);
+    if (!envelope || !Array.isArray(envelope.entities)) {
+      throw new ShortcutRequestError('List lookup failed or returned an invalid page');
+    }
+    const { current_page: current, total_pages: total, next_page_url: next } = envelope;
+    if ((current !== undefined || total !== undefined) &&
+      (!Number.isInteger(current) || !Number.isInteger(total) || current !== page || total! < 0 || current! > Math.max(1, total!))) {
+      throw new ShortcutRequestError('List returned invalid pagination metadata');
+    }
     out.push(...envelope.entities);
-    if (page >= envelope.total_pages) break;
+    if (next === undefined || next === null || next === '') {
+      if (current !== undefined && total !== undefined && current < total) {
+        throw new ShortcutRequestError('List response is missing its next page');
+      }
+      return out;
+    }
+    if (typeof next !== 'string' || page >= 10_000 || (current !== undefined && total !== undefined && current >= total)) {
+      throw new ShortcutRequestError('List returned inconsistent pagination');
+    }
+    let url: URL;
+    try { url = new URL(next, endpoint); } catch {
+      throw new ShortcutRequestError('List returned an invalid next-page URL');
+    }
+    const cursor = url.searchParams.get('cursor');
+    if (url.origin !== endpoint.origin || url.pathname !== endpoint.pathname || url.username || url.password || url.hash ||
+      !cursor || url.searchParams.getAll('cursor').length !== 1 || url.searchParams.getAll('fields').length > 1 ||
+      [...url.searchParams.keys()].some((key) => key !== 'cursor' && key !== 'fields') ||
+      (url.searchParams.has('fields') && url.searchParams.get('fields') !== fields) || seen.has(cursor)) {
+      throw new ShortcutRequestError('List returned an unsafe or repeated next-page URL');
+    }
+    seen.add(cursor);
+    if (fields !== null) url.searchParams.set('fields', fields);
+    nextPath = url.pathname.slice(prefix.length) + url.search;
   }
-  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -268,7 +371,8 @@ async function listAll<T>(s: Session, path: string): Promise<T[]> {
  * types have to come from the workflow-states collection.
  */
 async function startedStateIds(s: Session): Promise<Set<number>> {
-  const cacheKey = `started-states:${s.workspaceId}`;
+  // Old versions could cache a partial list after a later page failed.
+  const cacheKey = `started-states:v2:${s.workspaceId}`;
   const cached = await s.kv.get(cacheKey);
   if (cached) return new Set(JSON.parse(cached) as number[]);
 
@@ -416,11 +520,7 @@ async function guardStory(s: Session, action: ObserverAction, actorMention: () =
     `/stories/${storyId}?fields=${ID_ONLY_FIELDS}`,
     { workflow_state_id: previousStateId },
   );
-  console.log(
-    reverted
-      ? `Story ${storyId} reverted to workflow state ${previousStateId} — ${action.app_url}`
-      : `Story ${storyId} warned but revert to ${previousStateId} failed — ${action.app_url}`,
-  );
+  console.log('Guardian story warned', { storyId, previousStateId, reverted: !!reverted });
 }
 
 // ---------------------------------------------------------------------------
@@ -456,59 +556,61 @@ const app = new Hono<{ Bindings: Env }>();
 app.get('/oauth/callback', async (c) => {
   const error = c.req.query('error');
   if (error) {
-    const description = c.req.query('error_description');
-    console.error(`OAuth error: ${error} — ${description}`);
-    return c.html(
-      `<h2>&#10060; Authorization failed</h2>
-       <p><strong>${error}</strong>: ${description ?? 'No description provided.'}</p>
-       <p>Please close this tab and try connecting again.</p>`,
-      400,
-    );
+    console.error('Guardian OAuth denied', { message: 'Authorization was not granted' });
+    return c.text('Authorization failed. Please close this tab and try connecting again.', 400);
   }
 
   const code = c.req.query('code');
   if (!code) return c.text('Missing code', 400);
 
-  const res = await fetch(`${shortcutApiBase(c.env)}/oauth-authorization-code-flow/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      code,
-      client_id: c.env.CLIENT_ID,
-      client_secret: c.env.CLIENT_SECRET,
-      grant_type: 'authorization_code',
-      redirect_uri: c.env.REDIRECT_URI,
-    }),
-  });
+  try {
+    const res = await request(`${shortcutApiBase(c.env)}/oauth-authorization-code-flow/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: c.env.CLIENT_ID,
+        client_secret: c.env.CLIENT_SECRET,
+        grant_type: 'authorization_code',
+        redirect_uri: c.env.REDIRECT_URI,
+      }),
+    }, [code, c.req.query('state') ?? '', c.env.CLIENT_ID, c.env.CLIENT_SECRET, c.env.REDIRECT_URI]);
 
-  if (!res.ok) {
-    console.error('Token exchange failed', await res.text());
+    if (!res.ok) {
+      return c.text('Token exchange failed. Check worker logs.', 500);
+    }
+
+    const data = await responseJson<{
+      access_token: string;
+      refresh_token: string;
+      access_token_expires_at: string;
+      permission_id: string;
+      workspace2_id: string;
+      workspace2_slug: string;
+      scope?: string;
+    }>(res);
+
+    const scopes = grantedScopes(data);
+
+    await storeCredentials(c.env.TOKENS, data.workspace2_id, {
+      token: data.access_token,
+      slug: data.workspace2_slug,
+      refreshToken: data.refresh_token,
+      expiresAt: data.access_token_expires_at,
+      memberId: data.permission_id ?? '',
+      scopes,
+    });
+
+    console.log('Guardian OAuth connected', { workspaceId: data.workspace2_id, slug: data.workspace2_slug, scopes: scopes ?? 'unknown' });
+    return c.html(
+      `<h2>✅ Connected!</h2>
+       <p>Your workspace is now guarded.</p>
+       <p>You can close this tab.</p>`,
+    );
+  } catch (err) {
+    console.error('Guardian OAuth failed', { message: err instanceof ShortcutRequestError ? err.message : 'Could not connect workspace' });
     return c.text('Token exchange failed. Check worker logs.', 500);
   }
-
-  const data = (await res.json()) as {
-    access_token: string;
-    refresh_token: string;
-    access_token_expires_at: string;
-    permission_id: string;
-    workspace2_id: string;
-    workspace2_slug: string;
-  };
-
-  await storeCredentials(c.env.TOKENS, data.workspace2_id, {
-    token: data.access_token,
-    slug: data.workspace2_slug,
-    refreshToken: data.refresh_token,
-    expiresAt: data.access_token_expires_at,
-    memberId: data.permission_id ?? '',
-  });
-
-  console.log(`Connected workspace: ${data.workspace2_slug} (${data.workspace2_id})`);
-  return c.html(
-    `<h2>✅ Connected!</h2>
-     <p>Workspace <strong>${data.workspace2_slug}</strong> is now guarded.</p>
-     <p>You can close this tab.</p>`,
-  );
 });
 
 /**
@@ -579,7 +681,10 @@ app.post('/webhook', async (c) => {
         try {
           await guardStory(session, action, actorMention);
         } catch (err) {
-          console.error(`Error guarding story ${action.id}:`, err);
+          console.error('Guardian story processing failed', {
+            storyId: action.id,
+            message: err instanceof ShortcutRequestError ? err.message : 'Could not process story',
+          });
         }
       }
     })(),
@@ -602,6 +707,7 @@ app.get('/', async (c) => {
         hasRefreshToken: !!parsed.refreshToken,
         hasMemberId: !!parsed.memberId,
         expiresAt: parsed.expiresAt ?? null,
+        scopes: parsed.scopes ?? 'unknown',
       };
     }),
   );

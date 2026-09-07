@@ -7,6 +7,7 @@ import QUOTES from './quotes.json';
 
 type Env = {
   TOKENS: KVNamespace;
+  QUOTE_DELIVERIES: DurableObjectNamespace;
   CLIENT_ID: string;
   CLIENT_SECRET: string;
   REDIRECT_URI: string;
@@ -21,6 +22,7 @@ type WorkspaceCredentials = {
   refreshToken: string;
   expiresAt: string; // ISO8601 — access_token_expires_at from token response
   memberId: string;  // agent's permission_id — used to filter self-actions
+  scopes?: string[] | null; // missing on older installations, unknown until OAuth/refresh
 };
 
 // One entry per tracked attribute the transaction touched, in the same shape
@@ -100,7 +102,40 @@ function shortcutApiBase(env: Env) {
 
 
 function shortcutApi(env: Env, slug: string) {
-  return `${shortcutApiBase(env)}/api/v4/${slug}`;
+  return `${shortcutApiBase(env)}/api/v4/${encodeURIComponent(slug)}`;
+}
+
+const REQUEST_TIMEOUT_MS = 15_000;
+const MAX_COMMENT_PAGES = 1_000;
+
+function oauthScopes(data: { scope?: unknown; scopes?: unknown }, previous?: string[] | null): string[] | null {
+  const value = data.scope ?? data.scopes;
+  if (typeof value === 'string') return value.split(/\s+/).filter(Boolean);
+  if (Array.isArray(value) && value.every((scope) => typeof scope === 'string')) return value;
+  return previous ?? null;
+}
+
+// Do not log response text/messages, request bodies, query strings, or exception
+// messages: all can contain credentials, OAuth codes, state, or user content.
+async function shortcutFetch(url: string, options: RequestInit, sensitive: string[] = []): Promise<Response> {
+  const details = { method: options.method ?? 'GET', path: new URL(url).pathname };
+  try {
+    const response = await fetch(url, { ...options, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    if (!response.ok) {
+      const codes: Record<string, string> = {};
+      const body = await response.clone().json().catch(() => null) as Record<string, unknown> | null;
+      for (const key of ['tag', 'error', 'code']) {
+        const value = body?.[key];
+        if (typeof value === 'string' && /^[a-z][a-z0-9_]{0,79}$/.test(value) &&
+            !sensitive.some((secret) => secret && value.includes(secret))) codes[key] = value;
+      }
+      console.error('Shortcut request rejected', { ...details, status: response.status, ...codes });
+    }
+    return response;
+  } catch {
+    console.error('Shortcut request failed', { ...details, timeoutMs: REQUEST_TIMEOUT_MS });
+    throw new Error('Shortcut request failed or timed out');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -155,7 +190,7 @@ async function refreshCredentials(
   creds: WorkspaceCredentials,
 ): Promise<WorkspaceCredentials | null> {
   console.log(`Refreshing token for workspace ${workspaceId}`);
-  const res = await fetch(`${shortcutApiBase(env)}/oauth-authorization-code-flow/token`, {
+  const res = await shortcutFetch(`${shortcutApiBase(env)}/oauth-authorization-code-flow/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -164,10 +199,9 @@ async function refreshCredentials(
       client_id: env.CLIENT_ID,
       client_secret: env.CLIENT_SECRET,
     }),
-  });
+  }, [creds.token, creds.refreshToken, env.CLIENT_SECRET]);
 
   if (!res.ok) {
-    console.error(`Token refresh failed: ${res.status} ${await res.text()}`);
     return null;
   }
 
@@ -175,6 +209,8 @@ async function refreshCredentials(
     access_token: string;
     refresh_token: string;
     access_token_expires_at: string;
+    scope?: unknown;
+    scopes?: unknown;
   };
 
   const updated: WorkspaceCredentials = {
@@ -183,10 +219,11 @@ async function refreshCredentials(
     refreshToken: data.refresh_token,
     expiresAt: data.access_token_expires_at,
     memberId: creds.memberId, // preserved from original OAuth flow
+    scopes: oauthScopes(data, creds.scopes),
   };
 
   await storeCredentials(kv, workspaceId, updated);
-  console.log(`Token refreshed for workspace ${workspaceId}, expires ${updated.expiresAt}`);
+  console.log('Quote Agent OAuth refreshed', { workspaceId, scopes: updated.scopes ?? 'unknown', expiresAt: updated.expiresAt });
   return updated;
 }
 
@@ -204,52 +241,112 @@ function isExpiringSoon(creds: WorkspaceCredentials): boolean {
 // Shortcut API calls (with auto-refresh on 401)
 // ---------------------------------------------------------------------------
 
-async function postComment(
+async function apiRequest(
   env: Env,
-  kv: KVNamespace,
   workspaceId: string,
   creds: WorkspaceCredentials,
-  entityType: string,
-  entityId: number,
-  text: string,
-  parentCommentId?: number,
-): Promise<boolean> {
-  // Proactively refresh if expiring soon
+  path: string,
+  options: RequestInit = {},
+): Promise<Response> {
   if (isExpiringSoon(creds)) {
-    const refreshed = await refreshCredentials(env, kv, workspaceId, creds);
-    if (refreshed) creds = refreshed;
+    const refreshed = await refreshCredentials(env, env.TOKENS, workspaceId, creds);
+    if (!refreshed) throw new Error('Token refresh failed');
+    Object.assign(creds, refreshed);
   }
-
-  const path = entityType === 'epic' ? `epics/${entityId}/comments` : `stories/${entityId}/comments`;
   const url = `${shortcutApi(env, creds.slug)}/${path}`;
-  const body = parentCommentId ? { text, parent_comment_id: parentCommentId } : { text };
-
-  let res = await fetch(url, {
-    method: 'POST',
+  const request = () => shortcutFetch(url, {
+    ...options,
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${creds.token}` },
-    body: JSON.stringify(body),
-  });
-
-  // Reactive refresh on 401 — token may have expired between check and call
+  }, [creds.token, creds.refreshToken, env.CLIENT_SECRET, new URL(url).searchParams.get('cursor') ?? '']);
+  let res = await request();
   if (res.status === 401) {
-    console.warn(`Got 401 posting comment, attempting token refresh for workspace ${workspaceId}`);
-    const refreshed = await refreshCredentials(env, kv, workspaceId, creds);
-    if (!refreshed) {
-      console.error('Token refresh failed, giving up');
+    const refreshed = await refreshCredentials(env, env.TOKENS, workspaceId, creds);
+    if (!refreshed) throw new Error('Token refresh failed');
+    Object.assign(creds, refreshed);
+    res = await request();
+  }
+  if (!res.ok) throw new Error('Shortcut API request rejected');
+  return res;
+}
+
+async function alreadyPosted(env: Env, workspaceId: string, creds: WorkspaceCredentials, path: string, marker: string): Promise<boolean> {
+  if (!creds.memberId) throw new Error('Missing agent member ID for duplicate check');
+  const endpoint = new URL(`${shortcutApi(env, creds.slug)}/${path}`);
+  const fields = 'id,external_id,author';
+  let nextPath = `${path}?fields=${fields}&limit=100`;
+  const cursors = new Set<string>();
+  for (let page = 1; page <= MAX_COMMENT_PAGES; page++) {
+    const result = await (await apiRequest(env, workspaceId, creds, nextPath)).json() as {
+      entities: Array<{ id: number | null; external_id?: string; author?: { id: string } }>;
+      current_page?: number; total_pages: number; next_page_url?: string | null;
+    };
+    const currentPage = result.current_page ?? page;
+    if (!Array.isArray(result.entities) || !Number.isInteger(result.total_pages) || result.total_pages < 0 ||
+        !Number.isInteger(currentPage) || currentPage !== page ||
+        (result.total_pages === 0 ? result.entities.length > 0 || page !== 1 : currentPage > result.total_pages)) {
+      throw new Error('Invalid comment pagination');
+    }
+    if (result.entities.some((comment) => comment.id != null && comment.external_id === marker && comment.author?.id === creds.memberId)) return true;
+    if (result.next_page_url == null) {
+      if (currentPage < result.total_pages) throw new Error('Incomplete comment pagination');
       return false;
     }
-    creds = refreshed;
-    res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${creds.token}` },
-      body: JSON.stringify(body),
-    });
+    if (typeof result.next_page_url !== 'string') throw new Error('Invalid next-page URL');
+    const next = new URL(result.next_page_url, endpoint);
+    if (next.origin !== endpoint.origin || next.pathname !== endpoint.pathname || next.username || next.password || next.hash ||
+        [...next.searchParams.keys()].some((key) => key !== 'cursor' && key !== 'fields') || next.searchParams.getAll('cursor').length !== 1) {
+      throw new Error('Unsafe comment pagination');
+    }
+    const cursor = next.searchParams.get('cursor');
+    if (!cursor || cursors.has(cursor)) throw new Error('Repeated or empty comment cursor');
+    cursors.add(cursor);
+    nextPath = `${path}?cursor=${encodeURIComponent(cursor)}&fields=${fields}`;
+  }
+  throw new Error('Comment pagination exceeded page limit');
+}
+
+// A single object per workspace serializes reads, token refresh, external writes,
+// and durable receipts. KV alone cannot safely claim concurrent deliveries.
+export class QuoteDeliveries {
+  private pending: Promise<unknown> = Promise.resolve();
+  constructor(private ctx: DurableObjectState, private env: Env) {}
+
+  fetch(request: Request): Promise<Response> {
+    const next = this.pending.then(() => this.process(request));
+    this.pending = next.catch(() => undefined);
+    return next;
   }
 
-  if (!res.ok) {
-    console.error(`Failed to post comment: ${res.status} ${await res.text()}`);
+  private async process(request: Request): Promise<Response> {
+    const payload = await request.json() as ShortcutInteractionPayload;
+    const { trigger, workspace2: { id: workspaceId } } = payload;
+    try {
+      const creds = await getCredentials(this.env.TOKENS, workspaceId);
+      if (!creds) throw new Error('Missing OAuth credentials');
+      if (payload.actor?.member_id === creds.memberId) return Response.json({ ok: true });
+      const key = JSON.stringify([payload.installation_id, workspaceId, payload.id]);
+      if (await this.ctx.storage.get(`receipt:${key}`)) return Response.json({ ok: true, duplicate: true });
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(key));
+      const marker = `quote-agent:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+      const path = `${trigger.entity_type === 'epic' ? 'epics' : 'stories'}/${trigger.entity_id}/comments`;
+      if (!await alreadyPosted(this.env, workspaceId, creds, path, marker)) {
+        const parentId = trigger.type === 'comment-reply' ? trigger.parent_comment_id :
+          trigger.type === 'mentioned' && trigger.context === 'comment' ? trigger.comment_parent_id || trigger.comment_id : undefined;
+        await apiRequest(this.env, workspaceId, creds, `${path}?fields=id`, {
+          method: 'POST',
+          body: JSON.stringify({ text: `💬 *${randomQuote()}*`, external_id: marker,
+            ...(parentId ? { parent_comment_id: Number(parentId) } : {}) }),
+        });
+      }
+      // If execution stops after POST, the next delivery finds its marker in
+      // current comments before retrying the effect. New interactions get new keys.
+      await this.ctx.storage.put(`receipt:${key}`, { completedAt: new Date().toISOString() });
+      return Response.json({ ok: true });
+    } catch {
+      console.error('Quote Agent delivery failed', { workspaceId, deliveryId: payload.id });
+      return Response.json({ error: 'Delivery processing failed. Check Worker logs.' }, { status: 503 });
+    }
   }
-  return res.ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -281,6 +378,10 @@ function hexToBytes(hex: string): Uint8Array {
 // ---------------------------------------------------------------------------
 
 const app = new Hono<{ Bindings: Env }>();
+app.onError((_error, c) => {
+  console.error('Quote Agent request failed', { method: c.req.method, path: c.req.path });
+  return c.text('Request failed. Check Worker logs.', 500);
+});
 
 /**
  * OAuth callback — exchanges the code for tokens, stores them in KV
@@ -288,12 +389,10 @@ const app = new Hono<{ Bindings: Env }>();
  */
 app.get('/oauth/callback', async (c) => {
   const error = c.req.query('error');
-  const errorDescription = c.req.query('error_description');
   if (error) {
-    console.error(`OAuth error: ${error} — ${errorDescription}`);
+    console.error('Quote Agent OAuth authorization rejected');
     return c.html(
       `<h2>&#10060; Authorization failed</h2>
-       <p><strong>${error}</strong>: ${errorDescription ?? 'No description provided.'}</p>
        <p>Please close this tab and try connecting again.</p>`,
       400,
     );
@@ -302,12 +401,9 @@ app.get('/oauth/callback', async (c) => {
   const code = c.req.query('code');
   if (!code) return c.text('Missing code', 400);
 
-  const returnedState = c.req.query('state');
-  if (returnedState) {
-    console.log(`OAuth state returned: ${returnedState}`);
-  }
+  console.log('Quote Agent OAuth callback received', { hasCode: true, hasState: !!c.req.query('state') });
 
-  const res = await fetch(`${shortcutApiBase(c.env)}/oauth-authorization-code-flow/token`, {
+  const res = await shortcutFetch(`${shortcutApiBase(c.env)}/oauth-authorization-code-flow/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -317,11 +413,9 @@ app.get('/oauth/callback', async (c) => {
       grant_type: 'authorization_code',
       redirect_uri: c.env.REDIRECT_URI,
     }),
-  });
+  }, [code, c.req.query('state') ?? '', c.env.CLIENT_SECRET]);
 
   if (!res.ok) {
-    const err = await res.text();
-    console.error('Token exchange failed', err);
     return c.text('Token exchange failed. Check worker logs.', 500);
   }
 
@@ -332,6 +426,8 @@ app.get('/oauth/callback', async (c) => {
     permission_id: string;
     workspace2_id: string;
     workspace2_slug: string;
+    scope?: unknown;
+    scopes?: unknown;
   };
 
   await storeCredentials(c.env.TOKENS, data.workspace2_id, {
@@ -340,19 +436,20 @@ app.get('/oauth/callback', async (c) => {
     refreshToken: data.refresh_token,
     expiresAt: data.access_token_expires_at,
     memberId: data.permission_id ?? '',
+    scopes: oauthScopes(data),
   });
 
-  console.log(`Connected workspace: ${data.workspace2_slug} (${data.workspace2_id}), token expires ${data.access_token_expires_at}`);
+  console.log('Quote Agent connected', { workspaceId: data.workspace2_id, scopes: oauthScopes(data) ?? 'unknown', expiresAt: data.access_token_expires_at });
   return c.html(
     `<h2>✅ Connected!</h2>
-     <p>Workspace <strong>${data.workspace2_slug}</strong> is now connected.</p>
+     <p>Your workspace is now connected.</p>
      <p>You can close this tab.</p>`,
   );
 });
 
 /**
  * Webhook — verifies HMAC signature, posts a random quote as a comment on
- * every story/epic action in the delivery.
+ * each new interaction. Observer deliveries only record stats.
  */
 app.post('/webhook', async (c) => {
   const rawBody = await c.req.text();
@@ -386,40 +483,17 @@ app.post('/webhook', async (c) => {
   }
 
   // Both payload types now use workspace2.id
-  const workspaceId = payload.workspace2.id;
-  const creds = await getCredentials(c.env.TOKENS, workspaceId);
-  if (!creds) {
-    console.warn(`No credentials for workspace ${workspaceId}`);
-    return c.json({ ok: true });
-  }
+  const workspaceId = payload.workspace2?.id;
+  if (!workspaceId) return c.json({ error: 'Missing workspace' }, 400);
 
   if ('trigger' in payload) {
-    // Interaction-triggered delivery
-    const { trigger } = payload as ShortcutInteractionPayload;
-    if (trigger.type === 'assigned') {
-      console.log(`Agent assigned to ${trigger.entity_type} ${trigger.entity_id} in workspace ${workspaceId}`);
-      await postComment(c.env, c.env.TOKENS, workspaceId, creds, trigger.entity_type, Number(trigger.entity_id), `💬 *${randomQuote()}*`);
-    } else if (trigger.type === 'comment-reply') {
-      console.log(`User replied to agent comment on ${trigger.entity_type} ${trigger.entity_id} in workspace ${workspaceId}`);
-      await postComment(c.env, c.env.TOKENS, workspaceId, creds, trigger.entity_type, Number(trigger.entity_id), `💬 *${randomQuote()}*`, Number(trigger.parent_comment_id));
-    } else if (trigger.type === 'mentioned') {
-      console.log(`Agent mentioned in ${trigger.context} on ${trigger.entity_type} ${trigger.entity_id} in workspace ${workspaceId}`);
-      // Reply in the same thread as the mention:
-      // - If the mentioning comment is itself a reply (has comment_parent_id),
-      //   use that parent as our parent (staying at depth 1, same thread root).
-      // - If the mentioning comment is top-level, nest directly under it (depth 1).
-      const parentCommentId =
-        trigger.context === 'comment'
-          ? trigger.comment_parent_id
-            ? Number(trigger.comment_parent_id)
-            : trigger.comment_id
-              ? Number(trigger.comment_id)
-              : undefined
-          : undefined;
-      await postComment(c.env, c.env.TOKENS, workspaceId, creds, trigger.entity_type, Number(trigger.entity_id), `💬 *${randomQuote()}*`, parentCommentId);
-    } else {
-      console.log(`Ignoring unknown trigger type=${(trigger as { type: string }).type} for workspace ${workspaceId}`);
-    }
+    const { trigger } = payload;
+    if (!['assigned', 'comment-reply', 'mentioned'].includes(trigger?.type) ||
+        !['story', 'epic'].includes(trigger?.entity_type)) return c.json({ ok: true, ignored: true });
+    if (typeof payload.id !== 'string' || !payload.id || typeof payload.installation_id !== 'string' || !payload.installation_id ||
+        !/^\d+$/.test(String(trigger.entity_id))) return c.json({ error: 'Invalid interaction identity' }, 400);
+    const id = c.env.QUOTE_DELIVERIES.idFromName(workspaceId);
+    return c.env.QUOTE_DELIVERIES.get(id).fetch(new Request('https://internal/deliver', { method: 'POST', body: JSON.stringify(payload) }));
   } else {
     // Observer delivery — record stats, ignore to avoid infinite loops
     console.log(`Observer delivery for workspace ${workspaceId}: ${payload.actions.length} actions`);
@@ -451,7 +525,7 @@ app.get('/stats', async (c) => {
 });
 
 app.get('/', async (c) => {
-  const keys = await c.env.TOKENS.list();
+  const keys = await c.env.TOKENS.list({ prefix: 'creds:' });
   const creds = await Promise.all(
     keys.keys.map(async (k) => {
       const raw = await c.env.TOKENS.get(k.name);
@@ -464,6 +538,7 @@ app.get('/', async (c) => {
         hasRefreshToken: !!parsed.refreshToken,
         hasMemberId: !!parsed.memberId,
         expiresAt: parsed.expiresAt ?? null,
+        scopes: parsed.scopes ?? 'unknown',
       };
     }),
   );

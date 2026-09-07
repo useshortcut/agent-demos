@@ -19,16 +19,18 @@ Run everything from inside the demo directory you're working on (`guardian/` or 
 npm install
 npm run dev          # wrangler dev --local, serves http://localhost:8787
 npm run deploy       # wrangler deploy
-npx tsc --noEmit     # type check (strict mode; no lint or test setup exists)
+npm test             # regression tests with mock Shortcut responses
+npx tsc --noEmit     # strict type check
 ```
 
 Local dev needs `.dev.vars` (copy from `.dev.vars.example`). `DEV=true` downgrades webhook signature failures to warnings instead of 401s. `SHORTCUT_API_BASE` overrides the API host for local testing. Neither should be set in production.
 
 Deployment also requires a KV namespace (`npx wrangler kv namespace create TOKENS`, ids go in `wrangler.toml`) and secrets pushed via `npx wrangler secret put` (CLIENT_ID, CLIENT_SECRET, WEBHOOK_SECRET, REDIRECT_URI). See each demo's README for the full sequence.
+Quote Agent additionally declares a SQLite Durable Object for serialized interaction delivery receipts; deploy its updated Wrangler configuration along with its code. Existing OAuth credentials remain in `TOKENS`.
 
 ## Architecture
 
-Both demos are single-file Cloudflare Workers (`src/index.ts`) using Hono, and share the same skeleton:
+Both demos are Cloudflare Workers with Hono entrypoints (`src/index.ts`), and share the same OAuth/KV skeleton:
 
 - **Endpoints**: `GET /oauth/callback` (token exchange), `POST /webhook` (delivery receiver), `GET /` (health + stored-credential summary).
 - **Storage**: one KV namespace bound as `TOKENS`. Credentials are stored per workspace at `creds:{workspace_id}` as `{token, slug, refreshToken, expiresAt, memberId}`. `memberId` is the agent's own `permission_id` from the OAuth token response.
@@ -44,3 +46,6 @@ Both demos are single-file Cloudflare Workers (`src/index.ts`) using Hono, and s
 - **`fields` query params are load-bearing.** Every v4 endpoint takes `fields`; unrequested fields are never calculated, and unknown field names are a 400 (not ignored). In guardian, each `*_FIELDS` constant sits directly above the TypeScript type it fills — change one, change the other. Writes request `fields=id` only.
 - **Guardian's ordering: comment before revert.** If the comment fails, the revert is skipped — an unexplained revert would repeat on every subsequent update because there'd be no comment to find. The webhook handler returns immediately; all API work runs via `c.executionCtx.waitUntil`.
 - **Don't cache failure.** Guardian caches started-state ids in KV for an hour, but never caches an empty lookup result — that would silently disable the agent.
+- **Don't use partial lists.** Cursor traversal must fail closed on HTTP failures, malformed envelopes, unsafe continuation URLs, or loops; an incomplete comment scan must never mean "not already posted."
+- **Quote Agent deduplicates interactions, not stories.** Repeated delivery of the same interaction must not post twice; a genuinely new mention, assignment, or reply should still get a quote. Serialize receipt checks and writes and use the remote comment marker to recover interrupted posts.
+- **Safe diagnostics.** Bound outgoing request durations, report API method/path/status, and redact credentials, OAuth code/state, cursor values, and request content. Persist granted OAuth scopes without treating an older credential record's missing scope as a known grant.
