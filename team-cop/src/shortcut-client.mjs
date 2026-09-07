@@ -48,6 +48,37 @@ function isExpiringSoon(credentials) {
   return new Date(credentials.expiresAt).getTime() < Date.now() + 5 * 60 * 1_000;
 }
 
+function safeApiErrorDetails(body, sensitiveValues) {
+  if (!body || typeof body !== "object") return {};
+  const redactions = [...new Set(sensitiveValues.filter((value) => typeof value === "string" && value)
+    .flatMap((value) => [value, encodeURIComponent(value), JSON.stringify(value).slice(1, -1)]))]
+    .sort((left, right) => right.length - left.length);
+  const details = {};
+  // API errors can reflect the request. Do not dump arbitrary response fields.
+  for (const key of ["tag", "error", "message"]) {
+    if (typeof body[key] !== "string") continue;
+    let value = body[key];
+    for (const secret of redactions) value = value.split(secret).join("[redacted]");
+    details[key] = value.replace(/Bearer\s+\S+/gi, "[redacted]")
+      .replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 500);
+  }
+  return details;
+}
+
+function requestBodyStrings(body) {
+  if (typeof body !== "string") return [];
+  try {
+    const strings = [];
+    JSON.parse(body, (_key, value) => {
+      if (typeof value === "string") strings.push(value);
+      return value;
+    });
+    return [body, ...strings];
+  } catch {
+    return [body];
+  }
+}
+
 async function responseBody(response) {
   const text = await response.text();
   if (!text) return null;
@@ -147,13 +178,16 @@ export class ShortcutClient {
   }
 
   async #authorizedRequest(workspaceId, credentials, path, options = {}) {
+    const sensitiveValues = [this.clientSecret, credentials.accessToken, credentials.refreshToken,
+      ...requestBodyStrings(options.body)];
     let activeCredentials = credentials;
     if (isExpiringSoon(activeCredentials)) {
       activeCredentials = await this.#refresh(workspaceId, activeCredentials);
     }
 
-    const request = (token) =>
-      this.fetch(`${this.apiBase}/api/v4/${encodeURIComponent(activeCredentials.slug)}${path}`, {
+    const request = (token) => {
+      sensitiveValues.push(token, activeCredentials.refreshToken);
+      return this.fetch(`${this.apiBase}/api/v4/${encodeURIComponent(activeCredentials.slug)}${path}`, {
         signal: AbortSignal.timeout(15_000),
         ...options,
         headers: {
@@ -162,6 +196,7 @@ export class ShortcutClient {
           ...options.headers,
         },
       });
+    };
 
     let response = await request(activeCredentials.accessToken);
     if (response.status === 401) {
@@ -171,6 +206,14 @@ export class ShortcutClient {
 
     const body = await responseBody(response);
     if (!response.ok) {
+      const url = new URL(`${this.apiBase}/api/v4/${encodeURIComponent(activeCredentials.slug)}${path}`);
+      sensitiveValues.push(...url.searchParams.getAll("cursor"));
+      this.logger.error?.("Shortcut API request rejected", {
+        ...safeApiErrorDetails(body, sensitiveValues),
+        method: options.method ?? "GET",
+        path: url.pathname,
+        status: response.status,
+      });
       throw new ShortcutApiError(`Shortcut API request failed with HTTP ${response.status}`, {
         body,
         status: response.status,
@@ -195,16 +238,45 @@ export class ShortcutClient {
     // Recover after a crash between posting and storing our local action receipt.
     // Match this event's external_id, so later starts still get their own reminder.
     if (this.checkExistingComments && comment.external_id) {
+      const commentsPath = `/stories/${storyId}/comments`;
+      const endpoint = new URL(`${this.apiBase}/api/v4/${encodeURIComponent(credentials.slug)}${commentsPath}`);
+      let path = `${commentsPath}?fields=id,external_id,author&limit=100`;
+      const cursors = new Set();
       for (let page = 1; ; page += 1) {
-        const result = await this.#authorizedRequest(workspaceId, credentials,
-          `/stories/${storyId}/comments?fields=id,external_id,author&limit=100&page=${page}`);
-        if (!Array.isArray(result?.entities) || !Number.isInteger(result.total_pages)) {
-          throw new Error("Invalid comment list response; cannot check prior reminder");
+        const result = await this.#authorizedRequest(workspaceId, credentials, path);
+        const currentPage = result?.current_page ?? page;
+        if (!Array.isArray(result?.entities) || !Number.isInteger(result.total_pages) || result.total_pages < 0 ||
+            !Number.isInteger(currentPage) || currentPage < 1) {
+          throw new Error("Invalid comment pagination response; cannot check prior reminder");
         }
         const existing = result.entities.find((item) =>
           item.external_id === comment.external_id && item.author?.id === credentials.memberId);
         if (existing) return existing;
-        if (page >= result.total_pages) break;
+        if (result.next_page_url == null) {
+          if (currentPage < result.total_pages) {
+            throw new Error("Incomplete comment pagination: missing next-page URL");
+          }
+          break;
+        }
+        let next;
+        try {
+          if (typeof result.next_page_url !== "string") throw new Error();
+          next = new URL(result.next_page_url, endpoint);
+        } catch {
+          throw new Error("Invalid comment pagination next-page URL");
+        }
+        // Never send our bearer token to a server or resource supplied by a response.
+        if (next.origin !== endpoint.origin || next.pathname !== endpoint.pathname ||
+            next.username || next.password || next.hash ||
+            [...next.searchParams.keys()].some((key) => key !== "cursor" && key !== "fields") ||
+            next.searchParams.getAll("cursor").length !== 1) {
+          throw new Error("Unsafe comment pagination next-page URL");
+        }
+        const cursor = next.searchParams.get("cursor");
+        if (!cursor || cursors.has(cursor)) throw new Error("Invalid or repeated comment pagination cursor");
+        cursors.add(cursor);
+        // Cursor requests cannot also send limit/page. Keep the fields needed for deduplication.
+        path = `${commentsPath}?cursor=${encodeURIComponent(cursor)}&fields=id,external_id,author`;
       }
     }
     return this.#authorizedRequest(workspaceId, credentials, `/stories/${storyId}/comments?fields=id`, {

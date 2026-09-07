@@ -121,7 +121,10 @@ it("finds a previously posted reminder on later pages after interrupted processi
   t.mock.method(globalThis, "fetch", async (url, options) => {
     assert.notEqual(options.method, "POST");
     pages.push(url);
-    return Response.json({ total_pages: 2, entities: pages.length === 1 ? [] : [
+    assert.equal(new URL(url).searchParams.has("page"), false);
+    return Response.json({ current_page: pages.length, total_pages: 2,
+      ...(pages.length === 1 ? { next_page_url: "https://api.app.shortcut.com/api/v4/acme/stories/123/comments?cursor=page-two&fields=id,external_id,author" } : {}),
+      entities: pages.length === 1 ? [] : [
       { id: 5, external_id: "reminder", author: { id: "cop" } },
     ] });
   });
