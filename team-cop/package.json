@@ -1,0 +1,19 @@
+{
+  "name": "team-cop-agent",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --env-file=.env src/server.mjs",
+    "dev": "wrangler dev --local",
+    "deploy": "wrangler deploy",
+    "deploy:check": "wrangler deploy --dry-run",
+    "tail": "wrangler tail",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "wrangler": "^4.115.0"
+  }
+}

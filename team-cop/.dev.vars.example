@@ -1,0 +1,6 @@
+CLIENT_ID=your-team-cop-client-id
+CLIENT_SECRET=your-team-cop-client-secret
+WEBHOOK_SECRET=your-team-cop-webhook-signing-secret
+REDIRECT_URI=https://your-tunnel.example/oauth/callback
+# Optional for staging; omit for production Shortcut.
+# SHORTCUT_API_BASE=https://api.app.shortcut-staging.com
