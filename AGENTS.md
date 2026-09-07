@@ -34,7 +34,7 @@ Both demos are single-file Cloudflare Workers (`src/index.ts`) using Hono, and s
 - **Storage**: one KV namespace bound as `TOKENS`. Credentials are stored per workspace at `creds:{workspace_id}` as `{token, slug, refreshToken, expiresAt, memberId}`. `memberId` is the agent's own `permission_id` from the OAuth token response.
 - **Auth**: OAuth authorization-code flow against `/oauth-authorization-code-flow/token`. Tokens are refreshed proactively when within 5 minutes of expiry and reactively on a 401 (see `apiFetch` in guardian).
 - **Webhook verification**: HMAC-SHA256 over the raw request body, hex digest in the `Payload-Signature` header. Always verify before parsing/acting.
-- **API base**: `https://api.app.shortcut.com/api/v4/{workspace_slug}/...`. List endpoints are page-based envelopes (`entities`, `current_page`, `total_pages`), default 10 per page.
+- **API base**: `https://api.app.shortcut.com/api/v4/{workspace_slug}/...`. List responses include `entities`, `current_page`, and `total_pages`, but requests use cursor pagination, not a `page` parameter. Follow `next_page_url`; cursor requests may include only `cursor` and optional `fields` (no `limit`). The default page size is 10.
 
 ### Invariants that matter when editing
 

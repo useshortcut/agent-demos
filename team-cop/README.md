@@ -114,11 +114,20 @@ were preserved when this demo moved out of the monorepo scratch directory.
 - Ignores its own writes and persists processed action/delivery receipts. Before
   posting, the Worker scans comments for its own matching `external_id` to recover
   from a crash between the POST and receipt write.
+  The scan follows v4's `next_page_url` cursor links, restricted to the same API
+  origin and Story comments endpoint. Incomplete or looping pagination fails
+  without posting a potentially duplicate reminder.
 - Allows one initial attempt plus **five retries**. Interrupted processing also
   consumes an attempt. Exhausted jobs remain in SQLite without further alarms
   for that job; redelivery does not reset the cap.
 - Persists OAuth scopes and refreshes expiring tokens. Logs retain actor details
   on the Team-present skip message and safe OAuth diagnostics.
+
+For API failures, look for `Shortcut API request rejected` before the delivery's
+retry log. It identifies the HTTP method, endpoint pathname, status, and sanitized
+error details without logging authorization headers, query strings, or request
+bodies. Exhausted deliveries remain failed after deployment; test a fix with a
+new Story event rather than expecting the old delivery to restart automatically.
 
 This is a reference demo for modest workspace traffic: one coordinator, paginated
 comment checks, and retained receipts/exhausted payloads without automatic cleanup.
