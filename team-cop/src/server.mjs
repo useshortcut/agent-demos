@@ -65,6 +65,7 @@ const config = {
 const state = await StateStore.open(config.statePath);
 const shortcutClient = new ShortcutClient({
   apiBase: config.apiBase,
+  checkExistingComments: true,
   clientId: config.clientId,
   clientSecret: config.clientSecret,
   logger: console,

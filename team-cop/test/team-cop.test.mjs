@@ -71,6 +71,8 @@ function harness({ story = { id: 123, team: null }, member = { mention_name: "ku
   };
 
   return {
+    client,
+    state,
     calls,
     logs,
     processed,
@@ -125,6 +127,49 @@ describe("buildReminder", () => {
 });
 
 describe("Team Cop processor", () => {
+  it("does not suppress the same Story ID in another workspace", async () => {
+    const h = harness();
+    h.state.getWorkspace = async () => credentials;
+    await h.process(observerPayload({ action: "create", entity_type: "story", id: 123 }));
+    await h.process({ ...observerPayload({ action: "create", entity_type: "story", id: 123 }),
+      id: "other-delivery", workspace2: { id: "workspace-2", url_slug: "other" } });
+    const posts = h.calls.filter(([name]) => name === "postStoryComment");
+    assert.equal(posts.length, 2);
+    assert.notEqual(posts[0][4].external_id, posts[1][4].external_id);
+  });
+
+  it("does not record a Story reminder when posting fails", async () => {
+    const h = harness();
+    const post = h.client.postStoryComment;
+    h.client.postStoryComment = async () => { throw new Error("Temporary failure"); };
+    await assert.rejects(h.process(observerPayload({ action: "create", entity_type: "story", id: 123 })), /Temporary failure/);
+    h.client.postStoryComment = post;
+    await h.process({ ...observerPayload({ action: "update", entity_type: "story", id: 123,
+      changes: [{ attribute: "started", adds: [true], removes: [false] }] }), id: "new-delivery" });
+    assert.equal(h.calls.filter(([name]) => name === "postStoryComment").length, 1);
+  });
+
+  it("uses a stable Story reminder ID across deliveries, actors and installations", async () => {
+    const first = harness();
+    const second = harness();
+    await first.process(observerPayload({ action: "create", entity_type: "story", id: 123 }));
+    await second.process({ ...observerPayload({ action: "update", entity_type: "story", id: 123,
+      changes: [{ attribute: "started", adds: [true], removes: [false] }] },
+    { member_id: "another-member" }), id: "different-delivery", installation_id: "new-installation" });
+    assert.equal(first.calls.find(([name]) => name === "postStoryComment")[4].external_id,
+      second.calls.find(([name]) => name === "postStoryComment")[4].external_id);
+  });
+
+  it("does not count a Team-present skip as having sent a reminder", async () => {
+    const story = { id: 123, team: { id: "team" } };
+    const { calls, process } = harness({ story });
+    await process(observerPayload({ action: "create", entity_type: "story", id: 123 }));
+    story.team = null;
+    await process({ ...observerPayload({ action: "update", entity_type: "story", id: 123,
+      changes: [{ attribute: "started", adds: [true], removes: [false] }] }), id: "delivery-2" });
+    assert.equal(calls.filter(([name]) => name === "postStoryComment").length, 1);
+  });
+
   it("comments to the creator when a Story is created without a Team", async () => {
     const { calls, process } = harness();
 

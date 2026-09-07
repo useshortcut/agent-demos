@@ -235,9 +235,12 @@ export class ShortcutClient {
   }
 
   async postStoryComment(workspaceId, credentials, storyId, comment) {
-    // Recover after a crash between posting and storing our local action receipt.
-    // Match this event's external_id, so later starts still get their own reminder.
-    if (this.checkExistingComments && comment.external_id) {
+    // The Story's current comments are authoritative, not an event-scoped ID or
+    // a cached reminder flag. Any comment by this agent suppresses another one.
+    if (this.checkExistingComments) {
+      if (typeof credentials.memberId !== "string" || !credentials.memberId.trim()) {
+        throw new Error("Missing Team Cop member ID; cannot check prior comments");
+      }
       const commentsPath = `/stories/${storyId}/comments`;
       const endpoint = new URL(`${this.apiBase}/api/v4/${encodeURIComponent(credentials.slug)}${commentsPath}`);
       let path = `${commentsPath}?fields=id,external_id,author&limit=100`;
@@ -250,8 +253,8 @@ export class ShortcutClient {
           throw new Error("Invalid comment pagination response; cannot check prior reminder");
         }
         const existing = result.entities.find((item) =>
-          item.external_id === comment.external_id && item.author?.id === credentials.memberId);
-        if (existing) return existing;
+          item.id != null && item.author?.id === credentials.memberId);
+        if (existing) return { ...existing, alreadyCommented: true };
         if (result.next_page_url == null) {
           if (currentPage < result.total_pages) {
             throw new Error("Incomplete comment pagination: missing next-page URL");
