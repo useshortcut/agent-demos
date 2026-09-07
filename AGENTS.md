@@ -9,6 +9,7 @@ Reference implementations for Shortcut Custom Agents — web services that recei
 - `guardian/` — observer-only agent: blocks stories from being started without a team (comments at the mover, reverts the state).
 - `quote-agent/` — interaction-triggered agent: posts a random quote when assigned, @-mentioned, or replied to. Shows the full lifecycle including threaded replies.
 - `docs/custom-agents.md` — the platform reference: payload shapes (observer vs. interaction envelopes), trigger semantics, review lifecycle. Read this before touching webhook-handling code.
+- `team-cop/` — observer agent that comments when stories are created or started without a Team. Uses a SQLite Durable Object for credentials, receipts, and capped alarm retries. Run `npm test`, `npm run dev`, and `npm run deploy:check` from its directory. Its JavaScript modules also support `npm start` for the original Node listener; the Hono/KV conventions below apply to the other two demos.
 
 ## Commands
 

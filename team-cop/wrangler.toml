@@ -1,0 +1,25 @@
+name = "shortcut-team-cop-agent"
+main = "src/worker.mjs"
+compatibility_date = "2026-09-07"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# Created automatically on the first deploy; no namespace IDs to paste.
+[[durable_objects.bindings]]
+name = "TEAM_COP"
+class_name = "TeamCop"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TeamCop"]
+
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+# OAuth callback query strings contain authorization codes.
+invocation_logs = false
+
+# Set CLIENT_ID, CLIENT_SECRET, WEBHOOK_SECRET and REDIRECT_URI with
+# `npx wrangler secret put NAME`. Production Shortcut is the default API.
