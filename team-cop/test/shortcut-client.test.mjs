@@ -11,6 +11,59 @@ function jsonResponse(body, status = 200) {
 }
 
 describe("ShortcutClient", () => {
+  for (const operation of ["authorization code exchange", "token refresh", "authorized API request"]) {
+    it(`preserves the global fetch receiver during ${operation}`, async (t) => {
+      const calls = [];
+      t.mock.method(globalThis, "fetch", async function (url, options) {
+        // Workers' native fetch rejects calls with a different receiver; Node's does not.
+        if (this !== globalThis) {
+          throw new TypeError("Illegal invocation: function called with incorrect `this` reference");
+        }
+        calls.push([url, options]);
+        if (url.endsWith("/token")) {
+          return jsonResponse({
+            access_token: "new-access-token",
+            access_token_expires_at: "2099-01-01T00:00:00Z",
+            refresh_token: "new-refresh-token",
+            permission_id: "agent-member",
+            scope: "read comment-write",
+            workspace2_id: "workspace-1",
+            workspace2_slug: "acme",
+          });
+        }
+        return jsonResponse({ entity: { id: 123 } });
+      });
+      const client = new ShortcutClient({
+        apiBase: "https://api.example.com",
+        clientId: "client-id",
+        clientSecret: "client-secret",
+        redirectUri: "https://agent.example.com/oauth/callback",
+        logger: {},
+        state: { async setWorkspace() {} },
+        // Deliberately omit fetchImpl to exercise the production default.
+      });
+      const credentials = {
+        accessToken: "access-token",
+        refreshToken: "refresh-token",
+        slug: "acme",
+        expiresAt: operation === "token refresh" ? "2000-01-01T00:00:00Z" : "2099-01-01T00:00:00Z",
+      };
+
+      if (operation === "authorization code exchange") {
+        const result = await client.exchangeAuthorizationCode("authorization-code");
+        assert.equal(result.workspaceId, "workspace-1");
+        assert.equal(calls[0][1].body.get("grant_type"), "authorization_code");
+      } else {
+        assert.deepEqual(await client.getStory("workspace-1", credentials, 123), { id: 123 });
+        if (operation === "token refresh") {
+          assert.equal(calls[0][1].body.get("grant_type"), "refresh_token");
+          assert.equal(calls[1][1].headers.authorization, "Bearer new-access-token");
+        }
+      }
+      assert.equal(calls.length, operation === "token refresh" ? 2 : 1);
+    });
+  }
+
   it("logs safe OAuth diagnostics when the token endpoint rejects the client", async () => {
     const logs = [];
     const client = new ShortcutClient({
