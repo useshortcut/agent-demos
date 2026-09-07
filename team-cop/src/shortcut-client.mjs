@@ -60,7 +60,7 @@ async function responseBody(response) {
 }
 
 export class ShortcutClient {
-  constructor({ apiBase, clientId, clientSecret, fetchImpl = fetch, logger = console, redirectUri, state, checkExistingComments = false }) {
+  constructor({ apiBase, clientId, clientSecret, fetchImpl = globalThis.fetch.bind(globalThis), logger = console, redirectUri, state, checkExistingComments = false }) {
     this.apiBase = apiBase.replace(/\/$/, "");
     this.clientId = clientId;
     this.clientSecret = clientSecret;
