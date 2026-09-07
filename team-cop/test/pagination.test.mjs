@@ -7,6 +7,72 @@ const path = "/api/v4/acme/stories/123/comments";
 const credentials = { accessToken: "secret-access", refreshToken: "secret-refresh", memberId: "cop", slug: "acme" };
 const comment = { text: "private reminder text", external_id: "reminder" };
 const existing = { id: 5, external_id: "reminder", author: { id: "cop" } };
+
+it("recognizes a previous event-scoped Team Cop reminder on a later page", async () => {
+  const legacy = { id: 9, external_id: `team-cop:${"a".repeat(32)}`, author: { id: "cop" } };
+  let requests = 0;
+  const c = client(async (url, options) => {
+    assert.notEqual(options.method, "POST");
+    requests += 1;
+    return Response.json(new URL(url).searchParams.has("cursor")
+      ? { current_page: 2, total_pages: 2, entities: [legacy] }
+      : { current_page: 1, total_pages: 2, entities: [], next_page_url: `${base}${path}?cursor=next` });
+  });
+  const result = await c.postStoryComment("workspace", credentials, 123,
+    { ...comment, external_id: `team-cop:${"b".repeat(32)}` });
+  assert.equal(result.id, 9);
+  assert.equal(requests, 2);
+});
+
+it("does not treat another author's comment as a Team Cop comment", async () => {
+  let posts = 0;
+  const c = client(async (url, options) => {
+    if (options.method === "POST") {
+      posts += 1;
+      return Response.json({ entity: { id: 10 } });
+    }
+    return Response.json({ current_page: 1, total_pages: 1, entities: [
+      { id: 8, external_id: `team-cop:${"a".repeat(32)}`, author: { id: "other" } },
+    ] });
+  });
+  assert.equal((await c.postStoryComment("workspace", credentials, 123,
+    { ...comment, external_id: `team-cop:${"b".repeat(32)}` })).id, 10);
+  assert.equal(posts, 1);
+});
+
+it("recognizes any existing Team Cop comment even without an external ID", async () => {
+  const c = client(async (url, options) => {
+    assert.notEqual(options.method, "POST");
+    return Response.json({ current_page: 1, total_pages: 1, entities: [
+      { id: 9, author: { id: "cop" } },
+    ] });
+  });
+  const result = await c.postStoryComment("workspace", credentials, 123, { text: "new reminder" });
+  assert.equal(result.id, 9);
+  assert.equal(result.alreadyCommented, true);
+});
+
+it("fails closed when the agent member ID is missing", async () => {
+  const c = client(async () => { assert.fail("Must not send requests without the agent identity"); });
+  await assert.rejects(c.postStoryComment("workspace", { ...credentials, memberId: "" }, 123, comment), /member|identity/i);
+});
+
+it("does not count deleted-comment tombstones as existing comments", async () => {
+  let posts = 0;
+  const c = client(async (url, options) => {
+    if (options.method === "POST") {
+      posts += 1;
+      return Response.json({ entity: { id: 10 } });
+    }
+    // The v4 mapper returns a null id for deleted comments, retaining their author.
+    return Response.json({ current_page: 1, total_pages: 1, entities: [
+      { id: null, external_id: "old-reminder", author: { id: "cop" } },
+    ] });
+  });
+  assert.equal((await c.postStoryComment("workspace", credentials, 123, comment)).id, 10);
+  assert.equal(posts, 1);
+});
+
 function client(fetchImpl, logger = {}) {
   return new ShortcutClient({ apiBase: base, clientId: "client", clientSecret: "secret-client", redirectUri: "https://agent.example/callback",
     state: { async setWorkspace() {} }, checkExistingComments: true, fetchImpl, logger });

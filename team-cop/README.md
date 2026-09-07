@@ -4,7 +4,11 @@ A Shortcut observer agent that comments when a Story is **created or started wit
 
 > @name Stories need to be in a Team! Please add one!
 
-It addresses the webhook actor (the creator or person who started the Story).
+It addresses the webhook actor (the creator or person who started the Story),
+but only if Team Cop has not already commented on that Story. Before posting,
+it reads the Story's existing comments and checks their author against Team Cop's
+member ID. Any existing Team Cop comment counts, including comments from older
+versions with a different or missing `external_id`.
 It re-reads the Story before commenting, and logs the actor, Story, Team, and
 delivery IDs when a Team is already present. It never changes the workflow state.
 
@@ -111,12 +115,18 @@ were preserved when this demo moved out of the monorepo scratch directory.
 - Processes Story creates and updates where `started` adds `true`. When the diff
   is unavailable, Team Cop cannot identify the transition and skips that update.
 - Fetches only `team` from the Story and `mention_name` from the actor's Member.
-- Ignores its own writes and persists processed action/delivery receipts. Before
-  posting, the Worker scans comments for its own matching `external_id` to recover
-  from a crash between the POST and receipt write.
+- Ignores its own writes and persists processed action/delivery receipts. For each
+  new qualifying event, both Worker and Node modes scan the Story's comments for
+  any comment authored by Team Cop before posting. The comment history is the
+  check; there is no permanent "already reminded" Story flag. Creating, starting,
+  or restarting a Story does not add another reminder while its Team Cop comment
+  exists. If all Team Cop comments are deleted, a later qualifying event can post
+  again. New comments use a workspace-and-Story-scoped `external_id`.
   The scan follows v4's `next_page_url` cursor links, restricted to the same API
   origin and Story comments endpoint. Incomplete or looping pagination fails
-  without posting a potentially duplicate reminder.
+  without posting a potentially duplicate reminder. Skips log
+  `Story already has a Team Cop comment; no reminder needed` instead of claiming
+  a new reminder was posted. Existing duplicate comments are not removed.
 - Allows one initial attempt plus **five retries**. Interrupted processing also
   consumes an attempt. Exhausted jobs remain in SQLite without further alarms
   for that job; redelivery does not reset the cap.

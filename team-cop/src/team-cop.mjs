@@ -106,11 +106,21 @@ export function createTeamCopProcessor({ client, logger = console, state }) {
         continue;
       }
 
-      await client.postStoryComment(workspaceId, credentials, action.id, {
-        external_id: externalId(key),
+      const comment = await client.postStoryComment(workspaceId, credentials, action.id, {
+        external_id: externalId(`story-reminder:${workspaceId}:${action.id}`),
         text: buildReminder(mentionName),
       });
       await state.markProcessed(key);
+      if (comment?.alreadyCommented) {
+        logger.info("Story already has a Team Cop comment; no reminder needed", {
+          actor: mentionName,
+          deliveryId: payload.id,
+          reason,
+          storyId: action.id,
+          workspaceId,
+        });
+        continue;
+      }
       logger.info("Posted Team reminder", {
         actor: mentionName,
         reason,
