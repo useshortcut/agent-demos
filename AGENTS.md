@@ -27,6 +27,7 @@ Local dev needs `.dev.vars` (copy from `.dev.vars.example`). Webhook signatures 
 
 Deployment also requires a KV namespace (`npx wrangler kv namespace create TOKENS`, ids go in `wrangler.toml`) and secrets pushed via `npx wrangler secret put` (CLIENT_ID, CLIENT_SECRET, WEBHOOK_SECRET, REDIRECT_URI). See each demo's README for the full sequence.
 Quote Agent additionally declares a SQLite Durable Object for serialized interaction delivery receipts; deploy its updated Wrangler configuration along with its code. Existing OAuth credentials remain in `TOKENS`.
+Guardian also declares a SQLite Durable Object per workspace/Story for warning/revert progress and bounded recovery alarms. Deploy its `GUARDIAN_STORIES` binding and `v1` migration with the code; OAuth credentials stay in `TOKENS`.
 
 ## Architecture
 
@@ -44,7 +45,7 @@ Both demos are Cloudflare Workers with Hono entrypoints (`src/index.ts`), and sh
 - **`uri` on actions is deprecated.** Read `app_url`; `uri` is frozen and not present for newer entity types.
 - **Agents see their own writes.** Every write comes back as a fresh observer delivery. Two defenses, both required: drop deliveries where `actor.member_id` equals the stored `memberId`, and check for the durable effect of a past run (guardian scans for its own warning comment via `WARNING_MARKER`) so retries/restarts can't double-write.
 - **`fields` query params are load-bearing.** Every v4 endpoint takes `fields`; unrequested fields are never calculated, and unknown field names are a 400 (not ignored). In guardian, each `*_FIELDS` constant sits directly above the TypeScript type it fills — change one, change the other. Writes request `fields=id` only.
-- **Guardian's ordering: comment before revert.** If the comment fails, the revert is skipped — an unexplained revert would repeat on every subsequent update because there'd be no comment to find. The webhook handler returns immediately; all API work runs via `c.executionCtx.waitUntil`.
+- **Guardian's ordering: comment before revert.** If the comment fails, the revert is skipped. The per-Story coordinator persists the operation and alarm before posting, then records confirmed warning versus completed revert. Alarms retry only that operation (initial attempt plus five retries, within five minutes), re-reading the current Story immediately before each PATCH. Ordinary old warnings never authorize recovery. Webhooks await the coordinator so recovery is durable before acknowledgment; no `waitUntil`-only recovery.
 - **Don't cache failure.** Guardian caches started-state ids in KV for an hour, but never caches an empty lookup result — that would silently disable the agent.
 - **Don't use partial lists.** Cursor traversal must fail closed on HTTP failures, malformed envelopes, unsafe continuation URLs, or loops; an incomplete comment scan must never mean "not already posted."
 - **Quote Agent deduplicates interactions, not stories.** Repeated delivery of the same interaction must not post twice; a genuinely new mention, assignment, or reply should still get a quote. Serialize receipt checks and writes and use the remote comment marker to recover interrupted posts.

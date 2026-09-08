@@ -22,7 +22,7 @@ Guardian subscribes to **observer** deliveries for the `story` entity type. On e
 6. Resolves the actor's `mention_name` and posts the warning comment.
 7. Takes the state the story came from out of `changes`, and moves it back.
 
-Steps 3–7 all run off the request path via `waitUntil`, so the webhook returns immediately.
+Steps 3–7 run in a Durable Object keyed by workspace and Story, serializing duplicate deliveries. The webhook waits for the coordinator to finish its first attempt; any incomplete warning/revert has durable recovery progress and an alarm before the webhook acknowledges success.
 
 ### Reading the diff
 
@@ -86,10 +86,20 @@ Guardian's own comment and its own revert both come back as fresh observer deliv
 
 The comment is posted *before* the revert. If commenting fails, the revert is skipped — an unexplained revert would look like the story moving on its own, and with no comment to find, it would repeat on every subsequent update.
 
+### Recovering a failed revert
+
+Posting a warning and changing a Story are separate API calls. Guardian persists the original delivery, expected current/previous workflow states, and a unique comment `external_id` before posting. A confirmed warning is recorded separately from a completed revert. If the PATCH fails or its response is lost, a Durable Object alarm resumes that operation without posting another warning or waiting for another webhook.
+
+Recovery is bounded to the initial attempt plus five retries (2, 4, 8, 16, and 32 seconds of backoff), with a five-minute deadline. Each retry re-reads the Story immediately before its PATCH; a Team or a different workflow state cancels the old operation. A different observed move/team-edit delivery also cancels it, even if the state now happens to match again. An ordinary pre-existing warning is never permission to revert a later unrelated move. Completed, superseded, or exhausted operations cancel their alarm and retain one last-operation record per Story, so that delivery cannot restart them while it remains the last operation.
+
+If the POST response is ambiguous, Guardian only proceeds after finding its own non-deleted comment with that operation's exact `external_id`. It never retries the POST: a crash just before posting can therefore leave a Story unguarded, rather than risk duplicate comments. Once a warning was confirmed, deleting it during recovery does not trigger another comment. After the operation finishes, a new delivery can rearm the rule if the warning has been deleted.
+
+The final Story read and PATCH are not an atomic compare-and-set: a user can still edit between them. Recovery cannot detect intermediate moves away and back to the same state if their deliveries have not arrived. Its short window and operation-specific progress bound this risk; logs report `reverted`, `superseded`, `exhausted`, or `warned-only` outcomes. OAuth credentials remain in the original KV namespace.
+
 ### Known gaps
 
-- **Concurrent duplicate deliveries can race the comment check.** Guardian's KV-based, background-processing demo does not serialize deliveries or provide a durable retry queue. A failed lookup leaves the story unchanged and is logged, but the already-acknowledged webhook is not automatically retried.
-- **Stories created directly into a started state** are warned but not moved, because there is no previous state to return to. Handling this would mean picking a destination (the workflow's default state, say) rather than restoring one. (Create actions carry no `changes` either way — the diff is on updates only.)
+- **Lookups before an operation is prepared are not durably queued.** Failed Story/state/comment lookups stop processing and are logged; some return a failed webhook response, while an unavailable Story returns success without acting. Durable alarms cover prepared warning/revert operations, not every observer delivery.
+- **Story create actions are ignored**, including stories created directly into a started state: Guardian only processes qualifying update actions. A later qualifying update can trigger a warning; if no trustworthy previous state can be found then, Guardian warns without moving the story. Enforcing the rule at creation would require handling create actions and choosing a destination state rather than restoring one.
 - **Deleting the warning comment re-arms the rule.** The comment *is* the record. A KV flag keyed by story id would survive deletion, at the cost of the state being invisible to anyone reading the story.
 - **A rename of the marker sentence orphans old warnings**, since matching is on visible text. That's the trade for not putting hidden markup in people's comments.
 
@@ -116,6 +126,8 @@ npx wrangler kv namespace create TOKENS --preview
 Each command prints an id — copy them into `wrangler.toml` as the `id` and `preview_id` of the existing `TOKENS` binding.
 
 ### 3. Deploy the worker
+
+Deploy the checked-in `wrangler.toml` together with the code. Its `GUARDIAN_STORIES` binding and `v1` migration create the SQLite Durable Object used for recovery automatically. Keep your existing `TOKENS` KV IDs and OAuth secrets; no token migration or reauthorization is required when upgrading.
 
 ```bash
 npx wrangler deploy
