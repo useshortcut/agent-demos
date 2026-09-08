@@ -85,7 +85,7 @@ it("an interrupted final attempt is exhausted without making a seventh call", as
 
 it("OAuth credentials and action receipts survive restart, and alarms post only one reminder", async (t) => {
   const storage = eagerStorage(t);
-  const ctx = { storage, blockConcurrencyWhile: (fn) => fn() };
+  const ctx = { storage };
   const calls = [];
   t.mock.method(globalThis, "fetch", async (url, options) => {
     calls.push([url, options]);
@@ -123,15 +123,32 @@ it("finds a previously posted reminder on later pages after interrupted processi
     pages.push(url);
     assert.equal(new URL(url).searchParams.has("page"), false);
     return Response.json({ current_page: pages.length, total_pages: 2,
-      ...(pages.length === 1 ? { next_page_url: "https://api.app.shortcut.com/api/v4/acme/stories/123/comments?cursor=page-two&fields=id,external_id,author" } : {}),
+      ...(pages.length === 1 ? { next_page_url: "https://api.app.shortcut.com/api/v4/acme/stories/123/comments?cursor=page-two&fields=id,author,deleted" } : {}),
       entities: pages.length === 1 ? [] : [
-      { id: 5, external_id: "reminder", author: { id: "cop" } },
+      { id: 5, author: { id: "cop" } },
     ] });
   });
-  const object = new TeamCop({ storage, blockConcurrencyWhile: (fn) => fn() }, env);
+  const object = new TeamCop({ storage }, env);
   await object.state.setWorkspace("workspace", { accessToken: "token", slug: "acme", memberId: "cop" });
   const result = await object.client.postStoryComment("workspace", await object.state.getWorkspace("workspace"), 123,
-    { text: "test", external_id: "reminder" });
+    { text: "test" });
   assert.equal(result.id, 5);
   assert.equal(pages.length, 2);
+});
+
+it("prunes stale completion and action receipts but keeps exhausted deliveries", async (t) => {
+  const state = new DurableState(eagerStorage(t));
+  const done = await state.enqueueDelivery(payload);
+  await state.beginAttempt(done);
+  await state.completeDelivery(done);
+  await state.markProcessed("install:delivery:story:123:created");
+  const failed = await state.enqueueDelivery({ ...payload, id: "failed" });
+  for (let i = 0; i < 6; i++) { await state.beginAttempt(failed); await state.failDelivery(failed, new Error("nope")); }
+  await state.prune(Date.now() + 8 * 24 * 60 * 60 * 1_000);
+  assert.equal(await state.hasProcessed("install:delivery:story:123:created"), false);
+  assert.equal(state.get("delivery", done), null);
+  assert.equal(await state.countFailedDeliveries(), 1);
+  // A redelivery after pruning is a fresh job rather than a silently ignored one.
+  await state.enqueueDelivery(payload);
+  assert.equal(await state.countDeliveries(), 1);
 });

@@ -5,11 +5,11 @@ import { ShortcutClient } from "../src/shortcut-client.mjs";
 const base = "https://api.example.com";
 const path = "/api/v4/acme/stories/123/comments";
 const credentials = { accessToken: "secret-access", refreshToken: "secret-refresh", memberId: "cop", slug: "acme" };
-const comment = { text: "private reminder text", external_id: "reminder" };
-const existing = { id: 5, external_id: "reminder", author: { id: "cop" } };
+const comment = { text: "private reminder text" };
+const existing = { id: 5, author: { id: "cop" } };
 
-it("recognizes a previous event-scoped Team Cop reminder on a later page", async () => {
-  const legacy = { id: 9, external_id: `team-cop:${"a".repeat(32)}`, author: { id: "cop" } };
+it("recognizes a previous Team Cop comment on a later page", async () => {
+  const legacy = { id: 9, author: { id: "cop" } };
   let requests = 0;
   const c = client(async (url, options) => {
     assert.notEqual(options.method, "POST");
@@ -18,8 +18,7 @@ it("recognizes a previous event-scoped Team Cop reminder on a later page", async
       ? { current_page: 2, total_pages: 2, entities: [legacy] }
       : { current_page: 1, total_pages: 2, entities: [], next_page_url: `${base}${path}?cursor=next` });
   });
-  const result = await c.postStoryComment("workspace", credentials, 123,
-    { ...comment, external_id: `team-cop:${"b".repeat(32)}` });
+  const result = await c.postStoryComment("workspace", credentials, 123, comment);
   assert.equal(result.id, 9);
   assert.equal(requests, 2);
 });
@@ -32,15 +31,14 @@ it("does not treat another author's comment as a Team Cop comment", async () => 
       return Response.json({ entity: { id: 10 } });
     }
     return Response.json({ current_page: 1, total_pages: 1, entities: [
-      { id: 8, external_id: `team-cop:${"a".repeat(32)}`, author: { id: "other" } },
+      { id: 8, author: { id: "other" } },
     ] });
   });
-  assert.equal((await c.postStoryComment("workspace", credentials, 123,
-    { ...comment, external_id: `team-cop:${"b".repeat(32)}` })).id, 10);
+  assert.equal((await c.postStoryComment("workspace", credentials, 123, comment)).id, 10);
   assert.equal(posts, 1);
 });
 
-it("recognizes any existing Team Cop comment even without an external ID", async () => {
+it("recognizes any existing Team Cop comment regardless of its text", async () => {
   const c = client(async (url, options) => {
     assert.notEqual(options.method, "POST");
     return Response.json({ current_page: 1, total_pages: 1, entities: [
@@ -58,30 +56,31 @@ it("fails closed when the agent member ID is missing", async () => {
 });
 
 it("does not count deleted-comment tombstones as existing comments", async () => {
-  let posts = 0;
-  const c = client(async (url, options) => {
-    if (options.method === "POST") {
-      posts += 1;
-      return Response.json({ entity: { id: 10 } });
-    }
-    // The v4 mapper returns a null id for deleted comments, retaining their author.
-    return Response.json({ current_page: 1, total_pages: 1, entities: [
-      { id: null, external_id: "old-reminder", author: { id: "cop" } },
-    ] });
-  });
-  assert.equal((await c.postStoryComment("workspace", credentials, 123, comment)).id, 10);
-  assert.equal(posts, 1);
+  // Deleted comments keep their author; `deleted` is set and the id may be null.
+  for (const tombstone of [{ id: 4, deleted: true, author: { id: "cop" } }, { id: null, author: { id: "cop" } }]) {
+    let posts = 0;
+    const c = client(async (url, options) => {
+      if (options.method === "POST") {
+        posts += 1;
+        return Response.json({ entity: { id: 10 } });
+      }
+      assert.match(new URL(url).searchParams.get("fields"), /\bdeleted\b/);
+      return Response.json({ current_page: 1, total_pages: 1, entities: [tombstone] });
+    });
+    assert.equal((await c.postStoryComment("workspace", credentials, 123, comment)).id, 10);
+    assert.equal(posts, 1);
+  }
 });
 
 function client(fetchImpl, logger = {}) {
   return new ShortcutClient({ apiBase: base, clientId: "client", clientSecret: "secret-client", redirectUri: "https://agent.example/callback",
-    state: { async setWorkspace() {} }, checkExistingComments: true, fetchImpl, logger });
+    state: { async setWorkspace() {} }, fetchImpl, logger });
 }
 
 for (const match of [true, false]) {
   it(`uses cursor pagination and ${match ? "finds an existing reminder" : "posts only after the final page"}`, async () => {
     const calls = [];
-    const next = `${base}${path}?cursor=opaque%2Bcursor%3D&fields=id,external_id,author`;
+    const next = `${base}${path}?cursor=opaque%2Bcursor%3D&fields=id,author,deleted`;
     const c = client(async (url, options) => {
       calls.push([url, options]);
       const parsed = new URL(url);
@@ -94,7 +93,7 @@ for (const match of [true, false]) {
         return Response.json({ current_page: 2, total_pages: 2, entities: match ? [existing] : [] });
       }
       assert.equal(parsed.searchParams.get("limit"), "100");
-      assert.equal(parsed.searchParams.get("fields"), "id,external_id,author");
+      assert.equal(parsed.searchParams.get("fields"), "id,author,deleted");
       return Response.json({ current_page: 1, total_pages: 2, entities: [], next_page_url: next });
     });
     assert.equal((await c.postStoryComment("workspace", credentials, 123, comment)).id, match ? 5 : 6);

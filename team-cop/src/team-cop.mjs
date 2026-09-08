@@ -1,4 +1,4 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { Buffer } from "node:buffer";
 
 export const REMINDER_TEXT = "Stories need to be in a Team! Please add one!";
@@ -32,11 +32,6 @@ function processedKey(payload, action, reason) {
     action.id,
     reason,
   ].join(":");
-}
-
-function externalId(key) {
-  const digest = createHash("sha256").update(key).digest("hex").slice(0, 32);
-  return `team-cop:${digest}`;
 }
 
 export function createTeamCopProcessor({ client, logger = console, state }) {
@@ -107,7 +102,6 @@ export function createTeamCopProcessor({ client, logger = console, state }) {
       }
 
       const comment = await client.postStoryComment(workspaceId, credentials, action.id, {
-        external_id: externalId(`story-reminder:${workspaceId}:${action.id}`),
         text: buildReminder(mentionName),
       });
       await state.markProcessed(key);

@@ -133,9 +133,7 @@ describe("Team Cop processor", () => {
     await h.process(observerPayload({ action: "create", entity_type: "story", id: 123 }));
     await h.process({ ...observerPayload({ action: "create", entity_type: "story", id: 123 }),
       id: "other-delivery", workspace2: { id: "workspace-2", url_slug: "other" } });
-    const posts = h.calls.filter(([name]) => name === "postStoryComment");
-    assert.equal(posts.length, 2);
-    assert.notEqual(posts[0][4].external_id, posts[1][4].external_id);
+    assert.equal(h.calls.filter(([name]) => name === "postStoryComment").length, 2);
   });
 
   it("does not record a Story reminder when posting fails", async () => {
@@ -147,17 +145,6 @@ describe("Team Cop processor", () => {
     await h.process({ ...observerPayload({ action: "update", entity_type: "story", id: 123,
       changes: [{ attribute: "started", adds: [true], removes: [false] }] }), id: "new-delivery" });
     assert.equal(h.calls.filter(([name]) => name === "postStoryComment").length, 1);
-  });
-
-  it("uses a stable Story reminder ID across deliveries, actors and installations", async () => {
-    const first = harness();
-    const second = harness();
-    await first.process(observerPayload({ action: "create", entity_type: "story", id: 123 }));
-    await second.process({ ...observerPayload({ action: "update", entity_type: "story", id: 123,
-      changes: [{ attribute: "started", adds: [true], removes: [false] }] },
-    { member_id: "another-member" }), id: "different-delivery", installation_id: "new-installation" });
-    assert.equal(first.calls.find(([name]) => name === "postStoryComment")[4].external_id,
-      second.calls.find(([name]) => name === "postStoryComment")[4].external_id);
   });
 
   it("does not count a Team-present skip as having sent a reminder", async () => {
@@ -176,9 +163,7 @@ describe("Team Cop processor", () => {
     await process(observerPayload({ action: "create", entity_type: "story", id: 123 }));
 
     assert.deepEqual(calls.map(([name]) => name), ["getStory", "getMember", "postStoryComment"]);
-    const comment = calls[2][4];
-    assert.equal(comment.text, "@kurt Stories need to be in a Team! Please add one!");
-    assert.match(comment.external_id, /^team-cop:[a-f0-9]{32}$/);
+    assert.deepEqual(calls[2][4], { text: "@kurt Stories need to be in a Team! Please add one!" });
   });
 
   it("comments to the starter on a started transition without a Team", async () => {
