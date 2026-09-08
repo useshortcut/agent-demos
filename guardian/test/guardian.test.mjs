@@ -6,11 +6,12 @@ import { build } from 'esbuild';
 
 const source = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
 const compiled = await build({ stdin: { contents: source + '\nexport { listAll, alreadyWarned, startedStateIds, apiJson, guardStory, refreshCredentials, resolveActorMention };', resolveDir: new URL('../src', import.meta.url).pathname, loader: 'ts' }, bundle: true, format: 'esm', platform: 'node', write: false });
-const { listAll, alreadyWarned, startedStateIds, apiJson, guardStory, refreshCredentials, resolveActorMention, default: app } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text + '\n//# sourceURL=guardian-test-bundle.mjs').toString('base64')}`);
+const { listAll, alreadyWarned, startedStateIds, apiJson, guardStory, refreshCredentials, resolveActorMention, GuardianStory, default: app } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text + '\n//# sourceURL=guardian-test-bundle.mjs').toString('base64')}`);
 function session() {
   const data = new Map();
   const kv = { async get(k) { return data.get(k) ?? null; }, async put(k, v) { data.set(k, v); }, async list({ prefix }) { return { keys: [...data.keys()].filter((name) => name.startsWith(prefix)).map((name) => ({ name })) }; } };
-  return { data, kv, workspaceId: 'workspace', env: { CLIENT_ID: 'client', CLIENT_SECRET: 'private-client', WEBHOOK_SECRET: 'signing', REDIRECT_URI: 'https://agent.example/callback', SHORTCUT_API_BASE: 'https://api.example.com', TOKENS: kv },
+  const recovery = { async get() { const value = data.get('recovery'); return value ? structuredClone(value) : undefined; }, async save(record) { data.set('recovery', structuredClone(record)); } };
+  return { data, kv, recovery, deliveryId: 'delivery', workspaceId: 'workspace', env: { CLIENT_ID: 'client', CLIENT_SECRET: 'private-client', WEBHOOK_SECRET: 'signing', REDIRECT_URI: 'https://agent.example/callback', SHORTCUT_API_BASE: 'https://api.example.com', TOKENS: kv },
     creds: { token: 'private-access', refreshToken: 'private-refresh', memberId: 'guardian', slug: 'acme', expiresAt: '2099-01-01T00:00:00Z' } };
 }
 
@@ -165,11 +166,43 @@ it('preserves once-per-story warning suppression', async (t) => {
   assert.deepEqual(writes, []);
 });
 
+it('recovers a failed revert without posting a second warning', async (t) => {
+  const s = session();
+  const comments = [];
+  let posts = 0;
+  let patches = 0;
+  t.mock.method(globalThis, 'fetch', async (raw, init) => {
+    const path = new URL(raw).pathname;
+    if (init.method === 'POST') {
+      posts++;
+      comments.push(warning);
+      return Response.json({ entity: { id: 321 } });
+    }
+    if (init.method === 'PATCH') {
+      patches++;
+      return patches === 1
+        ? Response.json({ tag: 'unavailable' }, { status: 503 })
+        : Response.json({ entity: { id: 123 } });
+    }
+    if (path.endsWith('/workflow-states')) return Response.json({ entities: [{ id: 2, type: 'started' }] });
+    if (path.endsWith('/comments')) return Response.json({ entities: comments });
+    return Response.json({ entity: { team: null, workflow_state: { id: 2 } } });
+  });
+  // A later attempt must resume the incomplete revert even though the remote
+  // comment now exists. An ordinary pre-existing warning still suppresses work.
+  await guardStory(s, action, async () => '@ada');
+  await guardStory(s, action, async () => '@ada');
+  assert.equal(posts, 1);
+  assert.equal(patches, 2, 'the successful warning must not suppress recovery of its failed revert');
+});
+
 it('ignores deleted, other-author and unrelated comments, then warns before reverting', async (t) => {
   const writes = businessFetch(t, { comments: [
     { ...warning, deleted: true }, { ...warning, author: { id: 'human' } }, { ...warning, text: 'Unrelated' },
   ] });
   await guardStory(session(), action, async () => '@ada');
+  assert.match(writes[0].body.external_id, /^guardian:/);
+  delete writes[0].body.external_id;
   assert.deepEqual(writes, [
     { method: 'POST', path: '/api/v4/acme/stories/123/comments', body: { text: warning.text } },
     { method: 'PATCH', path: '/api/v4/acme/stories/123', body: { workflow_state_id: 1 } },
@@ -313,4 +346,178 @@ it('unwraps v4 single-entity responses while retaining list envelopes', async (t
   assert.deepEqual(await apiJson(session(), 'GET', '/stories/123?fields=team,workflow_state'), { team: null, workflow_state: { id: 2 } });
   assert.deepEqual(await apiJson(session(), 'GET', '/workflow-states?fields=id'), { entities: [{ id: 2 }] });
   assert.equal(await apiJson(session(), 'GET', '/stories/123?fields=id'), null);
+});
+
+function recoveryFixture(t, { patchFailures = 1, ambiguousPost = false, commitPost = true } = {}) {
+  const s = session();
+  s.data.set('creds:workspace', JSON.stringify(s.creds));
+  const records = new Map();
+  const state = { storage: {
+    async get(key) { return structuredClone(records.get(key)); },
+    async transaction(fn) { return fn({
+      async put(key, value) { records.set(key, structuredClone(value)); },
+      async setAlarm(time) { records.set('alarm', time); },
+      async deleteAlarm() { records.delete('alarm'); },
+    }); },
+  } };
+  const remote = { story: { team: null, workflow_state: { id: 2 } }, comments: [], posts: 0, patches: 0, afterPost: null };
+  t.mock.method(globalThis, 'fetch', async (raw, init) => {
+    const path = new URL(raw).pathname;
+    if (init.method === 'POST') {
+      assert.equal(records.get('recovery').phase, 'commenting');
+      assert.equal(records.get('recovery').attempts, 1);
+      assert.ok(records.get('alarm'));
+      remote.posts++;
+      if (commitPost) remote.comments.push({ ...warning, ...JSON.parse(init.body) });
+      remote.afterPost?.();
+      if (ambiguousPost) throw new Error('simulated response lost');
+      return Response.json({ entity: { id: 321 } });
+    }
+    if (init.method === 'PATCH') {
+      assert.equal(records.get('recovery').phase, 'warned');
+      assert.ok(records.get('alarm'));
+      remote.patches++;
+      return remote.patches <= patchFailures ? Response.json({ tag: 'unavailable' }, { status: 503 })
+        : Response.json({ entity: { id: 123 } });
+    }
+    if (path.endsWith('/workflow-states')) return Response.json({ entities: [{ id: 2, type: 'started' }] });
+    if (path.endsWith('/comments')) return Response.json({ entities: remote.comments });
+    if (path.includes('/members/')) return Response.json({ entity: { mention_name: 'ada' } });
+    return Response.json({ entity: remote.story });
+  });
+  const coordinator = () => new GuardianStory(state, s.env);
+  const deliver = async (deliveryId = 'delivery') => coordinator().fetch(new Request('https://internal/guard', {
+    method: 'POST', body: JSON.stringify({ workspaceId: 'workspace', deliveryId, action, actor: { member_id: 'ada', displayable_name: 'Ada' } }),
+  }));
+  return { s, records, remote, coordinator, deliver };
+}
+
+it('recovers from a persisted alarm after coordinator recreation without another webhook', async (t) => {
+  const f = recoveryFixture(t);
+  assert.equal((await f.deliver()).status, 200);
+  assert.equal(f.records.get('recovery').phase, 'warned');
+  assert.ok(f.records.get('alarm'));
+  await f.coordinator().alarm();
+  assert.equal(f.remote.posts, 1);
+  assert.equal(f.remote.patches, 2);
+  assert.equal(f.records.get('recovery').outcome, 'reverted');
+  assert.equal(f.records.has('alarm'), false);
+  await f.coordinator().alarm();
+  await f.deliver();
+  assert.equal(f.remote.patches, 2);
+});
+
+it('caps persisted recovery at the initial attempt plus five retries', async (t) => {
+  const f = recoveryFixture(t, { patchFailures: Infinity });
+  await f.deliver();
+  for (let i = 0; i < 10; i++) await f.coordinator().alarm();
+  assert.equal(f.remote.posts, 1);
+  assert.equal(f.remote.patches, 6);
+  assert.equal(f.records.get('recovery').attempts, 6);
+  assert.equal(f.records.get('recovery').outcome, 'exhausted');
+  assert.equal(f.records.has('alarm'), false);
+  await f.deliver();
+  assert.equal(f.remote.patches, 6);
+});
+
+for (const change of ['team', 'workflow_state']) {
+  it(`abandons recovery when the Story's ${change} changed`, async (t) => {
+    const f = recoveryFixture(t);
+    await f.deliver();
+    f.remote.story[change] = { id: 999 };
+    await f.coordinator().alarm();
+    assert.equal(f.remote.posts, 1);
+    assert.equal(f.remote.patches, 1);
+    assert.equal(f.records.get('recovery').outcome, 'superseded');
+    f.remote.story = { team: null, workflow_state: { id: 2 } };
+    await f.deliver('unrelated-later-delivery');
+    assert.equal(f.remote.patches, 1, 'old warning must not authorize an unrelated revert');
+  });
+}
+
+it('rechecks immediately after posting instead of reverting an already-fixed Story', async (t) => {
+  const f = recoveryFixture(t);
+  f.remote.afterPost = () => { f.remote.story.team = { id: 999 }; };
+  await f.deliver();
+  assert.equal(f.remote.posts, 1);
+  assert.equal(f.remote.patches, 0);
+  assert.equal(f.records.get('recovery').outcome, 'superseded');
+});
+
+it('does not repost a confirmed warning deleted during recovery', async (t) => {
+  const f = recoveryFixture(t);
+  await f.deliver();
+  f.remote.comments = [];
+  await f.coordinator().alarm();
+  await f.deliver();
+  assert.equal(f.remote.posts, 1);
+  assert.equal(f.remote.patches, 2);
+  await f.deliver('new-delivery-after-warning-deletion');
+  assert.equal(f.remote.posts, 2, 'a new delivery may rearm once the operation has finished');
+});
+
+it('recovers an ambiguous POST only by finding its exact external id and author', async (t) => {
+  const f = recoveryFixture(t, { ambiguousPost: true, patchFailures: 0 });
+  await f.deliver();
+  assert.equal(f.records.get('recovery').phase, 'commenting');
+  assert.equal(f.remote.patches, 0);
+  await f.coordinator().alarm();
+  assert.equal(f.remote.posts, 1);
+  assert.equal(f.remote.patches, 1);
+  assert.equal(f.records.get('recovery').outcome, 'reverted');
+});
+
+it('never reverts or reposts if a failed POST has no matching committed warning', async (t) => {
+  const f = recoveryFixture(t, { ambiguousPost: true, commitPost: false });
+  await f.deliver();
+  f.remote.comments.push(warning); // ordinary old warning is not this operation
+  for (let i = 0; i < 7; i++) await f.coordinator().alarm();
+  assert.equal(f.remote.posts, 1);
+  assert.equal(f.remote.patches, 0);
+  assert.equal(f.records.get('recovery').outcome, 'exhausted');
+});
+
+it('expires recovery after five minutes even if attempts remain', async (t) => {
+  const f = recoveryFixture(t);
+  await f.deliver();
+  const deadline = f.records.get('recovery').deadline;
+  t.mock.method(Date, 'now', () => deadline + 1);
+  await f.coordinator().alarm();
+  assert.equal(f.remote.patches, 1);
+  assert.equal(f.records.get('recovery').outcome, 'exhausted');
+  assert.equal(f.records.has('alarm'), false);
+});
+
+it('serializes concurrent duplicate deliveries through the same coordinator', async (t) => {
+  const f = recoveryFixture(t, { patchFailures: 0 });
+  const worker = f.coordinator();
+  const send = () => worker.fetch(new Request('https://internal/guard', {
+    method: 'POST', body: JSON.stringify({ workspaceId: 'workspace', deliveryId: 'same', action, actor: { member_id: 'ada' } }),
+  }));
+  await Promise.all([send(), send()]);
+  assert.equal(f.remote.posts, 1);
+  assert.equal(f.remote.patches, 1);
+});
+
+it('stops after a PATCH committed but its response was lost', async (t) => {
+  const f = recoveryFixture(t, { patchFailures: Infinity });
+  await f.deliver();
+  // This is the state seen on the next read when the remote PATCH committed
+  // despite the caller seeing a failure/timeout.
+  f.remote.story.workflow_state = { id: 1 };
+  await f.coordinator().alarm();
+  assert.equal(f.remote.posts, 1);
+  assert.equal(f.remote.patches, 1);
+  assert.equal(f.records.get('recovery').phase, 'finished');
+});
+
+it('does not use a pending old warning to revert a different observed move', async (t) => {
+  const f = recoveryFixture(t);
+  await f.deliver();
+  // The state happens to match again, but this is a different move delivery.
+  await f.deliver('different-move');
+  await f.coordinator().alarm();
+  assert.equal(f.remote.patches, 1);
+  assert.equal(f.remote.posts, 1);
+  assert.equal(f.records.get('recovery').outcome, 'superseded');
 });

@@ -6,6 +6,7 @@ import { Hono } from 'hono';
 
 type Env = {
   TOKENS: KVNamespace;
+  GUARDIAN_STORIES: DurableObjectNamespace;
   CLIENT_ID: string;
   CLIENT_SECRET: string;
   REDIRECT_URI: string;
@@ -100,11 +101,12 @@ type WorkflowState = {
   type: 'unstarted' | 'started' | 'done';
 };
 
-const COMMENT_FIELDS = 'text,author,deleted';
+const COMMENT_FIELDS = 'text,author,deleted,external_id';
 type StoryComment = {
   text: string | null;
   deleted: boolean;
   author: SlimRef<string> | null;
+  external_id?: string | null;
 };
 
 const MEMBER_FIELDS = 'mention_name';
@@ -152,7 +154,94 @@ type Session = {
   kv: KVNamespace;
   workspaceId: string;
   creds: WorkspaceCredentials;
+  deliveryId: string;
+  recovery: RecoveryStore;
 };
+
+type Recovery = {
+  workspaceId: string;
+  storyId: number;
+  deliveryId: string;
+  memberId: string;
+  marker: string;
+  currentStateId: number;
+  previousStateId: number | null;
+  phase: 'commenting' | 'warned' | 'finished';
+  attempts: number;
+  deadline: number;
+  retryAt: number;
+  outcome?: 'reverted' | 'superseded' | 'exhausted' | 'warned-only';
+};
+
+type RecoveryStore = {
+  get(): Promise<Recovery | undefined>;
+  // Store the record and its alarm in a single durable transaction.
+  save(recovery: Recovery): Promise<void>;
+};
+
+const MAX_RECOVERY_ATTEMPTS = 6; // initial attempt plus five retries
+const RECOVERY_WINDOW_MS = 5 * 60_000;
+const recoveryDelay = (attempts: number) => 2_000 * 2 ** (attempts - 1);
+
+async function finishRecovery(s: Session, recovery: Recovery, outcome: Recovery['outcome']) {
+  recovery.phase = 'finished';
+  recovery.outcome = outcome;
+  await s.recovery.save(recovery);
+  console.log('Guardian recovery finished', { storyId: recovery.storyId, outcome, attempts: recovery.attempts });
+}
+
+/** Continue only the warning created by this operation, never an old warning. */
+async function completeRevert(s: Session, recovery: Recovery) {
+  if (recovery.phase === 'commenting') {
+    const comments = await listAll<StoryComment>(s, `/stories/${recovery.storyId}/comments?fields=${COMMENT_FIELDS}`);
+    const posted = comments.some((comment) => !comment.deleted && comment.author?.id === recovery.memberId && comment.external_id === recovery.marker);
+    if (!posted) return; // POST may have failed or not yet become visible. Never POST again.
+    recovery.phase = 'warned';
+    await s.recovery.save(recovery);
+  }
+  if (recovery.previousStateId === null) {
+    await finishRecovery(s, recovery, 'warned-only');
+    return;
+  }
+  // The comment/lookup can take time. Read immediately before *every* PATCH,
+  // including recovery, rather than reusing the initial Story snapshot.
+  const story = await apiJson<Story>(s, 'GET', `/stories/${recovery.storyId}?fields=${STORY_FIELDS}`);
+  if (!story) return;
+  if (Date.now() >= recovery.deadline) {
+    await finishRecovery(s, recovery, 'exhausted');
+    return;
+  }
+  if (story.team || story.workflow_state?.id !== recovery.currentStateId || s.creds.memberId !== recovery.memberId) {
+    await finishRecovery(s, recovery, 'superseded');
+    return;
+  }
+  const reverted = await apiJson<EntityId>(s, 'PATCH', `/stories/${recovery.storyId}?fields=${ID_ONLY_FIELDS}`, {
+    workflow_state_id: recovery.previousStateId,
+  });
+  if (reverted) await finishRecovery(s, recovery, 'reverted');
+}
+
+async function recoverRevert(s: Session, recovery: Recovery) {
+  if (recovery.phase === 'finished') return;
+  if (recovery.attempts >= MAX_RECOVERY_ATTEMPTS || Date.now() >= recovery.deadline) {
+    await finishRecovery(s, recovery, 'exhausted');
+    return;
+  }
+  // Reserve the attempt and next alarm before making any external call, so a
+  // crash or network timeout cannot reset the cap or strand the operation.
+  recovery.attempts++;
+  recovery.retryAt = Math.min(recovery.deadline, Date.now() + recoveryDelay(recovery.attempts));
+  await s.recovery.save(recovery);
+  try {
+    await completeRevert(s, recovery);
+  } catch (error) {
+    console.error('Guardian recovery attempt failed', { storyId: recovery.storyId, attempts: recovery.attempts,
+      message: error instanceof ShortcutRequestError ? error.message : 'Could not recover revert' });
+  }
+  if (!recovery.outcome && recovery.attempts >= MAX_RECOVERY_ATTEMPTS) {
+    await finishRecovery(s, recovery, 'exhausted');
+  }
+}
 
 function shortcutApiBase(env: Env) {
   return env.SHORTCUT_API_BASE ?? 'https://api.app.shortcut.com';
@@ -492,6 +581,19 @@ async function resolveActorMention(s: Session, actor: ObserverActor): Promise<st
  */
 async function guardStory(s: Session, action: ObserverAction, actorMention: () => Promise<string>) {
   const storyId = Number(action.id);
+  const pending = await s.recovery.get();
+  if (pending && pending.phase !== 'finished') {
+    // A different observed move/team edit supersedes the original operation,
+    // even if the Story has already moved back to the same state by this read.
+    if (pending.deliveryId !== s.deliveryId && action.changes?.some((change) =>
+      change.attribute === 'workflow_state' || change.attribute === 'team')) {
+      await finishRecovery(s, pending, 'superseded');
+      return;
+    }
+    await recoverRevert(s, pending);
+    return;
+  }
+  if (pending?.deliveryId === s.deliveryId) return;
   const story = await apiJson<Story>(s, 'GET', `/stories/${storyId}?fields=${STORY_FIELDS}`);
   if (!story) return;
 
@@ -509,34 +611,97 @@ async function guardStory(s: Session, action: ObserverAction, actorMention: () =
   }
 
   const previousStateId = await previousWorkflowStateId(s, action, storyId, currentStateId);
+  const text = warningText(await actorMention());
+  const recovery: Recovery = {
+    workspaceId: s.workspaceId, storyId, deliveryId: s.deliveryId, memberId: s.creds.memberId,
+    marker: `guardian:${crypto.randomUUID()}`, currentStateId, previousStateId,
+    phase: 'commenting', attempts: 1, deadline: Date.now() + RECOVERY_WINDOW_MS,
+    retryAt: Date.now() + recoveryDelay(1),
+  };
+  await s.recovery.save(recovery);
+  try {
+    const posted = await apiJson<EntityId>(s, 'POST', `/stories/${storyId}/comments?fields=${ID_ONLY_FIELDS}`, {
+      text, external_id: recovery.marker,
+    });
+    if (!posted) {
+      console.error(`Could not confirm comment on story ${storyId}, skipping revert`);
+      return;
+    }
+    recovery.phase = 'warned';
+    await s.recovery.save(recovery);
+    await completeRevert(s, recovery);
+  } catch (error) {
+    console.error('Guardian initial attempt failed', { storyId,
+      message: error instanceof ShortcutRequestError ? error.message : 'Could not complete warning and revert' });
+  }
+}
 
-  const posted = await apiJson<EntityId>(
-    s,
-    'POST',
-    `/stories/${storyId}/comments?fields=${ID_ONLY_FIELDS}`,
-    { text: warningText(await actorMention()) },
-  );
-  if (!posted) {
-    // Without the comment there is no record of the warning, so a revert here
-    // would look like the story moving on its own — and would repeat forever.
-    console.error(`Could not comment on story ${storyId}, skipping revert`);
-    return;
+/** One coordinator per workspace/Story. Credentials remain in the existing KV. */
+export class GuardianStory {
+  private tail: Promise<unknown> = Promise.resolve();
+  private recovery: RecoveryStore;
+
+  constructor(private state: DurableObjectState, private env: Env) {
+    this.recovery = {
+      get: () => this.state.storage.get<Recovery>('recovery'),
+      save: (record) => this.state.storage.transaction(async (tx) => {
+        await tx.put('recovery', record);
+        if (record.phase === 'finished') await tx.deleteAlarm();
+        else await tx.setAlarm(record.retryAt);
+      }),
+    };
   }
 
-  if (previousStateId === null) {
-    // Nothing to revert to: the story was created directly into a started
-    // state, or its history has been trimmed. The comment still stands.
-    console.warn(`No previous workflow state for story ${storyId}, warned only`);
-    return;
+  private serialize<T>(run: () => Promise<T>): Promise<T> {
+    const work = this.tail.then(run);
+    this.tail = work.catch(() => {});
+    return work;
   }
 
-  const reverted = await apiJson<EntityId>(
-    s,
-    'PATCH',
-    `/stories/${storyId}?fields=${ID_ONLY_FIELDS}`,
-    { workflow_state_id: previousStateId },
-  );
-  console.log('Guardian story warned', { storyId, previousStateId, reverted: !!reverted });
+  fetch(request: Request): Promise<Response> {
+    return this.serialize(async () => {
+      try {
+        const { workspaceId, deliveryId, action, actor } = await request.json() as {
+          workspaceId: string; deliveryId: string; action: ObserverAction; actor: ObserverActor;
+        };
+        const creds = await getCredentials(this.env.TOKENS, workspaceId);
+        if (!creds || actor?.member_id === creds.memberId) return Response.json({ ok: true });
+        const session: Session = { env: this.env, kv: this.env.TOKENS, workspaceId, creds, deliveryId, recovery: this.recovery };
+        await guardStory(session, action, () => resolveActorMention(session, actor));
+        return Response.json({ ok: true });
+      } catch (error) {
+        console.error('Guardian story processing failed', {
+          message: error instanceof ShortcutRequestError ? error.message : 'Could not process story',
+        });
+        return Response.json({ error: 'Could not process story' }, { status: 503 });
+      }
+    });
+  }
+
+  alarm(): Promise<void> {
+    return this.serialize(async () => {
+      const record = await this.recovery.get();
+      if (!record || record.phase === 'finished') return;
+      try {
+        const creds = await getCredentials(this.env.TOKENS, record.workspaceId);
+        if (!creds) {
+          // No authorization means no retries or API writes.
+          record.phase = 'finished';
+          record.outcome = 'exhausted';
+          await this.recovery.save(record);
+          console.warn('Guardian recovery stopped: workspace credentials unavailable');
+          return;
+        }
+        await recoverRevert({ env: this.env, kv: this.env.TOKENS, workspaceId: record.workspaceId,
+          deliveryId: record.deliveryId, creds, recovery: this.recovery }, record);
+      } catch {
+        // Storage failures can use Cloudflare's bounded alarm redelivery. No
+        // raw exception contents are logged and reserved attempts stay saved.
+        console.error('Guardian recovery storage unavailable');
+        throw new Error('Guardian recovery storage unavailable');
+      }
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -670,7 +835,7 @@ app.get('/oauth/callback', async (c) => {
 
 /**
  * Observer webhook — verifies the signature, then checks every updated story
- * off the request path so Shortcut isn't waiting on the Shortcut API.
+ * in a per-Story coordinator with durable partial-success recovery.
  */
 app.post('/webhook', async (c) => {
   const rawBody = await readBody(c.req.raw);
@@ -716,27 +881,17 @@ app.post('/webhook', async (c) => {
   );
   if (updates.length === 0) return c.json({ ok: true });
 
-  const session: Session = { env: c.env, kv: c.env.TOKENS, workspaceId, creds };
-
-  // Resolved at most once per delivery, and only if a story actually trips.
-  let mention: Promise<string> | undefined;
-  const actorMention = () => (mention ??= resolveActorMention(session, payload.actor));
-
-  // Each story is checked in sequence so they share one refreshed token.
-  c.executionCtx.waitUntil(
-    (async () => {
-      for (const action of updates) {
-        try {
-          await guardStory(session, action, actorMention);
-        } catch (err) {
-          console.error('Guardian story processing failed', {
-            storyId: action.id,
-            message: err instanceof ShortcutRequestError ? err.message : 'Could not process story',
-          });
-        }
-      }
-    })(),
-  );
+  if (typeof payload.id !== 'string' || !payload.id) return c.json({ error: 'Missing delivery id' }, 400);
+  // Await the coordinator: any in-flight warning/revert and its recovery alarm
+  // must be durable before Shortcut sees success. Duplicate calls serialize.
+  for (const action of updates) {
+    if (!Number.isSafeInteger(Number(action.id)) || Number(action.id) <= 0) return c.json({ error: 'Invalid story id' }, 400);
+    const id = c.env.GUARDIAN_STORIES.idFromName(JSON.stringify([workspaceId, Number(action.id)]));
+    const response = await c.env.GUARDIAN_STORIES.get(id).fetch('https://guardian.internal/guard', {
+      method: 'POST', body: JSON.stringify({ workspaceId, deliveryId: payload.id, action, actor: payload.actor ?? {} }),
+    });
+    if (!response.ok) return c.json({ error: 'Could not process story' }, 503);
+  }
 
   return c.json({ ok: true });
 });
