@@ -30,7 +30,7 @@ For background on the platform itself — payload shapes, trigger semantics, and
 | `comment-reply` | Replies in the same thread (under the original agent comment) |
 | `mentioned` in a top-level comment | Replies nested under that comment |
 | `mentioned` in a nested comment | Replies under the thread root (max depth 1) |
-| Observer delivery | Records action counts and changed attributes in KV, no comment posted |
+| Observer delivery | Acknowledged and ignored; no KV write or comment posted |
 
 Each interaction is identified by its installation, workspace, and delivery ID.
 Redelivery of that interaction does not post again; a new mention, assignment, or

@@ -89,7 +89,7 @@ The comment is posted *before* the revert. If commenting fails, the revert is sk
 ### Known gaps
 
 - **Concurrent duplicate deliveries can race the comment check.** Guardian's KV-based, background-processing demo does not serialize deliveries or provide a durable retry queue. A failed lookup leaves the story unchanged and is logged, but the already-acknowledged webhook is not automatically retried.
-- **Stories created directly into a started state** are warned but not moved, because there is no previous state to return to. Handling this would mean picking a destination (the workflow's default state, say) rather than restoring one. (Create actions carry no `changes` either way — the diff is on updates only.)
+- **Story create actions are ignored**, including stories created directly into a started state: Guardian only processes qualifying update actions. A later qualifying update can trigger a warning; if no trustworthy previous state can be found then, Guardian warns without moving the story. Enforcing the rule at creation would require handling create actions and choosing a destination state rather than restoring one.
 - **Deleting the warning comment re-arms the rule.** The comment *is* the record. A KV flag keyed by story id would survive deletion, at the cost of the state being invisible to anyone reading the story.
 - **A rename of the marker sentence orphans old warnings**, since matching is on visible text. That's the trade for not putting hidden markup in people's comments.
 
