@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { ShortcutClient } from "./shortcut-client.mjs";
 import { createTeamCopProcessor, verifyWebhookSignature } from "./team-cop.mjs";
-import { DurableState } from "./durable-state.mjs";
+import { DurableState, MAX_ATTEMPTS } from "./durable-state.mjs";
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const json = (body, status = 200) => Response.json(body, { status });
@@ -72,12 +72,8 @@ export class TeamCop {
       clientSecret: env.CLIENT_SECRET,
       redirectUri: env.REDIRECT_URI,
       state: this.state,
-      checkExistingComments: true,
     });
-    this.process = createTeamCopProcessor({ client: this.client, state: this.state });
-    ctx.blockConcurrencyWhile(async () => {
-      console.log("Team Cop Worker initialized", { workspaces: await this.state.listWorkspaces() });
-    });
+    this.processDelivery = createTeamCopProcessor({ client: this.client, state: this.state });
   }
 
   exclusive(fn) {
@@ -120,16 +116,17 @@ export class TeamCop {
           const delivery = await this.state.beginAttempt(item.key);
           if (!delivery) continue;
           try {
-            await this.process(delivery.payload);
+            await this.processDelivery(delivery.payload);
             await this.state.completeDelivery(item.key);
           } catch (error) {
             const failure = await this.state.failDelivery(item.key, error);
-            console.error(failure.exhausted ? "Team Cop delivery exhausted after five retries" : "Team Cop delivery failed; retry scheduled", {
+            console.error(failure.exhausted ? `Team Cop delivery exhausted after ${MAX_ATTEMPTS} attempts` : "Team Cop delivery failed; retry scheduled", {
               ...failure, deliveryId: delivery.payload.id, message: error.message, status: error.status,
             });
           }
         }
       } finally {
+        await this.state.prune();
         await this.state.schedule();
         console.log("Team Cop queue", {
           pending_deliveries: await this.state.countDeliveries(),

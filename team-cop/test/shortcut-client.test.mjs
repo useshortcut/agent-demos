@@ -153,6 +153,9 @@ describe("ShortcutClient", () => {
       state: { async setWorkspace() {} },
       async fetchImpl(url, options) {
         calls.push([url, options]);
+        if (url.includes("/comments?") && options.method !== "POST") {
+          return jsonResponse({ current_page: 1, total_pages: 0, entities: [] });
+        }
         return jsonResponse({ entity: { id: 123 } });
       },
     });
@@ -166,19 +169,14 @@ describe("ShortcutClient", () => {
 
     await client.getStory("workspace-1", credentials, 123);
     await client.getMember("workspace-1", credentials, "member/id");
-    await client.postStoryComment("workspace-1", credentials, 123, {
-      text: "@kurt hello",
-      external_id: "team-cop:123",
-    });
+    await client.postStoryComment("workspace-1", credentials, 123, { text: "@kurt hello" });
 
     assert.equal(calls[0][0], "https://api.example.com/api/v4/my%20workspace/stories/123?fields=team");
     assert.equal(calls[1][0], "https://api.example.com/api/v4/my%20workspace/members/member%2Fid?fields=mention_name");
-    assert.equal(calls[2][0], "https://api.example.com/api/v4/my%20workspace/stories/123/comments?fields=id");
-    assert.equal(calls[2][1].method, "POST");
-    assert.deepEqual(JSON.parse(calls[2][1].body), {
-      text: "@kurt hello",
-      external_id: "team-cop:123",
-    });
+    assert.equal(calls[2][0], "https://api.example.com/api/v4/my%20workspace/stories/123/comments?fields=id,author,deleted&limit=100");
+    assert.equal(calls[3][0], "https://api.example.com/api/v4/my%20workspace/stories/123/comments?fields=id");
+    assert.equal(calls[3][1].method, "POST");
+    assert.deepEqual(JSON.parse(calls[3][1].body), { text: "@kurt hello" });
   });
 
   it("mutates shared credentials after refresh so later calls reuse the new token", async () => {

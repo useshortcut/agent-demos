@@ -6,7 +6,6 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "start": "node --env-file=.env src/server.mjs",
     "dev": "wrangler dev --local",
     "deploy": "wrangler deploy",
     "deploy:check": "wrangler deploy --dry-run",

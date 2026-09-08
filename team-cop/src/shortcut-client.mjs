@@ -90,8 +90,11 @@ async function responseBody(response) {
   }
 }
 
+// Unrequested fields are never returned; `deleted` marks tombstones.
+const COMMENT_FIELDS = "id,author,deleted";
+
 export class ShortcutClient {
-  constructor({ apiBase, clientId, clientSecret, fetchImpl = globalThis.fetch.bind(globalThis), logger = console, redirectUri, state, checkExistingComments = false }) {
+  constructor({ apiBase, clientId, clientSecret, fetchImpl = globalThis.fetch.bind(globalThis), logger = console, redirectUri, state }) {
     this.apiBase = apiBase.replace(/\/$/, "");
     this.clientId = clientId;
     this.clientSecret = clientSecret;
@@ -99,7 +102,6 @@ export class ShortcutClient {
     this.logger = logger;
     this.redirectUri = redirectUri;
     this.state = state;
-    this.checkExistingComments = checkExistingComments;
   }
 
   async #tokenRequest(params) {
@@ -234,54 +236,60 @@ export class ShortcutClient {
     );
   }
 
-  async postStoryComment(workspaceId, credentials, storyId, comment) {
-    // The Story's current comments are authoritative, not an event-scoped ID or
-    // a cached reminder flag. Any comment by this agent suppresses another one.
-    if (this.checkExistingComments) {
-      if (typeof credentials.memberId !== "string" || !credentials.memberId.trim()) {
-        throw new Error("Missing Team Cop member ID; cannot check prior comments");
-      }
-      const commentsPath = `/stories/${storyId}/comments`;
-      const endpoint = new URL(`${this.apiBase}/api/v4/${encodeURIComponent(credentials.slug)}${commentsPath}`);
-      let path = `${commentsPath}?fields=id,external_id,author&limit=100`;
-      const cursors = new Set();
-      for (let page = 1; ; page += 1) {
-        const result = await this.#authorizedRequest(workspaceId, credentials, path);
-        const currentPage = result?.current_page ?? page;
-        if (!Array.isArray(result?.entities) || !Number.isInteger(result.total_pages) || result.total_pages < 0 ||
-            !Number.isInteger(currentPage) || currentPage < 1) {
-          throw new Error("Invalid comment pagination response; cannot check prior reminder");
-        }
-        const existing = result.entities.find((item) =>
-          item.id != null && item.author?.id === credentials.memberId);
-        if (existing) return { ...existing, alreadyCommented: true };
-        if (result.next_page_url == null) {
-          if (currentPage < result.total_pages) {
-            throw new Error("Incomplete comment pagination: missing next-page URL");
-          }
-          break;
-        }
-        let next;
-        try {
-          if (typeof result.next_page_url !== "string") throw new Error();
-          next = new URL(result.next_page_url, endpoint);
-        } catch {
-          throw new Error("Invalid comment pagination next-page URL");
-        }
-        // Never send our bearer token to a server or resource supplied by a response.
-        if (next.origin !== endpoint.origin || next.pathname !== endpoint.pathname ||
-            next.username || next.password || next.hash ||
-            [...next.searchParams.keys()].some((key) => key !== "cursor" && key !== "fields") ||
-            next.searchParams.getAll("cursor").length !== 1) {
-          throw new Error("Unsafe comment pagination next-page URL");
-        }
-        const cursor = next.searchParams.get("cursor");
-        if (!cursor || cursors.has(cursor)) throw new Error("Invalid or repeated comment pagination cursor");
-        cursors.add(cursor);
-        // Cursor requests cannot also send limit/page. Keep the fields needed for deduplication.
-        path = `${commentsPath}?cursor=${encodeURIComponent(cursor)}&fields=id,external_id,author`;
-      }
+  // Returns this agent's existing live comment on the Story, or null. The
+  // Story's current comments are authoritative, not a cached reminder flag.
+  async findOwnComment(workspaceId, credentials, storyId) {
+    if (typeof credentials.memberId !== "string" || !credentials.memberId.trim()) {
+      throw new Error("Missing Team Cop member ID; cannot check prior comments");
     }
+    const commentsPath = `/stories/${storyId}/comments`;
+    const endpoint = new URL(`${this.apiBase}/api/v4/${encodeURIComponent(credentials.slug)}${commentsPath}`);
+    let path = `${commentsPath}?fields=${COMMENT_FIELDS}&limit=100`;
+    const cursors = new Set();
+    for (let page = 1; ; page += 1) {
+      const result = await this.#authorizedRequest(workspaceId, credentials, path);
+      const currentPage = result?.current_page ?? page;
+      if (!Array.isArray(result?.entities) || !Number.isInteger(result.total_pages) || result.total_pages < 0 ||
+          !Number.isInteger(currentPage) || currentPage < 1) {
+        throw new Error("Invalid comment pagination response; cannot check prior reminder");
+      }
+      // v4 lists deleted comments "with minimal information": `deleted` is true and the id may be null.
+      const existing = result.entities.find((item) =>
+        item.id != null && !item.deleted && item.author?.id === credentials.memberId);
+      if (existing) return existing;
+      if (result.next_page_url == null) {
+        if (currentPage < result.total_pages) {
+          throw new Error("Incomplete comment pagination: missing next-page URL");
+        }
+        break;
+      }
+      let next;
+      try {
+        if (typeof result.next_page_url !== "string") throw new Error();
+        next = new URL(result.next_page_url, endpoint);
+      } catch {
+        throw new Error("Invalid comment pagination next-page URL");
+      }
+      // Never send our bearer token to a server or resource supplied by a response.
+      if (next.origin !== endpoint.origin || next.pathname !== endpoint.pathname ||
+          next.username || next.password || next.hash ||
+          [...next.searchParams.keys()].some((key) => key !== "cursor" && key !== "fields") ||
+          next.searchParams.getAll("cursor").length !== 1) {
+        throw new Error("Unsafe comment pagination next-page URL");
+      }
+      const cursor = next.searchParams.get("cursor");
+      if (!cursor || cursors.has(cursor)) throw new Error("Invalid or repeated comment pagination cursor");
+      cursors.add(cursor);
+      // Cursor requests cannot also send limit/page. Keep the fields needed for deduplication.
+      path = `${commentsPath}?cursor=${encodeURIComponent(cursor)}&fields=${COMMENT_FIELDS}`;
+    }
+    return null;
+  }
+
+  // Posts the comment unless this agent has already commented on the Story.
+  async postStoryComment(workspaceId, credentials, storyId, comment) {
+    const existing = await this.findOwnComment(workspaceId, credentials, storyId);
+    if (existing) return { ...existing, alreadyCommented: true };
     return this.#authorizedRequest(workspaceId, credentials, `/stories/${storyId}/comments?fields=id`, {
       method: "POST",
       headers: { "content-type": "application/json" },

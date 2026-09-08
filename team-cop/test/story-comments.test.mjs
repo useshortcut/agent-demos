@@ -17,7 +17,7 @@ it("uses live Story comments across new deliveries, actors, and processor restar
       async hasProcessed(key) { return processed.has(key); },
       async markProcessed(key) { processed.add(key); } };
     const client = new ShortcutClient({ apiBase: "https://api.example.com", clientId: "test-client", clientSecret: "test-secret",
-      redirectUri: "https://agent.example/callback", state, logger, checkExistingComments: true,
+      redirectUri: "https://agent.example/callback", state, logger,
       async fetchImpl(url, options) {
         if (url.includes("/comments?")) {
           if (options.method === "POST") {

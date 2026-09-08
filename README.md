@@ -8,7 +8,7 @@ An agent app is a web service you own. Shortcut sends it signed webhooks when so
 
 | Demo | Stack | What it shows |
 |---|---|---|
-| [`quote-agent`](./quote-agent) | Cloudflare Workers + Hono | The full lifecycle: OAuth install, HMAC webhook verification, token refresh, and threaded comment replies. Posts a random programming quote whenever it's assigned or mentioned. |
+| [`quote-agent`](./quote-agent) | Cloudflare Workers + Hono + Durable Object | The full lifecycle: OAuth install, HMAC webhook verification, token refresh, and threaded comment replies. Posts a random programming quote for each distinct interaction and deduplicates repeated deliveries. |
 | [`guardian`](./guardian) | Cloudflare Workers + Hono | Enforcing a workspace rule from observer webhooks. Blocks stories from being started without a team: comments at whoever moved it, then moves it back. Shows how to read *what changed* from an action's `changes` diff, how to fall back to story history when the diff is unavailable, and how to avoid reacting to your own writes. |
 | [`team-cop`](./team-cop) | Cloudflare Workers + SQLite Durable Object | Comments at the creator or starter when a Story has no Team. Preserves OAuth scopes, actor logs, durable delivery receipts, and a five-retry cap. Includes the original local Node server. |
 
@@ -24,7 +24,7 @@ An agent app is a web service you own. Shortcut sends it signed webhooks when so
 3. Install the app in a workspace from the integrations catalog and complete the OAuth flow.
 4. Verify the `Payload-Signature` header (HMAC-SHA256 over the raw request body) on every delivery before acting on it.
 
-`quote-agent` implements all four steps in under 500 lines; start there.
+`quote-agent` implements all four steps, including per-interaction delivery coordination; start there.
 
 ## Contributing
 

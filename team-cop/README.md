@@ -7,14 +7,12 @@ A Shortcut observer agent that comments when a Story is **created or started wit
 It addresses the webhook actor (the creator or person who started the Story),
 but only if Team Cop has not already commented on that Story. Before posting,
 it reads the Story's existing comments and checks their author against Team Cop's
-member ID. Any existing Team Cop comment counts, including comments from older
-versions with a different or missing `external_id`.
-It re-reads the Story before commenting, and logs the actor, Story, Team, and
-delivery IDs when a Team is already present. It never changes the workflow state.
+member ID. It re-reads the Story before commenting and never changes the workflow
+state.
 
 See [Custom Agents](../docs/custom-agents.md) for payloads and installation concepts.
 
-## Cloudflare deployment
+## Deployment
 
 Requires Node 22.13+ and a Cloudflare Workers account. Run from `team-cop/`:
 
@@ -39,15 +37,15 @@ the default API host.
 
 ### Configure Shortcut and secrets
 
-Create or edit **Team Cop** from Shortcut's **Agents** page, under **Agents Built
-By Your Organization**. You can reuse the existing production application.
+Create **Team Cop** from Shortcut's **Agents** page, under **Agents Built By Your
+Organization**:
 
 - OAuth scopes: **Read** and **Create Comments**.
 - Redirect URI: `https://<your-worker>.workers.dev/oauth/callback`.
 - Webhook URL: `https://<your-worker>.workers.dev/webhook`.
 - Subscribe to **Stories**, with no interaction triggers.
 
-Save the settings. Add secrets using Wrangler's interactive prompts:
+Save the settings, then add the secrets using Wrangler's interactive prompts:
 
 ```sh
 npx wrangler secret put CLIENT_ID
@@ -57,9 +55,8 @@ npx wrangler secret put REDIRECT_URI
 ```
 
 Use the same redirect URI in Shortcut and the `REDIRECT_URI` secret. Validate
-the webhook, then Enable/install Team Cop and complete OAuth. If already enabled,
-Disable and Enable again. On the consent screen, explicitly check **Create and
-update story comments** as well as Read; comment access can start unchecked.
+the webhook, then enable Team Cop and complete OAuth. On the consent screen,
+check **Create and update story comments** as well as Read.
 
 ```sh
 npm run tail
@@ -67,21 +64,9 @@ npm run tail
 
 Look for `Team Cop connected` with `scopes: ['read', 'comment-write']`. The public
 `GET /` endpoint reports service health; workspace scopes and queue counts are
-in Worker logs. `Team Cop Worker initialized` appears when Cloudflare instantiates
-the object, rather than on every request.
-
-### Moving from localhost
-
-Stop the old Node listener when switching the application's webhook URL. Update
-both URLs to the Worker and complete fresh OAuth authorization. Local `.env` and
-`.data/state.json` are **not uploaded**; they remain available for Node mode.
-Previously queued local deliveries stay local and are not replayed in Cloudflare.
-Test with a new teamless Story after connecting. Avoid running both endpoints
-against the same events during migration, since their receipt stores are separate.
+in Worker logs.
 
 ## Local development
-
-To run the Cloudflare runtime locally:
 
 ```sh
 cp .dev.vars.example .dev.vars
@@ -95,19 +80,7 @@ including locally. Local Durable Object state under `.wrangler/` is separate fro
 deployed state. Set `SHORTCUT_API_BASE` in `.dev.vars` only when intentionally
 testing another environment.
 
-The original Node listener is also available:
-
-```sh
-cp .env.example .env  # only for a fresh setup; preserve an existing .env
-# Fill in credentials and the current tunnel callback URL.
-npm start
-```
-
-It stores credentials and retries in `.data/state.json`. `.env`, `.dev.vars`,
-`.data/`, and `.wrangler/` are ignored by Git. Existing local credentials/state
-were preserved when this demo moved out of the monorepo scratch directory.
-
-## How the Worker works
+## How it works
 
 - Verifies the raw webhook body with HMAC-SHA256 before parsing or queueing.
 - Persists each delivery and schedules a Durable Object alarm before returning
@@ -116,33 +89,26 @@ were preserved when this demo moved out of the monorepo scratch directory.
   is unavailable, Team Cop cannot identify the transition and skips that update.
 - Fetches only `team` from the Story and `mention_name` from the actor's Member.
 - Ignores its own writes and persists processed action/delivery receipts. For each
-  new qualifying event, both Worker and Node modes scan the Story's comments for
-  any comment authored by Team Cop before posting. The comment history is the
-  check; there is no permanent "already reminded" Story flag. Creating, starting,
-  or restarting a Story does not add another reminder while its Team Cop comment
-  exists. If all Team Cop comments are deleted, a later qualifying event can post
-  again. New comments use a workspace-and-Story-scoped `external_id`.
-  The scan follows v4's `next_page_url` cursor links, restricted to the same API
-  origin and Story comments endpoint. Incomplete or looping pagination fails
-  without posting a potentially duplicate reminder. Skips log
-  `Story already has a Team Cop comment; no reminder needed` instead of claiming
-  a new reminder was posted. Existing duplicate comments are not removed.
-- Allows one initial attempt plus **five retries**. Interrupted processing also
-  consumes an attempt. Exhausted jobs remain in SQLite without further alarms
-  for that job; redelivery does not reset the cap.
-- Persists OAuth scopes and refreshes expiring tokens. Logs retain actor details
-  on the Team-present skip message and safe OAuth diagnostics.
+  new qualifying event it scans the Story's comments for any non-deleted comment
+  authored by Team Cop before posting. The comment history is the check; there is
+  no permanent "already reminded" Story flag. If all Team Cop comments on a Story
+  are deleted, a later qualifying event posts again. The scan follows v4's
+  `next_page_url` cursor links, restricted to the same API origin and Story
+  comments endpoint, and fails closed on incomplete or looping pagination rather
+  than risk a duplicate reminder.
+- Allows one initial attempt plus **five retries** with exponential backoff.
+  Interrupted processing also consumes an attempt. Exhausted jobs remain in
+  SQLite without further alarms for that job; redelivery does not reset the cap.
+  Completed-delivery and action receipts are pruned after seven days.
+- Persists OAuth scopes and refreshes expiring tokens.
 
 For API failures, look for `Shortcut API request rejected` before the delivery's
 retry log. It identifies the HTTP method, endpoint pathname, status, and sanitized
 error details without logging authorization headers, query strings, or request
 bodies. Exhausted deliveries remain failed after deployment; test a fix with a
 new Story event rather than expecting the old delivery to restart automatically.
-
-This is a reference demo for modest workspace traffic: one coordinator, paginated
-comment checks, and retained receipts/exhausted payloads without automatic cleanup.
-Comment checks reduce duplicates after interruptions, but the remote POST and local
-receipt are not one atomic transaction.
+Deliveries that arrive before OAuth completes fail and are exhausted the same way,
+so test with a new teamless Story after connecting.
 
 Storage follows Cloudflare's [Durable Objects storage model](https://developers.cloudflare.com/durable-objects/best-practices/access-durable-objects-storage/).
 
@@ -153,6 +119,7 @@ npm test
 npm run deploy:check
 ```
 
-Tests cover Story selection, comments, actor logs, OAuth scopes/refresh, signed
-webhooks, durable retry limits across restarts, duplicate deliveries, and recovery
-from previously posted reminders. The deployment check bundles without publishing.
+Tests cover Story selection, comment deduplication, actor logs, OAuth scopes and
+refresh, signed webhooks, durable retry limits across restarts, duplicate
+deliveries, receipt pruning, and recovery from previously posted reminders. The
+deployment check bundles without publishing.
