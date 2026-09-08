@@ -211,9 +211,8 @@ it('refreshes once on 401, preserves missing refresh scopes, and reports unknown
     return gets === 1 ? Response.json({ error: 'expired' }, { status: 401 }) : Response.json({ entities: [], current_page: 1, total_pages: 0 });
   });
   const h = harness();
-  let response = await mod.default.request('/', undefined, h.env);
-  assert.equal((await response.json()).credentials[0].scopes, 'unknown');
   const creds = JSON.parse(h.data.get('creds:workspace'));
+  assert.equal(creds.scopes, undefined);
   h.data.set('creds:workspace', JSON.stringify({ ...creds, scopes: ['read', 'write'] }));
   assert.equal((await h.deliver()).status, 200);
   assert.equal(refreshes, 1);
@@ -239,5 +238,60 @@ it('does not post without OAuth or for self-triggered interactions', async (t) =
   assert.equal((await h.deliver('self', { actor: { member_id: 'quote' } })).status, 200);
   h.data.clear();
   assert.equal((await h.deliver()).status, 503);
+  assert.equal(h.records.size, 0);
+});
+
+it('health check lists no workspaces, slugs, scopes, or tokens, and logs nothing', async (t) => {
+  const logs = [];
+  t.mock.method(console, 'log', (...args) => logs.push(args));
+  const h = harness();
+  const response = await mod.default.request('/', undefined, h.env);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(Object.keys(body).sort(), ['service', 'status']);
+  assert.doesNotMatch(JSON.stringify(body) + JSON.stringify(logs), /acme|workspace|scopes|private-access|private-refresh/);
+  assert.equal((await mod.default.request('/stats', undefined, h.env)).status, 404);
+});
+
+function signed(body, secret = 'signing') {
+  return { method: 'POST', body, headers: { 'Payload-Signature': createHmac('sha256', secret).update(body).digest('hex') } };
+}
+
+it('rejects unsigned and mis-signed webhooks, with no bypass flag', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const { env } = harness();
+  const body = '{"type":"validation"}';
+  assert.equal((await mod.default.request('/webhook', { method: 'POST', body }, env)).status, 401);
+  assert.equal((await mod.default.request('/webhook', signed(body, 'wrong'), env)).status, 401);
+  assert.equal((await mod.default.request('/webhook', signed(body, 'wrong'), { ...env, DEV: 'true' })).status, 401);
+  assert.equal((await mod.default.request('/webhook', signed(body), env)).status, 200);
+});
+
+it('refuses webhooks and OAuth until every secret is configured, instead of skipping verification', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => assert.fail('must not call Shortcut without configuration'));
+  const { env } = harness();
+  const body = '{"type":"validation"}';
+  for (const key of ['CLIENT_ID', 'CLIENT_SECRET', 'WEBHOOK_SECRET', 'REDIRECT_URI']) {
+    const partial = { ...env, [key]: '' };
+    assert.equal((await mod.default.request('/webhook', { method: 'POST', body }, partial)).status, 503);
+    assert.equal((await mod.default.request('/oauth/callback?code=x', undefined, partial)).status, 503);
+  }
+});
+
+it('rejects oversized webhook bodies before verifying them', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const { env } = harness();
+  const big = JSON.stringify({ type: 'validation', pad: 'x'.repeat(2 * 1024 * 1024) });
+  assert.equal((await mod.default.request('/webhook', signed(big), env)).status, 413);
+});
+
+it('acknowledges observer deliveries without touching storage or the API', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => assert.fail('observer deliveries must not call the API'));
+  const h = harness();
+  const before = [...h.data.keys()];
+  const body = JSON.stringify({ id: 'observer', version: 'v2', installation_id: 'install', workspace2: { id: 'workspace', url_slug: 'acme' },
+    actor: { member_id: 'user' }, actions: [{ action: 'update', entity_type: 'story', id: 123, changes: [{ attribute: '<script>', adds: [1], removes: [] }] }] });
+  assert.equal((await mod.default.request('/webhook', signed(body), h.env)).status, 200);
+  assert.deepEqual([...h.data.keys()], before);
   assert.equal(h.records.size, 0);
 });
