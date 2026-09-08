@@ -32,6 +32,11 @@ An agent app is a web service you own. Shortcut sends it signed webhooks when so
 
 Each demo is self-contained in its own top-level directory with its own README and dependencies. Keep them small and focused on one idea — the point is to be readable end to end, not to be production-ready.
 
+CI runs each demo's Node tests, applicable TypeScript checks, [local Cloudflare
+runtime smoke tests](./runtime-tests/README.md), and a deployment dry run. Run
+`npm run test:runtime` inside a demo to exercise its actual Worker/KV/Durable
+Object configuration with synthetic credentials and a mock Shortcut API.
+
 ## License
 
 [MIT](./LICENSE) — use these as a starting point for your own agents.

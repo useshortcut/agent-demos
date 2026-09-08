@@ -30,3 +30,7 @@ jobs:
       - run: npm test
       - name: Type check
         run: if [ -f tsconfig.json ]; then npx tsc --noEmit; else echo "no tsconfig.json; skipping"; fi
+      - name: Cloudflare runtime smoke
+        run: npm run test:runtime
+      - name: Validate deployment bundle (no upload)
+        run: npx wrangler deploy --dry-run
