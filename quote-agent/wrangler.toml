@@ -1,6 +1,6 @@
 name = "shortcut-agent-service"
 main = "src/index.ts"
-compatibility_date = "2024-07-01"
+compatibility_date = "2026-09-07"
 
 [[kv_namespaces]]
 binding = "TOKENS"
@@ -17,4 +17,5 @@ new_sqlite_classes = ["QuoteDeliveries"]
 
 [observability.logs]
 enabled = true
+# OAuth callback query strings contain authorization codes.
 invocation_logs = false

@@ -2,8 +2,6 @@
 
 A toy Cloudflare Worker that demonstrates the Shortcut Custom Agents platform. When installed in a Shortcut workspace it responds to interaction triggers (assigned, @-mentioned, comment-reply) by posting a random quote as a comment on the relevant story or epic.
 
-It also tracks observer webhook deliveries — entity create/update/delete counts by type, and which story attributes the update actions' `changes` reported — and exposes them at `/stats`.
-
 For background on the platform itself — payload shapes, trigger semantics, and the app review lifecycle — see [../docs/custom-agents.md](../docs/custom-agents.md).
 
 ---
@@ -11,7 +9,7 @@ For background on the platform itself — payload shapes, trigger semantics, and
 ## Architecture
 
 - **Runtime**: Cloudflare Workers (Hono framework)
-- **Storage**: Cloudflare KV (`TOKENS` namespace) — stores OAuth credentials and action stats per workspace
+- **Storage**: Cloudflare KV (`TOKENS` namespace) — stores OAuth credentials per workspace
 - **Delivery coordination**: SQLite Durable Object (`QUOTE_DELIVERIES`) — serializes interactions per workspace and stores completed-delivery receipts
 - **Auth**: OAuth 2.0 authorization code flow with the Shortcut v4 API
 - **Webhooks**: Receives signed HMAC-SHA256 payloads from Shortcut
@@ -20,10 +18,9 @@ For background on the platform itself — payload shapes, trigger semantics, and
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/` | Health check + KV credential summary |
+| `GET` | `/` | Health check (unauthenticated, so it lists no workspaces) |
 | `GET` | `/oauth/callback` | OAuth redirect target — exchanges code for token, stores credentials |
-| `POST` | `/webhook` | Receives Shortcut interaction and observer webhooks |
-| `GET` | `/stats` | Plain-text observer delivery stats per workspace |
+| `POST` | `/webhook` | Receives Shortcut interaction webhooks; observer deliveries are acknowledged and ignored |
 
 ### Trigger handling
 
@@ -100,7 +97,7 @@ In Shortcut:
 4. Click **Create Application**, then set the delivery settings on the application:
    - **Webhook URL**: `https://<your-worker>.workers.dev/webhook`
    - **Interaction triggers**: `assigned`, `comment-reply`, and `mentioned` — these are what make the agent respond.
-   - **Subscribed entity types**: optional — observer deliveries only feed the `/stats` page. Subscribe to `story` and `epic` if you want them counted.
+   - **Subscribed entity types**: none needed — this agent only acts on interaction triggers and ignores observer deliveries.
 
 Creating the app gives you its **client id**, **client secret**, and **webhook secret** — keep them at hand for the next step.
 
@@ -114,7 +111,7 @@ echo "https://<your-worker>.workers.dev/oauth/callback" \
                          | npx wrangler secret put REDIRECT_URI
 ```
 
-Do **not** set `DEV` or `SHORTCUT_API_BASE` in production — the defaults are correct.
+Do **not** set `SHORTCUT_API_BASE` in production — the default is correct. Until all four secrets are set, `/webhook` and `/oauth/callback` return 503.
 
 ### 6. Install the app in your workspace
 
@@ -126,12 +123,14 @@ Install the agent app in a workspace — as its builder you can always install i
 curl https://<your-worker>.workers.dev/
 ```
 
-The response lists each workspace with stored credentials. If yours is there, the agent is live.
+The response is a bare health check. It is unauthenticated, so it deliberately
+says nothing about which workspaces are connected. `npx wrangler tail` shows
+`Quote Agent connected` with the workspace and its scopes when the install
+completes; once you see that line, the agent is live.
 
-Scopes are logged on connection and refresh and included in the credential
-summary at `/`. Older stored credentials report `unknown` until a token response
-supplies scopes; a refresh without a scope field preserves previously known
-scopes. All Shortcut requests use a 15-second timeout. Request error logs include
+Scopes are logged on connection and refresh. Older stored credentials report
+`unknown` until a token response supplies scopes; a refresh without a scope
+field preserves previously known scopes. All Shortcut requests use a 15-second timeout. Request error logs include
 method, pathname, status, and bounded API error codes (`tag`, `error`, `code`).
 Free-form error messages/descriptions and response bodies are intentionally
 omitted because they can echo user content or credentials. OAuth state, codes,
@@ -145,7 +144,6 @@ can still display those URLs: redact codes and state before sharing a tail.
 
 1. @-mention the agent in a comment on a story — it replies in-thread with a quote.
 2. Assign it a story or epic — it posts a quote as a comment.
-3. Check `https://<your-worker>.workers.dev/stats` for observer delivery counts.
 
 ---
 
@@ -158,7 +156,6 @@ CLIENT_ID=<your-agent-app-client-id>
 CLIENT_SECRET=<your-agent-app-client-secret>
 REDIRECT_URI=http://localhost:8787/oauth/callback
 WEBHOOK_SECRET=<your-agent-app-webhook-secret>
-DEV=true
 ```
 
 Then:
@@ -168,7 +165,7 @@ npm install
 npx wrangler dev
 ```
 
-The worker runs at `http://localhost:8787`. With `DEV=true`, webhook signature verification runs but failures are logged as warnings rather than 401s. The agent app's **Redirect URIs** field takes one per line — add `http://localhost:8787/oauth/callback` as a second entry so the local OAuth flow can land.
+The worker runs at `http://localhost:8787`. Signatures are always required, including locally: point a tunnel at the worker and let Shortcut deliver real, signed payloads, or sign test bodies yourself with the webhook secret. The agent app's **Redirect URIs** field takes one per line — add `http://localhost:8787/oauth/callback` as a second entry so the local OAuth flow can land.
 
 Run checks from this directory:
 

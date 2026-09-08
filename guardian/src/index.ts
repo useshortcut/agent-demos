@@ -10,9 +10,15 @@ type Env = {
   CLIENT_SECRET: string;
   REDIRECT_URI: string;
   WEBHOOK_SECRET: string;
-  DEV?: string; // set to "true" in .dev.vars to downgrade signature failures to warnings
   SHORTCUT_API_BASE?: string; // override for local dev, defaults to https://api.app.shortcut.com
 };
+
+// Webhooks and OAuth are refused until every secret is set. A missing webhook
+// secret must never mean "skip verification".
+const REQUIRED_SECRETS = ['CLIENT_ID', 'CLIENT_SECRET', 'WEBHOOK_SECRET', 'REDIRECT_URI'] as const;
+function configured(env: Env): boolean {
+  return REQUIRED_SECRETS.every((key) => typeof env[key] === 'string' && env[key].trim() !== '');
+}
 
 type WorkspaceCredentials = {
   token: string;
@@ -454,16 +460,26 @@ async function previousWorkflowStateId(
   return refId(latest.removes[0]);
 }
 
+// The display name comes straight from the delivery and ends up in a comment
+// Guardian authors, so it is reduced to plain words before use: no markdown,
+// no @-mentions of someone else, no runaway length.
+function safeDisplayName(name: unknown): string {
+  const cleaned = typeof name === 'string'
+    ? name.replace(/[^\p{L}\p{N}.'_-]+/gu, ' ').trim().slice(0, 80)
+    : '';
+  return cleaned || 'Someone';
+}
+
 async function resolveActorMention(s: Session, actor: ObserverActor): Promise<string> {
-  if (!actor.member_id) return actor.displayable_name;
+  if (!actor.member_id) return safeDisplayName(actor.displayable_name);
   const member = await apiJson<Member>(
     s,
     'GET',
-    `/members/${actor.member_id}?fields=${MEMBER_FIELDS}`,
+    `/members/${encodeURIComponent(actor.member_id)}?fields=${MEMBER_FIELDS}`,
   );
   // Falling back to the display name keeps the comment readable even though it
   // won't render as a real mention.
-  return member?.mention_name ? `@${member.mention_name}` : actor.displayable_name;
+  return member?.mention_name ? `@${member.mention_name}` : safeDisplayName(actor.displayable_name);
 }
 
 /**
@@ -527,7 +543,7 @@ async function guardStory(s: Session, action: ObserverAction, actorMention: () =
 // Webhook signature verification
 // ---------------------------------------------------------------------------
 
-async function verifySignature(secret: string, body: string, signature: string): Promise<boolean> {
+async function verifySignature(secret: string, body: Uint8Array, signature: string): Promise<boolean> {
   const key = await crypto.subtle.importKey(
     'raw',
     new TextEncoder().encode(secret),
@@ -535,7 +551,37 @@ async function verifySignature(secret: string, body: string, signature: string):
     false,
     ['verify'],
   );
-  return crypto.subtle.verify('HMAC', key, hexToBytes(signature), new TextEncoder().encode(body));
+  return crypto.subtle.verify('HMAC', key, hexToBytes(signature), body);
+}
+
+// Deliveries are small; anything larger is not a delivery. Reading with a cap
+// keeps an oversized body from being buffered and hashed in full.
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
+
+/** The raw request body, or null if it exceeds the cap. */
+async function readBody(request: Request): Promise<Uint8Array | null> {
+  if (Number(request.headers.get('Content-Length')) > MAX_BODY_BYTES) return null;
+  const reader = request.body?.getReader();
+  if (!reader) return new Uint8Array();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_BODY_BYTES) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
 }
 
 function hexToBytes(hex: string): Uint8Array {
@@ -551,6 +597,15 @@ function hexToBytes(hex: string): Uint8Array {
 // ---------------------------------------------------------------------------
 
 const app = new Hono<{ Bindings: Env }>();
+
+app.use('/oauth/callback', async (c, next) => {
+  if (!configured(c.env)) return c.json({ error: 'Configure the worker secrets first' }, 503);
+  await next();
+});
+app.use('/webhook', async (c, next) => {
+  if (!configured(c.env)) return c.json({ error: 'Configure the worker secrets first' }, 503);
+  await next();
+});
 
 /** OAuth callback — exchanges the code for tokens and stores them per workspace. */
 app.get('/oauth/callback', async (c) => {
@@ -618,26 +673,18 @@ app.get('/oauth/callback', async (c) => {
  * off the request path so Shortcut isn't waiting on the Shortcut API.
  */
 app.post('/webhook', async (c) => {
-  const rawBody = await c.req.text();
+  const rawBody = await readBody(c.req.raw);
+  if (rawBody === null) return c.json({ error: 'Payload too large' }, 413);
   const signature = c.req.header('Payload-Signature') ?? '';
 
-  if (c.env.WEBHOOK_SECRET) {
-    const valid = await verifySignature(c.env.WEBHOOK_SECRET, rawBody, signature);
-    if (!valid) {
-      if (c.env.DEV === 'true') {
-        console.warn('Dev mode: invalid webhook signature — proceeding anyway');
-      } else {
-        console.error('Invalid webhook signature');
-        return c.json({ error: 'Invalid signature' }, 401);
-      }
-    }
-  } else {
-    console.warn('No WEBHOOK_SECRET configured — skipping signature verification');
+  if (!(await verifySignature(c.env.WEBHOOK_SECRET, rawBody, signature))) {
+    console.error('Invalid webhook signature');
+    return c.json({ error: 'Invalid signature' }, 401);
   }
 
   let payload: ObserverPayload & { type?: string };
   try {
-    payload = JSON.parse(rawBody);
+    payload = JSON.parse(new TextDecoder().decode(rawBody));
   } catch {
     return c.json({ error: 'Invalid JSON' }, 400);
   }
@@ -646,7 +693,8 @@ app.post('/webhook', async (c) => {
   if (payload.type === 'validation') return c.json({ ok: true });
   if (!Array.isArray(payload.actions)) return c.json({ ok: true });
 
-  const workspaceId = payload.workspace2.id;
+  const workspaceId = payload.workspace2?.id;
+  if (typeof workspaceId !== 'string' || !workspaceId) return c.json({ error: 'Missing workspace' }, 400);
   const creds = await getCredentials(c.env.TOKENS, workspaceId);
   if (!creds) {
     console.warn(`No credentials for workspace ${workspaceId}`);
@@ -656,7 +704,7 @@ app.post('/webhook', async (c) => {
   // The comment and the revert both come back as observer deliveries. Ignoring
   // our own edits is the first line of defence against reacting to ourselves;
   // the already-warned check is the second.
-  if (payload.actor.member_id && payload.actor.member_id === creds.memberId) {
+  if (payload.actor?.member_id && payload.actor.member_id === creds.memberId) {
     return c.json({ ok: true });
   }
 
@@ -693,25 +741,8 @@ app.post('/webhook', async (c) => {
   return c.json({ ok: true });
 });
 
-app.get('/', async (c) => {
-  const keys = await c.env.TOKENS.list({ prefix: 'creds:' });
-  const workspaces = await Promise.all(
-    keys.keys.map(async (key) => {
-      const raw = await c.env.TOKENS.get(key.name);
-      if (!raw) return { key: key.name, value: null };
-      const parsed = JSON.parse(raw) as WorkspaceCredentials;
-      return {
-        key: key.name,
-        slug: parsed.slug,
-        hasToken: !!parsed.token,
-        hasRefreshToken: !!parsed.refreshToken,
-        hasMemberId: !!parsed.memberId,
-        expiresAt: parsed.expiresAt ?? null,
-        scopes: parsed.scopes ?? 'unknown',
-      };
-    }),
-  );
-  return c.json({ status: 'ok', service: 'Shortcut Guardian Agent', workspaces });
-});
+// Unauthenticated, so it says nothing about which workspaces are connected.
+// Connected workspaces and their scopes are in the OAuth connect/refresh logs.
+app.get('/', (c) => c.json({ status: 'ok', service: 'Shortcut Guardian Agent' }));
 
 export default app;

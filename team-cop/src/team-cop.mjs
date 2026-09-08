@@ -12,9 +12,21 @@ export function reminderReason(action) {
   return startedChange?.adds?.includes(true) ? "started" : null;
 }
 
-export function buildReminder(mentionName) {
-  const normalizedMentionName = String(mentionName).replace(/^@+/, "");
-  return `@${normalizedMentionName} ${REMINDER_TEXT}`;
+// `addressee` is either a resolved `@mention_name` or a sanitized display name.
+// Only the former is prefixed with "@": a display name must never turn into a
+// mention of whoever happens to have that mention name.
+export function buildReminder(addressee) {
+  return `${addressee} ${REMINDER_TEXT}`;
+}
+
+// The display name comes straight from the delivery and ends up in a comment
+// Team Cop authors, so it is reduced to plain words before use: no markdown,
+// no @-mentions of someone else, no runaway length.
+export function safeDisplayName(name) {
+  const cleaned = typeof name === "string"
+    ? name.replace(/[^\p{L}\p{N}.'_-]+/gu, " ").trim().slice(0, 80)
+    : "";
+  return cleaned || null;
 }
 
 export function verifyWebhookSignature(rawBody, signature, secret) {
@@ -89,8 +101,8 @@ export function createTeamCopProcessor({ client, logger = console, state }) {
       }
 
       const member = await client.getMember(workspaceId, credentials, actor.member_id);
-      const mentionName = member.mention_name ?? actor.displayable_name;
-      if (!mentionName) {
+      const addressee = member.mention_name ? `@${member.mention_name}` : safeDisplayName(actor.displayable_name);
+      if (!addressee) {
         logger.warn("Cannot address reminder because the actor has no mention name", {
           actorMemberId: actor.member_id,
           deliveryId: payload.id,
@@ -102,12 +114,12 @@ export function createTeamCopProcessor({ client, logger = console, state }) {
       }
 
       const comment = await client.postStoryComment(workspaceId, credentials, action.id, {
-        text: buildReminder(mentionName),
+        text: buildReminder(addressee),
       });
       await state.markProcessed(key);
       if (comment?.alreadyCommented) {
         logger.info("Story already has a Team Cop comment; no reminder needed", {
-          actor: mentionName,
+          actor: addressee,
           deliveryId: payload.id,
           reason,
           storyId: action.id,
@@ -116,7 +128,7 @@ export function createTeamCopProcessor({ client, logger = console, state }) {
         continue;
       }
       logger.info("Posted Team reminder", {
-        actor: mentionName,
+        actor: addressee,
         reason,
         storyId: action.id,
         workspaceId,

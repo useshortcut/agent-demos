@@ -12,9 +12,15 @@ type Env = {
   CLIENT_SECRET: string;
   REDIRECT_URI: string;
   WEBHOOK_SECRET: string;
-  DEV?: string; // set to "true" in .dev.vars to skip signature verification
   SHORTCUT_API_BASE?: string; // override for local dev, defaults to https://api.app.shortcut.com
 };
+
+// Webhooks and OAuth are refused until every secret is set. A missing webhook
+// secret must never mean "skip verification".
+const REQUIRED_SECRETS = ['CLIENT_ID', 'CLIENT_SECRET', 'WEBHOOK_SECRET', 'REDIRECT_URI'] as const;
+function configured(env: Env): boolean {
+  return REQUIRED_SECRETS.every((key) => typeof env[key] === 'string' && env[key].trim() !== '');
+}
 
 type WorkspaceCredentials = {
   token: string;
@@ -141,29 +147,6 @@ async function shortcutFetch(url: string, options: RequestInit, sensitive: strin
 // ---------------------------------------------------------------------------
 // KV helpers
 // ---------------------------------------------------------------------------
-
-// `changed` tallies the attributes reported in update actions' `changes`.
-type ActionCounts = { create: number; update: number; delete: number; changed?: Record<string, number> };
-type WorkspaceStats = Record<string, ActionCounts>;
-
-async function getStats(kv: KVNamespace, workspaceId: string): Promise<WorkspaceStats> {
-  const raw = await kv.get(`stats:${workspaceId}`);
-  return raw ? (JSON.parse(raw) as WorkspaceStats) : {};
-}
-
-async function recordStats(kv: KVNamespace, workspaceId: string, actions: ShortcutAction[]) {
-  const stats = await getStats(kv, workspaceId);
-  for (const action of actions) {
-    const { entity_type, action: verb } = action;
-    const counts = (stats[entity_type] ??= { create: 0, update: 0, delete: 0 });
-    counts[verb] = (counts[verb] ?? 0) + 1;
-    for (const change of action.changes ?? []) {
-      const changed = (counts.changed ??= {});
-      changed[change.attribute] = (changed[change.attribute] ?? 0) + 1;
-    }
-  }
-  await kv.put(`stats:${workspaceId}`, JSON.stringify(stats));
-}
 
 async function getCredentials(kv: KVNamespace, workspaceId: string): Promise<WorkspaceCredentials | null> {
   const raw = await kv.get(`creds:${workspaceId}`);
@@ -353,7 +336,7 @@ export class QuoteDeliveries {
 // Webhook signature verification
 // ---------------------------------------------------------------------------
 
-async function verifySignature(secret: string, body: string, signature: string): Promise<boolean> {
+async function verifySignature(secret: string, body: Uint8Array, signature: string): Promise<boolean> {
   const key = await crypto.subtle.importKey(
     'raw',
     new TextEncoder().encode(secret),
@@ -361,8 +344,37 @@ async function verifySignature(secret: string, body: string, signature: string):
     false,
     ['verify'],
   );
-  const sigBytes = hexToBytes(signature);
-  return crypto.subtle.verify('HMAC', key, sigBytes, new TextEncoder().encode(body));
+  return crypto.subtle.verify('HMAC', key, hexToBytes(signature), body);
+}
+
+// Deliveries are small; anything larger is not a delivery. Reading with a cap
+// keeps an oversized body from being buffered and hashed in full.
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
+
+/** The raw request body, or null if it exceeds the cap. */
+async function readBody(request: Request): Promise<Uint8Array | null> {
+  if (Number(request.headers.get('Content-Length')) > MAX_BODY_BYTES) return null;
+  const reader = request.body?.getReader();
+  if (!reader) return new Uint8Array();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_BODY_BYTES) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
 }
 
 function hexToBytes(hex: string): Uint8Array {
@@ -381,6 +393,14 @@ const app = new Hono<{ Bindings: Env }>();
 app.onError((_error, c) => {
   console.error('Quote Agent request failed', { method: c.req.method, path: c.req.path });
   return c.text('Request failed. Check Worker logs.', 500);
+});
+app.use('/oauth/callback', async (c, next) => {
+  if (!configured(c.env)) return c.json({ error: 'Configure the worker secrets first' }, 503);
+  await next();
+});
+app.use('/webhook', async (c, next) => {
+  if (!configured(c.env)) return c.json({ error: 'Configure the worker secrets first' }, 503);
+  await next();
 });
 
 /**
@@ -449,30 +469,21 @@ app.get('/oauth/callback', async (c) => {
 
 /**
  * Webhook — verifies HMAC signature, posts a random quote as a comment on
- * each new interaction. Observer deliveries only record stats.
+ * each new interaction. Observer deliveries are acknowledged and ignored.
  */
 app.post('/webhook', async (c) => {
-  const rawBody = await c.req.text();
+  const rawBody = await readBody(c.req.raw);
+  if (rawBody === null) return c.json({ error: 'Payload too large' }, 413);
   const signature = c.req.header('Payload-Signature') ?? '';
 
-  const isDev = c.env.DEV === 'true';
-  if (c.env.WEBHOOK_SECRET) {
-    const valid = await verifySignature(c.env.WEBHOOK_SECRET, rawBody, signature);
-    if (!valid) {
-      if (isDev) {
-        console.warn('Dev mode: invalid webhook signature — proceeding anyway');
-      } else {
-        console.error('Invalid webhook signature');
-        return c.json({ error: 'Invalid signature' }, 401);
-      }
-    }
-  } else {
-    console.warn('No WEBHOOK_SECRET configured — skipping signature verification');
+  if (!(await verifySignature(c.env.WEBHOOK_SECRET, rawBody, signature))) {
+    console.error('Invalid webhook signature');
+    return c.json({ error: 'Invalid signature' }, 401);
   }
 
   let payload: ShortcutWebhookPayload;
   try {
-    payload = JSON.parse(rawBody);
+    payload = JSON.parse(new TextDecoder().decode(rawBody));
   } catch {
     return c.json({ error: 'Invalid JSON' }, 400);
   }
@@ -486,7 +497,11 @@ app.post('/webhook', async (c) => {
   const workspaceId = payload.workspace2?.id;
   if (!workspaceId) return c.json({ error: 'Missing workspace' }, 400);
 
-  if ('trigger' in payload) {
+  // Observer deliveries carry `actions`; this agent only acts on interactions.
+  // Acknowledging them without work also avoids reacting to its own comments.
+  if (!('trigger' in payload)) return c.json({ ok: true });
+
+  {
     const { trigger } = payload;
     if (!['assigned', 'comment-reply', 'mentioned'].includes(trigger?.type) ||
         !['story', 'epic'].includes(trigger?.entity_type)) return c.json({ ok: true, ignored: true });
@@ -494,56 +509,11 @@ app.post('/webhook', async (c) => {
         !/^\d+$/.test(String(trigger.entity_id))) return c.json({ error: 'Invalid interaction identity' }, 400);
     const id = c.env.QUOTE_DELIVERIES.idFromName(workspaceId);
     return c.env.QUOTE_DELIVERIES.get(id).fetch(new Request('https://internal/deliver', { method: 'POST', body: JSON.stringify(payload) }));
-  } else {
-    // Observer delivery — record stats, ignore to avoid infinite loops
-    console.log(`Observer delivery for workspace ${workspaceId}: ${payload.actions.length} actions`);
-    await recordStats(c.env.TOKENS, workspaceId, payload.actions);
   }
-
-  return c.json({ ok: true });
 });
 
-app.get('/stats', async (c) => {
-  const keys = await c.env.TOKENS.list({ prefix: 'stats:' });
-  const lines: string[] = ['Shortcut Agent — Action Stats', '==============================', ''];
-  for (const key of keys.keys) {
-    const workspaceId = key.name.replace('stats:', '');
-    const stats = await getStats(c.env.TOKENS, workspaceId);
-    lines.push(`Workspace: ${workspaceId}`);
-    const sorted = Object.entries(stats).sort(([a], [b]) => a.localeCompare(b));
-    for (const [entityType, counts] of sorted) {
-      lines.push(`  ${entityType.padEnd(20)} create=${counts.create}  update=${counts.update}  delete=${counts.delete}`);
-      const changed = Object.entries(counts.changed ?? {}).sort(([, a], [, b]) => b - a);
-      if (changed.length > 0) {
-        lines.push(`  ${''.padEnd(20)} changed: ${changed.map(([attribute, n]) => `${attribute}=${n}`).join('  ')}`);
-      }
-    }
-    lines.push('');
-  }
-  if (keys.keys.length === 0) lines.push('No stats yet.');
-  return c.text(lines.join('\n'));
-});
-
-app.get('/', async (c) => {
-  const keys = await c.env.TOKENS.list({ prefix: 'creds:' });
-  const creds = await Promise.all(
-    keys.keys.map(async (k) => {
-      const raw = await c.env.TOKENS.get(k.name);
-      if (!raw) return { key: k.name, value: null };
-      const parsed = JSON.parse(raw) as WorkspaceCredentials;
-      return {
-        key: k.name,
-        slug: parsed.slug,
-        hasToken: !!parsed.token,
-        hasRefreshToken: !!parsed.refreshToken,
-        hasMemberId: !!parsed.memberId,
-        expiresAt: parsed.expiresAt ?? null,
-        scopes: parsed.scopes ?? 'unknown',
-      };
-    }),
-  );
-  console.log('KV store contents:', JSON.stringify(creds, null, 2));
-  return c.json({ status: 'ok', service: 'Shortcut Quote Agent', credentials: creds });
-});
+// Unauthenticated, so it says nothing about which workspaces are connected.
+// Connected workspaces and their scopes are in the OAuth connect/refresh logs.
+app.get('/', (c) => c.json({ status: 'ok', service: 'Shortcut Quote Agent' }));
 
 export default app;

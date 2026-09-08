@@ -211,6 +211,13 @@ describe("Team Cop processor", () => {
     ]);
   });
 
+  it("reduces an unresolvable display name to plain words before mentioning it", async () => {
+    const { calls, process } = harness({ member: {} });
+    await process(observerPayload({ action: "create", entity_type: "story", id: 123 },
+      { member_id: "member-1", displayable_name: "[@admin](https://evil.example)  O'Brien\n<b>" }));
+    assert.equal(calls[2][4].text, "admin https evil.example O'Brien b Stories need to be in a Team! Please add one!");
+  });
+
   it("does not react to its own actions", async () => {
     const { calls, process } = harness();
 

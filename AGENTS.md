@@ -23,7 +23,7 @@ npm test             # regression tests with mock Shortcut responses
 npx tsc --noEmit     # strict type check
 ```
 
-Local dev needs `.dev.vars` (copy from `.dev.vars.example`). `DEV=true` downgrades webhook signature failures to warnings instead of 401s. `SHORTCUT_API_BASE` overrides the API host for local testing. Neither should be set in production.
+Local dev needs `.dev.vars` (copy from `.dev.vars.example`). Webhook signatures are always required, including locally; there is no bypass flag. `SHORTCUT_API_BASE` overrides the API host for local testing and should not be set in production.
 
 Deployment also requires a KV namespace (`npx wrangler kv namespace create TOKENS`, ids go in `wrangler.toml`) and secrets pushed via `npx wrangler secret put` (CLIENT_ID, CLIENT_SECRET, WEBHOOK_SECRET, REDIRECT_URI). See each demo's README for the full sequence.
 Quote Agent additionally declares a SQLite Durable Object for serialized interaction delivery receipts; deploy its updated Wrangler configuration along with its code. Existing OAuth credentials remain in `TOKENS`.
@@ -32,7 +32,7 @@ Quote Agent additionally declares a SQLite Durable Object for serialized interac
 
 Both demos are Cloudflare Workers with Hono entrypoints (`src/index.ts`), and share the same OAuth/KV skeleton:
 
-- **Endpoints**: `GET /oauth/callback` (token exchange), `POST /webhook` (delivery receiver), `GET /` (health + stored-credential summary).
+- **Endpoints**: `GET /oauth/callback` (token exchange), `POST /webhook` (delivery receiver), `GET /` (health only; it is unauthenticated, so it never lists connected workspaces). Both handlers return 503 until all four secrets are set, and the webhook caps bodies at 2 MB.
 - **Storage**: one KV namespace bound as `TOKENS`. Credentials are stored per workspace at `creds:{workspace_id}` as `{token, slug, refreshToken, expiresAt, memberId}`. `memberId` is the agent's own `permission_id` from the OAuth token response.
 - **Auth**: OAuth authorization-code flow against `/oauth-authorization-code-flow/token`. Tokens are refreshed proactively when within 5 minutes of expiry and reactively on a 401 (see `apiFetch` in guardian).
 - **Webhook verification**: HMAC-SHA256 over the raw request body, hex digest in the `Payload-Signature` header. Always verify before parsing/acting.

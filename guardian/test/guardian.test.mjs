@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { it } from 'node:test';
 import { build } from 'esbuild';
 
 const source = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
-const compiled = await build({ stdin: { contents: source + '\nexport { listAll, alreadyWarned, startedStateIds, apiJson, guardStory, refreshCredentials };', resolveDir: new URL('../src', import.meta.url).pathname, loader: 'ts' }, bundle: true, format: 'esm', platform: 'node', write: false });
-const { listAll, alreadyWarned, startedStateIds, apiJson, guardStory, refreshCredentials, default: app } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text + '\n//# sourceURL=guardian-test-bundle.mjs').toString('base64')}`);
+const compiled = await build({ stdin: { contents: source + '\nexport { listAll, alreadyWarned, startedStateIds, apiJson, guardStory, refreshCredentials, resolveActorMention };', resolveDir: new URL('../src', import.meta.url).pathname, loader: 'ts' }, bundle: true, format: 'esm', platform: 'node', write: false });
+const { listAll, alreadyWarned, startedStateIds, apiJson, guardStory, refreshCredentials, resolveActorMention, default: app } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text + '\n//# sourceURL=guardian-test-bundle.mjs').toString('base64')}`);
 function session() {
   const data = new Map();
   const kv = { async get(k) { return data.get(k) ?? null; }, async put(k, v) { data.set(k, v); }, async list({ prefix }) { return { keys: [...data.keys()].filter((name) => name.startsWith(prefix)).map((name) => ({ name })) }; } };
-  return { data, kv, workspaceId: 'workspace', env: { CLIENT_ID: 'client', CLIENT_SECRET: 'private-client', SHORTCUT_API_BASE: 'https://api.example.com', TOKENS: kv },
+  return { data, kv, workspaceId: 'workspace', env: { CLIENT_ID: 'client', CLIENT_SECRET: 'private-client', WEBHOOK_SECRET: 'signing', REDIRECT_URI: 'https://agent.example/callback', SHORTCUT_API_BASE: 'https://api.example.com', TOKENS: kv },
     creds: { token: 'private-access', refreshToken: 'private-refresh', memberId: 'guardian', slug: 'acme', expiresAt: '2099-01-01T00:00:00Z' } };
 }
 
@@ -187,13 +188,60 @@ it('does not revert using a stale workflow diff', async (t) => {
   assert.deepEqual(writes.map((w) => w.method), ['POST']);
 });
 
-it('reports unknown scopes for legacy credentials without exposing tokens in health', async () => {
+it('health check lists no workspaces, slugs, scopes, or tokens', async () => {
   const s = session();
   s.data.set('creds:workspace', JSON.stringify(s.creds));
   const response = await app.request('/', undefined, s.env);
+  assert.equal(response.status, 200);
   const body = await response.json();
-  assert.equal(body.workspaces[0].scopes, 'unknown');
-  assert.doesNotMatch(JSON.stringify(body), /private-access|private-refresh/);
+  assert.deepEqual(Object.keys(body).sort(), ['service', 'status']);
+  assert.doesNotMatch(JSON.stringify(body), /acme|workspace|scopes|private-access|private-refresh/);
+});
+
+function signed(body, secret = 'signing') {
+  return { method: 'POST', body, headers: { 'Payload-Signature': createHmac('sha256', secret).update(body).digest('hex') } };
+}
+
+it('rejects unsigned and mis-signed webhooks, with no bypass flag', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const { env } = session();
+  const body = '{"type":"validation"}';
+  assert.equal((await app.request('/webhook', { method: 'POST', body }, env)).status, 401);
+  assert.equal((await app.request('/webhook', signed(body, 'wrong'), env)).status, 401);
+  assert.equal((await app.request('/webhook', signed(body, 'wrong'), { ...env, DEV: 'true' })).status, 401);
+  assert.equal((await app.request('/webhook', signed(body), env)).status, 200);
+});
+
+it('refuses webhooks and OAuth until every secret is configured, instead of skipping verification', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => assert.fail('must not call Shortcut without configuration'));
+  const { env } = session();
+  const body = '{"type":"validation"}';
+  for (const key of ['CLIENT_ID', 'CLIENT_SECRET', 'WEBHOOK_SECRET', 'REDIRECT_URI']) {
+    const partial = { ...env, [key]: '' };
+    assert.equal((await app.request('/webhook', { method: 'POST', body }, partial)).status, 503);
+    assert.equal((await app.request('/oauth/callback?code=x', undefined, partial)).status, 503);
+  }
+  assert.equal((await app.request('/nope', undefined, { ...env, WEBHOOK_SECRET: '' })).status, 404);
+});
+
+it('rejects oversized webhook bodies before verifying them', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const { env } = session();
+  const big = JSON.stringify({ type: 'validation', pad: 'x'.repeat(2 * 1024 * 1024) });
+  assert.equal((await app.request('/webhook', signed(big), env)).status, 413);
+  const stream = new Request('https://worker/webhook', { method: 'POST', body: big, headers: { 'Payload-Signature': 'ab' } });
+  assert.equal((await app.fetch(new Request(stream, { headers: { 'Payload-Signature': 'ab' } }), env)).status, 413);
+});
+
+it('encodes the actor member id in the API path and sanitizes display-name fallbacks', async (t) => {
+  const urls = [];
+  t.mock.method(globalThis, 'fetch', async (url) => { urls.push(url); return Response.json({ entity: {} }); });
+  const s = session();
+  const name = await resolveActorMention(s, { member_id: '../stories/123?x=1#y', displayable_name: '[@admin](https://evil.example)  O\'Brien\n<b>' });
+  assert.equal(new URL(urls[0]).pathname, '/api/v4/acme/members/..%2Fstories%2F123%3Fx%3D1%23y');
+  assert.equal(name, "admin https evil.example O'Brien b");
+  assert.equal(await resolveActorMention(s, { displayable_name: '***' }), 'Someone');
+  assert.equal(await resolveActorMention(s, {}), 'Someone');
 });
 
 it('preserves granted scopes on refresh when omitted and replaces them when explicitly returned', async (t) => {

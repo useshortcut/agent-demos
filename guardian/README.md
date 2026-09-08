@@ -150,7 +150,7 @@ echo "https://<your-worker>.workers.dev/oauth/callback" \
                          | npx wrangler secret put REDIRECT_URI
 ```
 
-Do **not** set `DEV` or `SHORTCUT_API_BASE` in production — the defaults are correct.
+Do **not** set `SHORTCUT_API_BASE` in production — the default is correct. Until all four secrets are set, `/webhook` and `/oauth/callback` return 503.
 
 ### 6. Install the app in your workspace
 
@@ -162,9 +162,9 @@ Install the agent app in the workspace you want guarded — as its builder you c
 curl https://<your-worker>.workers.dev/
 ```
 
-The response lists each workspace with stored credentials and granted OAuth `scopes`, never token values. Credentials saved by older versions report `"unknown"` scopes until OAuth or a refresh returns them; a refresh that omits `scope` preserves the previous value. OAuth connect and refresh also log scopes. If your workspace is there, Guardian is live — see [Trying it out](#trying-it-out).
+The response is a bare health check. It is unauthenticated, so it deliberately says nothing about which workspaces are connected. `npx wrangler tail` shows `Guardian OAuth connected` with the workspace and its granted `scopes` when the install completes; credentials saved by older versions report `"unknown"` scopes until OAuth or a refresh returns them. Once you see that line, Guardian is live — see [Trying it out](#trying-it-out).
 
-API and OAuth requests time out after 15 seconds. `npx wrangler tail` shows bounded, redacted error details with method, endpoint pathname, HTTP status, and provider error tag/message when available. Query strings, callback codes/state, credentials, submitted comment text, and raw errors are not logged by the application. Cloudflare's own invocation traces may still show request URLs; redact OAuth callback URLs before sharing logs.
+API and OAuth requests time out after 15 seconds. `npx wrangler tail` shows bounded, redacted error details with method, endpoint pathname, HTTP status, and provider error tag/message when available. Query strings, callback codes/state, credentials, submitted comment text, and raw errors are not logged by the application. Cloudflare's automatic invocation logs are disabled in `wrangler.toml` so callback URLs are not stored, but an interactive `wrangler tail` can still display them; redact codes and state before sharing a tail.
 
 ---
 
@@ -177,7 +177,6 @@ CLIENT_ID=<your-agent-app-client-id>
 CLIENT_SECRET=<your-agent-app-client-secret>
 REDIRECT_URI=http://localhost:8787/oauth/callback
 WEBHOOK_SECRET=<your-agent-app-webhook-secret>
-DEV=true
 ```
 
 Then:
@@ -187,9 +186,9 @@ npm install
 npx wrangler dev
 ```
 
-Before deploying changes, run `npm test`, `npx tsc --noEmit`, and `npx wrangler deploy --dry-run` from this directory. Tests cover cursor validation, failed lookups, comment-before-revert behavior, warning suppression, token refresh/scopes, and safe diagnostics.
+Before deploying changes, run `npm test`, `npx tsc --noEmit`, and `npx wrangler deploy --dry-run` from this directory. Tests cover signature and secret enforcement, body limits, cursor validation, failed lookups, comment-before-revert behavior, warning suppression, actor sanitization, token refresh/scopes, and safe diagnostics.
 
-The worker runs at `http://localhost:8787`. With `DEV=true`, signature failures are logged as warnings instead of returning 401. The agent app's **Redirect URIs** field takes one per line — add `http://localhost:8787/oauth/callback` as a second entry so the local OAuth flow can land.
+The worker runs at `http://localhost:8787`. Signatures are always required, including locally: point a tunnel at the worker and let Shortcut deliver real, signed payloads, or sign test bodies yourself with the webhook secret. The agent app's **Redirect URIs** field takes one per line — add `http://localhost:8787/oauth/callback` as a second entry so the local OAuth flow can land.
 
 ---
 
