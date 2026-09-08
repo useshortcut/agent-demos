@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.demo }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        demo: [guardian, quote-agent, team-cop]
+    defaults:
+      run:
+        working-directory: ${{ matrix.demo }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ matrix.demo }}/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - name: Type check
+        run: if [ -f tsconfig.json ]; then npx tsc --noEmit; else echo "no tsconfig.json; skipping"; fi
