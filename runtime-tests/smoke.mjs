@@ -9,7 +9,7 @@ import { test } from 'node:test';
 // npm executes this shared harness from the selected demo. All imported test
 // tools are its direct, locked dev dependencies, not another demo's installs.
 const demo = basename(process.cwd());
-assert.ok(['guardian', 'quote-agent', 'team-cop'].includes(demo), 'Run npm run test:runtime inside a demo');
+assert.ok(['estimate-guardian', 'quote-agent', 'team-cop'].includes(demo), 'Run npm run test:runtime inside a demo');
 const require = createRequire(resolve('package.json'));
 const { build } = require('esbuild');
 const { Miniflare, convertV4MiniflareOptions } = require('miniflare');
@@ -114,13 +114,17 @@ test(`${demo}: actual Cloudflare runtime, mock Shortcut only`, { timeout: 45_000
       const response = await send({ ...envelope(id), ...properties });
       assert.equal(response.status, demo === 'team-cop' ? 202 : 200, await response.text());
     };
-    if (demo === 'guardian') {
+    if (demo === 'estimate-guardian') {
+      await deliver('zero-estimate', { actions: [{ action: 'update', entity_type: 'story', id: 124,
+        changes: [{ attribute: 'workflow_state', adds: [{ id: 2 }], removes: [{ id: 1 }] }] }] });
+      assert.equal((await results()).posts.length, 0, 'A zero-point Estimate must not trigger a warning');
+      assert.equal((await results()).patches.length, 0, 'A zero-point Estimate must not trigger a revert');
       const properties = { actions: [{ action: 'update', entity_type: 'story', id: 123,
         changes: [{ attribute: 'workflow_state', adds: [{ id: 2 }], removes: [{ id: 1 }] }] }] };
       await deliver('started', properties);
       const first = await results();
       assert.equal(first.posts.length, 1);
-      assert.match(first.posts[0].text, /@ada Stories need a team before being started!/);
+      assert.match(first.posts[0].text, /@ada Stories need an estimate before being started!/);
       assert.deepEqual(first.patches, [{ workflow_state_id: 1 }]);
       const firstComment = first.requests.findIndex((item) => item.method === 'POST' && item.path.endsWith('/comments'));
       const firstRevert = first.requests.findIndex((item) => item.method === 'PATCH');

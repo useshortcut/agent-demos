@@ -1,4 +1,4 @@
-name = "shortcut-guardian-agent"
+name = "shortcut-estimate-guardian-agent"
 main = "src/index.ts"
 compatibility_date = "2026-09-07"
 
@@ -8,12 +8,12 @@ id = "your-kv-namespace-id"
 preview_id = "your-kv-preview-namespace-id"
 
 [[durable_objects.bindings]]
-name = "GUARDIAN_STORIES"
-class_name = "GuardianStory"
+name = "ESTIMATE_GUARDIAN_STORIES"
+class_name = "EstimateGuardianStory"
 
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["GuardianStory"]
+new_sqlite_classes = ["EstimateGuardianStory"]
 
 [observability.logs]
 enabled = true

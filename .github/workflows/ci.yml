@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        demo: [guardian, quote-agent, team-cop]
+        demo: [estimate-guardian, quote-agent, team-cop]
     defaults:
       run:
         working-directory: ${{ matrix.demo }}

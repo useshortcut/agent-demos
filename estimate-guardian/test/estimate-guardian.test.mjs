@@ -1,3 +1,4 @@
+// Estimate Guardian rule, API contract, and durable recovery regressions.
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -5,14 +6,14 @@ import { it } from 'node:test';
 import { build } from 'esbuild';
 
 const source = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
-const compiled = await build({ stdin: { contents: source + '\nexport { listAll, alreadyWarned, startedStateIds, apiJson, guardStory, refreshCredentials, resolveActorMention };', resolveDir: new URL('../src', import.meta.url).pathname, loader: 'ts' }, bundle: true, format: 'esm', platform: 'node', write: false });
-const { listAll, alreadyWarned, startedStateIds, apiJson, guardStory, refreshCredentials, resolveActorMention, GuardianStory, default: app } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text + '\n//# sourceURL=guardian-test-bundle.mjs').toString('base64')}`);
+const compiled = await build({ stdin: { contents: source + '\nexport { listAll, alreadyWarned, startedStateIds, apiJson, guardStory, refreshCredentials, resolveActorMention, couldBreachRule };', resolveDir: new URL('../src', import.meta.url).pathname, loader: 'ts' }, bundle: true, format: 'esm', platform: 'node', write: false });
+const { listAll, alreadyWarned, startedStateIds, apiJson, guardStory, refreshCredentials, resolveActorMention, couldBreachRule, EstimateGuardianStory, default: app } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text + '\n//# sourceURL=estimate-guardian-test-bundle.mjs').toString('base64')}`);
 function session() {
   const data = new Map();
   const kv = { async get(k) { return data.get(k) ?? null; }, async put(k, v) { data.set(k, v); }, async list({ prefix }) { return { keys: [...data.keys()].filter((name) => name.startsWith(prefix)).map((name) => ({ name })) }; } };
   const recovery = { async get() { const value = data.get('recovery'); return value ? structuredClone(value) : undefined; }, async save(record) { data.set('recovery', structuredClone(record)); } };
   return { data, kv, recovery, deliveryId: 'delivery', workspaceId: 'workspace', env: { CLIENT_ID: 'client', CLIENT_SECRET: 'private-client', WEBHOOK_SECRET: 'signing', REDIRECT_URI: 'https://agent.example/callback', SHORTCUT_API_BASE: 'https://api.example.com', TOKENS: kv },
-    creds: { token: 'private-access', refreshToken: 'private-refresh', memberId: 'guardian', slug: 'acme', expiresAt: '2099-01-01T00:00:00Z' } };
+    creds: { token: 'private-access', refreshToken: 'private-refresh', memberId: 'estimate-guardian', slug: 'acme', expiresAt: '2099-01-01T00:00:00Z' } };
 }
 
 it('follows cursor pagination without a page parameter', async (t) => {
@@ -66,7 +67,7 @@ it('persists and reports OAuth scopes', async (t) => {
   const s = session();
   t.mock.method(globalThis, 'fetch', async (_url, options) => {
     assert.ok(options.signal instanceof AbortSignal);
-    return Response.json({ access_token: 'token', refresh_token: 'refresh', permission_id: 'guardian', workspace2_id: 'workspace', workspace2_slug: 'acme', scope: 'read comment-write', access_token_expires_at: '2099-01-01T00:00:00Z' });
+    return Response.json({ access_token: 'token', refresh_token: 'refresh', permission_id: 'estimate-guardian', workspace2_id: 'workspace', workspace2_slug: 'acme', scope: 'read comment-write', access_token_expires_at: '2099-01-01T00:00:00Z' });
   });
   const response = await app.request('/oauth/callback?code=test', undefined, { ...s.env, REDIRECT_URI: 'https://agent.example/callback' });
   assert.equal(response.status, 200);
@@ -127,9 +128,9 @@ it('ignores old partial caches and does not cache an empty lookup', async (t) =>
 
 const action = { id: 123, action: 'update', entity_type: 'story', app_url: 'https://app.shortcut.com/acme/story/123',
   changes: [{ attribute: 'workflow_state', adds: [{ id: 2 }], removes: [{ id: 1 }] }] };
-const warning = { text: '@ada Stories need a team before being started! Please add a team and start again!', author: { id: 'guardian' }, deleted: false };
+const warning = { text: '@ada Stories need an estimate before being started! Please add an estimate and start again!', author: { id: 'estimate-guardian' }, deleted: false };
 
-function businessFetch(t, { comments = [], commentStatus = 200, lookupStatus = 200, team = null } = {}) {
+function businessFetch(t, { comments = [], commentStatus = 200, lookupStatus = 200, estimate = null, team = null, historyChanges = [] } = {}) {
   const writes = [];
   t.mock.method(globalThis, 'fetch', async (raw, init) => {
     const url = new URL(raw);
@@ -139,8 +140,8 @@ function businessFetch(t, { comments = [], commentStatus = 200, lookupStatus = 2
     }
     if (url.pathname.endsWith('/workflow-states')) return Response.json({ entities: [{ id: 2, type: 'started' }] });
     if (url.pathname.endsWith('/comments')) return Response.json({ entities: comments }, { status: lookupStatus });
-    if (url.pathname.endsWith('/history')) return Response.json({ changes: [] });
-    return Response.json({ team, workflow_state: { id: 2 } });
+    if (url.pathname.endsWith('/history')) return Response.json({ changes: historyChanges });
+    return Response.json({ estimate, team, workflow_state: { id: 2 } });
   });
   return writes;
 }
@@ -166,6 +167,50 @@ it('preserves once-per-story warning suppression', async (t) => {
   assert.deepEqual(writes, []);
 });
 
+for (const estimate of [0, 1, 8]) {
+  it(`accepts an estimate of ${estimate} even without a Team`, async (t) => {
+    const writes = businessFetch(t, { estimate });
+    await guardStory(session(), action, async () => '@ada');
+    assert.deepEqual(writes, []);
+  });
+}
+
+it('warns and reverts an unestimated Story even when it has a Team', async (t) => {
+  const writes = businessFetch(t, { estimate: null, team: { id: 'team' } });
+  await guardStory(session(), action, async () => '@ada');
+  assert.deepEqual(writes.map(w => w.method), ['POST', 'PATCH']);
+  assert.equal(writes[0].body.text, warning.text);
+});
+
+it('ignores an unavailable estimate field instead of treating a malformed Story as unestimated', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ entity: { workflow_state: { id: 2 } } }));
+  const s = session();
+  await guardStory(s, action, async () => assert.fail('must not warn'));
+  assert.equal(await s.recovery.get(), undefined);
+});
+
+it('reacts to workflow and estimate changes, not Team-only or unrelated updates', () => {
+  assert.equal(couldBreachRule(action), true);
+  assert.equal(couldBreachRule({ ...action, changes: [{ attribute: 'estimate', adds: [], removes: [3] }] }), true);
+  assert.equal(couldBreachRule({ ...action, changes: [{ attribute: 'team', adds: [], removes: [{ id: 'team' }] }] }), false);
+  assert.equal(couldBreachRule({ ...action, changes: [{ attribute: 'name', adds: ['new'], removes: ['old'] }] }), false);
+  assert.equal(couldBreachRule({ ...action, changes: [] }), false);
+  assert.equal(couldBreachRule({ ...action, changes: undefined }), true);
+});
+
+it('does not let a former team-rule warning suppress an estimate warning', async (t) => {
+  const writes = businessFetch(t, { comments: [{ ...warning, text: '@ada Stories need a team before being started! Please add a team and start again!' }] });
+  await guardStory(session(), action, async () => '@ada');
+  assert.deepEqual(writes.map(w => w.method), ['POST', 'PATCH']);
+});
+
+it('uses history to revert when an Estimate is removed from an already-started Story', async (t) => {
+  const writes = businessFetch(t, { historyChanges: action.changes });
+  await guardStory(session(), { ...action, changes: [{ attribute: 'estimate', adds: [], removes: [3] }] }, async () => '@ada');
+  assert.deepEqual(writes.map(w => w.method), ['POST', 'PATCH']);
+  assert.equal(writes[1].body.workflow_state_id, 1);
+});
+
 it('recovers a failed revert without posting a second warning', async (t) => {
   const s = session();
   const comments = [];
@@ -186,7 +231,7 @@ it('recovers a failed revert without posting a second warning', async (t) => {
     }
     if (path.endsWith('/workflow-states')) return Response.json({ entities: [{ id: 2, type: 'started' }] });
     if (path.endsWith('/comments')) return Response.json({ entities: comments });
-    return Response.json({ entity: { team: null, workflow_state: { id: 2 } } });
+    return Response.json({ entity: { estimate: null, workflow_state: { id: 2 } } });
   });
   // A later attempt must resume the incomplete revert even though the remote
   // comment now exists. An ordinary pre-existing warning still suppresses work.
@@ -201,7 +246,7 @@ it('ignores deleted, other-author and unrelated comments, then warns before reve
     { ...warning, deleted: true }, { ...warning, author: { id: 'human' } }, { ...warning, text: 'Unrelated' },
   ] });
   await guardStory(session(), action, async () => '@ada');
-  assert.match(writes[0].body.external_id, /^guardian:/);
+  assert.match(writes[0].body.external_id, /^estimate-guardian:/);
   delete writes[0].body.external_id;
   assert.deepEqual(writes, [
     { method: 'POST', path: '/api/v4/acme/stories/123/comments', body: { text: warning.text } },
@@ -304,7 +349,7 @@ it('uses a 15 second timeout and never logs thrown network error contents', asyn
   t.mock.method(console, 'error', (...args) => logs.push(args));
   t.mock.method(AbortSignal, 'timeout', (duration) => { assert.equal(duration, 15_000); return new AbortController().signal; });
   t.mock.method(globalThis, 'fetch', async () => { throw new Error('private-access https://example.com/?code=private-code'); });
-  await assert.rejects(apiJson(session(), 'GET', '/stories/123?fields=team'), /Network request failed or timed out/);
+  await assert.rejects(apiJson(session(), 'GET', '/stories/123?fields=estimate'), /Network request failed or timed out/);
   assert.doesNotMatch(JSON.stringify(logs), /private-access|private-code|https:/);
 });
 
@@ -341,9 +386,9 @@ it('refreshes once on 401 and uses the rotated token', async (t) => {
 });
 
 it('unwraps v4 single-entity responses while retaining list envelopes', async (t) => {
-  const responses = [{ entity: { team: null, workflow_state: { id: 2 } } }, { entities: [{ id: 2 }] }, { entity: null }];
+  const responses = [{ entity: { estimate: null, workflow_state: { id: 2 } } }, { entities: [{ id: 2 }] }, { entity: null }];
   t.mock.method(globalThis, 'fetch', async () => Response.json(responses.shift()));
-  assert.deepEqual(await apiJson(session(), 'GET', '/stories/123?fields=team,workflow_state'), { team: null, workflow_state: { id: 2 } });
+  assert.deepEqual(await apiJson(session(), 'GET', '/stories/123?fields=estimate,workflow_state'), { estimate: null, workflow_state: { id: 2 } });
   assert.deepEqual(await apiJson(session(), 'GET', '/workflow-states?fields=id'), { entities: [{ id: 2 }] });
   assert.equal(await apiJson(session(), 'GET', '/stories/123?fields=id'), null);
 });
@@ -360,7 +405,7 @@ function recoveryFixture(t, { patchFailures = 1, ambiguousPost = false, commitPo
       async deleteAlarm() { records.delete('alarm'); },
     }); },
   } };
-  const remote = { story: { team: null, workflow_state: { id: 2 } }, comments: [], posts: 0, patches: 0, afterPost: null };
+  const remote = { story: { estimate: null, workflow_state: { id: 2 } }, comments: [], posts: 0, patches: 0, afterPost: null };
   t.mock.method(globalThis, 'fetch', async (raw, init) => {
     const path = new URL(raw).pathname;
     if (init.method === 'POST') {
@@ -385,7 +430,7 @@ function recoveryFixture(t, { patchFailures = 1, ambiguousPost = false, commitPo
     if (path.includes('/members/')) return Response.json({ entity: { mention_name: 'ada' } });
     return Response.json({ entity: remote.story });
   });
-  const coordinator = () => new GuardianStory(state, s.env);
+  const coordinator = () => new EstimateGuardianStory(state, s.env);
   const deliver = async (deliveryId = 'delivery') => coordinator().fetch(new Request('https://internal/guard', {
     method: 'POST', body: JSON.stringify({ workspaceId: 'workspace', deliveryId, action, actor: { member_id: 'ada', displayable_name: 'Ada' } }),
   }));
@@ -420,16 +465,16 @@ it('caps persisted recovery at the initial attempt plus five retries', async (t)
   assert.equal(f.remote.patches, 6);
 });
 
-for (const change of ['team', 'workflow_state']) {
+for (const change of ['estimate', 'workflow_state']) {
   it(`abandons recovery when the Story's ${change} changed`, async (t) => {
     const f = recoveryFixture(t);
     await f.deliver();
-    f.remote.story[change] = { id: 999 };
+    f.remote.story[change] = change === 'estimate' ? 0 : { id: 999 };
     await f.coordinator().alarm();
     assert.equal(f.remote.posts, 1);
     assert.equal(f.remote.patches, 1);
     assert.equal(f.records.get('recovery').outcome, 'superseded');
-    f.remote.story = { team: null, workflow_state: { id: 2 } };
+    f.remote.story = { estimate: null, workflow_state: { id: 2 } };
     await f.deliver('unrelated-later-delivery');
     assert.equal(f.remote.patches, 1, 'old warning must not authorize an unrelated revert');
   });
@@ -437,7 +482,7 @@ for (const change of ['team', 'workflow_state']) {
 
 it('rechecks immediately after posting instead of reverting an already-fixed Story', async (t) => {
   const f = recoveryFixture(t);
-  f.remote.afterPost = () => { f.remote.story.team = { id: 999 }; };
+  f.remote.afterPost = () => { f.remote.story.estimate = 0; };
   await f.deliver();
   assert.equal(f.remote.posts, 1);
   assert.equal(f.remote.patches, 0);

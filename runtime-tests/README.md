@@ -31,7 +31,8 @@ Coverage includes:
 
 - All three demos: native OAuth fetch and credential storage, signed validation
   acceptance, invalid-signature rejection, API field selection and opaque cursors.
-- Guardian: comment before state revert, then an existing warning suppressing a
+- Estimate Guardian: a zero-point Estimate is accepted; an unset Estimate causes a
+  comment before state revert, then an existing warning suppressing a
   second comment and revert while the Story still appears started.
 - Quote Agent: concurrent duplicate delivery, receipt persistence through actual
   object eviction, distinct interactions, and Story/Epic threaded replies.
