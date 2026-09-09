@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 
 type Env = {
   TOKENS: KVNamespace;
-  GUARDIAN_STORIES: DurableObjectNamespace;
+  ESTIMATE_GUARDIAN_STORIES: DurableObjectNamespace;
   CLIENT_ID: string;
   CLIENT_SECRET: string;
   REDIRECT_URI: string;
@@ -55,7 +55,7 @@ type ObserverAction = {
   uri?: string | null;
   // Story update actions only. `[]` means nothing tracked changed. An absent
   // key means the diff was unavailable for this delivery, never that nothing
-  // changed — Guardian falls back to story history in that case.
+  // changed — Estimate Guardian falls back to story history in that case.
   changes?: ChangeEntry[];
 };
 
@@ -83,15 +83,15 @@ type SlimRef<Id = number> = { id: Id; entity_type: string; name?: string };
 // Every v4 endpoint takes a `fields` query param. Unrequested fields are never
 // calculated — a story rendered whole resolves its description markdown and
 // every nested collection — so asking narrowly is worth doing on a hot path
-// like this one, which reads a story for every move or team change in the
+// like this one, which reads a story for every move or estimate change in the
 // workspace.
 //
 // Unknown field names are a 400, so each constant below is the exact field list
 // for the type under it. Change one, change the other.
 
-const STORY_FIELDS = 'team,workflow_state';
+const STORY_FIELDS = 'estimate,workflow_state';
 type Story = {
-  team: SlimRef | null;
+  estimate: number | null;
   workflow_state: SlimRef | null; // slim: id and name, no `type`
 };
 
@@ -135,10 +135,10 @@ type ListEnvelope<T> = {
 // Recognising our own past warning is what makes this fire once per story.
 // The marker is part of the visible sentence so the check needs no hidden
 // markup, and it survives someone editing the rest of the comment.
-const WARNING_MARKER = 'Stories need a team before being started!';
+const WARNING_MARKER = 'Stories need an estimate before being started!';
 
 const warningText = (mention: string) =>
-  `${mention} ${WARNING_MARKER} Please add a team and start again!`;
+  `${mention} ${WARNING_MARKER} Please add an estimate and start again!`;
 
 // A stale cache would let a newly-created "started" state slip through, so the
 // list of started states is re-read hourly rather than pinned for the lifetime
@@ -187,7 +187,7 @@ async function finishRecovery(s: Session, recovery: Recovery, outcome: Recovery[
   recovery.phase = 'finished';
   recovery.outcome = outcome;
   await s.recovery.save(recovery);
-  console.log('Guardian recovery finished', { storyId: recovery.storyId, outcome, attempts: recovery.attempts });
+  console.log('Estimate Guardian recovery finished', { storyId: recovery.storyId, outcome, attempts: recovery.attempts });
 }
 
 /** Continue only the warning created by this operation, never an old warning. */
@@ -211,7 +211,7 @@ async function completeRevert(s: Session, recovery: Recovery) {
     await finishRecovery(s, recovery, 'exhausted');
     return;
   }
-  if (story.team || story.workflow_state?.id !== recovery.currentStateId || s.creds.memberId !== recovery.memberId) {
+  if (story.estimate !== null || story.workflow_state?.id !== recovery.currentStateId || s.creds.memberId !== recovery.memberId) {
     await finishRecovery(s, recovery, 'superseded');
     return;
   }
@@ -235,7 +235,7 @@ async function recoverRevert(s: Session, recovery: Recovery) {
   try {
     await completeRevert(s, recovery);
   } catch (error) {
-    console.error('Guardian recovery attempt failed', { storyId: recovery.storyId, attempts: recovery.attempts,
+    console.error('Estimate Guardian recovery attempt failed', { storyId: recovery.storyId, attempts: recovery.attempts,
       message: error instanceof ShortcutRequestError ? error.message : 'Could not recover revert' });
   }
   if (!recovery.outcome && recovery.attempts >= MAX_RECOVERY_ATTEMPTS) {
@@ -361,7 +361,7 @@ async function refreshCredentials(s: Session): Promise<WorkspaceCredentials | nu
 
   await storeCredentials(s.kv, s.workspaceId, updated);
   s.creds = updated;
-  console.log('Guardian OAuth refreshed', { workspaceId: s.workspaceId, scopes: updated.scopes ?? 'unknown' });
+  console.log('Estimate Guardian OAuth refreshed', { workspaceId: s.workspaceId, scopes: updated.scopes ?? 'unknown' });
   return updated;
 }
 
@@ -457,7 +457,7 @@ async function listAll<T>(s: Session, path: string): Promise<T[]> {
 }
 
 // ---------------------------------------------------------------------------
-// Guardian logic
+// Estimate Guardian logic
 // ---------------------------------------------------------------------------
 
 /**
@@ -503,7 +503,7 @@ function refId(value: ChangeValue | undefined): number | null {
 /**
  * True if the update could have put the story in breach of the rule.
  *
- * Only a move or a team change can, and the delivery's `changes` says which
+ * Only a move or an estimate change can, and the delivery's `changes` says which
  * attributes the update touched — so everything else exits before touching
  * the API. When the key is absent the diff was unavailable for this delivery,
  * and the story has to be checked the slow way.
@@ -511,7 +511,7 @@ function refId(value: ChangeValue | undefined): number | null {
 function couldBreachRule(action: ObserverAction): boolean {
   if (!action.changes) return true;
   return action.changes.some(
-    (change) => change.attribute === 'workflow_state' || change.attribute === 'team',
+    (change) => change.attribute === 'workflow_state' || change.attribute === 'estimate',
   );
 }
 
@@ -550,7 +550,7 @@ async function previousWorkflowStateId(
 }
 
 // The display name comes straight from the delivery and ends up in a comment
-// Guardian authors, so it is reduced to plain words before use: no markdown,
+// Estimate Guardian authors, so it is reduced to plain words before use: no markdown,
 // no @-mentions of someone else, no runaway length.
 function safeDisplayName(name: unknown): string {
   const cleaned = typeof name === 'string'
@@ -572,21 +572,21 @@ async function resolveActorMention(s: Session, actor: ObserverActor): Promise<st
 }
 
 /**
- * Warn and revert if the story is sitting in a started state with no team.
+ * Warn and revert if the story is sitting in a started state with no estimate.
  * Safe to call for any updated story — every guard exits quietly.
  *
  * The delivery says what changed, but the story is still re-read for where it
  * is *now*: deliveries are handled asynchronously, and the story may have
- * gained a team or moved again since this one was queued.
+ * gained an estimate or moved again since this one was queued.
  */
 async function guardStory(s: Session, action: ObserverAction, actorMention: () => Promise<string>) {
   const storyId = Number(action.id);
   const pending = await s.recovery.get();
   if (pending && pending.phase !== 'finished') {
-    // A different observed move/team edit supersedes the original operation,
+    // A different observed move/estimate edit supersedes the original operation,
     // even if the Story has already moved back to the same state by this read.
     if (pending.deliveryId !== s.deliveryId && action.changes?.some((change) =>
-      change.attribute === 'workflow_state' || change.attribute === 'team')) {
+      change.attribute === 'workflow_state' || change.attribute === 'estimate')) {
       await finishRecovery(s, pending, 'superseded');
       return;
     }
@@ -597,7 +597,7 @@ async function guardStory(s: Session, action: ObserverAction, actorMention: () =
   const story = await apiJson<Story>(s, 'GET', `/stories/${storyId}?fields=${STORY_FIELDS}`);
   if (!story) return;
 
-  if (story.team) return; // has a team — nothing to enforce
+  if (story.estimate !== null) return; // has an estimate — nothing to enforce
 
   const currentStateId = story.workflow_state?.id;
   if (!currentStateId) return;
@@ -614,7 +614,7 @@ async function guardStory(s: Session, action: ObserverAction, actorMention: () =
   const text = warningText(await actorMention());
   const recovery: Recovery = {
     workspaceId: s.workspaceId, storyId, deliveryId: s.deliveryId, memberId: s.creds.memberId,
-    marker: `guardian:${crypto.randomUUID()}`, currentStateId, previousStateId,
+    marker: `estimate-guardian:${crypto.randomUUID()}`, currentStateId, previousStateId,
     phase: 'commenting', attempts: 1, deadline: Date.now() + RECOVERY_WINDOW_MS,
     retryAt: Date.now() + recoveryDelay(1),
   };
@@ -631,13 +631,13 @@ async function guardStory(s: Session, action: ObserverAction, actorMention: () =
     await s.recovery.save(recovery);
     await completeRevert(s, recovery);
   } catch (error) {
-    console.error('Guardian initial attempt failed', { storyId,
+    console.error('Estimate Guardian initial attempt failed', { storyId,
       message: error instanceof ShortcutRequestError ? error.message : 'Could not complete warning and revert' });
   }
 }
 
 /** One coordinator per workspace/Story. Credentials remain in the existing KV. */
-export class GuardianStory {
+export class EstimateGuardianStory {
   private tail: Promise<unknown> = Promise.resolve();
   private recovery: RecoveryStore;
 
@@ -670,7 +670,7 @@ export class GuardianStory {
         await guardStory(session, action, () => resolveActorMention(session, actor));
         return Response.json({ ok: true });
       } catch (error) {
-        console.error('Guardian story processing failed', {
+        console.error('Estimate Guardian story processing failed', {
           message: error instanceof ShortcutRequestError ? error.message : 'Could not process story',
         });
         return Response.json({ error: 'Could not process story' }, { status: 503 });
@@ -689,7 +689,7 @@ export class GuardianStory {
           record.phase = 'finished';
           record.outcome = 'exhausted';
           await this.recovery.save(record);
-          console.warn('Guardian recovery stopped: workspace credentials unavailable');
+          console.warn('Estimate Guardian recovery stopped: workspace credentials unavailable');
           return;
         }
         await recoverRevert({ env: this.env, kv: this.env.TOKENS, workspaceId: record.workspaceId,
@@ -697,8 +697,8 @@ export class GuardianStory {
       } catch {
         // Storage failures can use Cloudflare's bounded alarm redelivery. No
         // raw exception contents are logged and reserved attempts stay saved.
-        console.error('Guardian recovery storage unavailable');
-        throw new Error('Guardian recovery storage unavailable');
+        console.error('Estimate Guardian recovery storage unavailable');
+        throw new Error('Estimate Guardian recovery storage unavailable');
       }
     });
   }
@@ -776,7 +776,7 @@ app.use('/webhook', async (c, next) => {
 app.get('/oauth/callback', async (c) => {
   const error = c.req.query('error');
   if (error) {
-    console.error('Guardian OAuth denied', { message: 'Authorization was not granted' });
+    console.error('Estimate Guardian OAuth denied', { message: 'Authorization was not granted' });
     return c.text('Authorization failed. Please close this tab and try connecting again.', 400);
   }
 
@@ -821,14 +821,14 @@ app.get('/oauth/callback', async (c) => {
       scopes,
     });
 
-    console.log('Guardian OAuth connected', { workspaceId: data.workspace2_id, slug: data.workspace2_slug, scopes: scopes ?? 'unknown' });
+    console.log('Estimate Guardian OAuth connected', { workspaceId: data.workspace2_id, slug: data.workspace2_slug, scopes: scopes ?? 'unknown' });
     return c.html(
       `<h2>✅ Connected!</h2>
        <p>Your workspace is now guarded.</p>
        <p>You can close this tab.</p>`,
     );
   } catch (err) {
-    console.error('Guardian OAuth failed', { message: err instanceof ShortcutRequestError ? err.message : 'Could not connect workspace' });
+    console.error('Estimate Guardian OAuth failed', { message: err instanceof ShortcutRequestError ? err.message : 'Could not connect workspace' });
     return c.text('Token exchange failed. Check worker logs.', 500);
   }
 });
@@ -874,7 +874,7 @@ app.post('/webhook', async (c) => {
   }
 
   // Most updates are settled here, from the payload alone: one that touched
-  // neither the workflow state nor the team can't have broken the rule.
+  // neither the workflow state nor the estimate can't have broken the rule.
   const updates = payload.actions.filter(
     (action) =>
       action.entity_type === 'story' && action.action === 'update' && couldBreachRule(action),
@@ -886,8 +886,8 @@ app.post('/webhook', async (c) => {
   // must be durable before Shortcut sees success. Duplicate calls serialize.
   for (const action of updates) {
     if (!Number.isSafeInteger(Number(action.id)) || Number(action.id) <= 0) return c.json({ error: 'Invalid story id' }, 400);
-    const id = c.env.GUARDIAN_STORIES.idFromName(JSON.stringify([workspaceId, Number(action.id)]));
-    const response = await c.env.GUARDIAN_STORIES.get(id).fetch('https://guardian.internal/guard', {
+    const id = c.env.ESTIMATE_GUARDIAN_STORIES.idFromName(JSON.stringify([workspaceId, Number(action.id)]));
+    const response = await c.env.ESTIMATE_GUARDIAN_STORIES.get(id).fetch('https://estimate-guardian.internal/guard', {
       method: 'POST', body: JSON.stringify({ workspaceId, deliveryId: payload.id, action, actor: payload.actor ?? {} }),
     });
     if (!response.ok) return c.json({ error: 'Could not process story' }, 503);
@@ -898,6 +898,6 @@ app.post('/webhook', async (c) => {
 
 // Unauthenticated, so it says nothing about which workspaces are connected.
 // Connected workspaces and their scopes are in the OAuth connect/refresh logs.
-app.get('/', (c) => c.json({ status: 'ok', service: 'Shortcut Guardian Agent' }));
+app.get('/', (c) => c.json({ status: 'ok', service: 'Shortcut Estimate Guardian Agent' }));
 
 export default app;

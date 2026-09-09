@@ -39,7 +39,7 @@ export default {
     const comments = /^\/api\/v4\/acme\/(stories|epics)\/\d+\/comments$/.test(url.pathname);
     const allowedFields = request.method !== 'GET' ? ['id'] : comments ? ['id', 'text', 'author', 'deleted', 'external_id'] :
       url.pathname.endsWith('/workflow-states') ? ['id', 'type'] :
-      url.pathname.includes('/members/') ? ['mention_name'] : ['team', 'workflow_state'];
+      url.pathname.includes('/members/') ? ['mention_name'] : ['team', 'estimate', 'workflow_state'];
     if (url.searchParams.get('fields').split(',').some((field) => !allowedFields.includes(field))) {
       return reject(request, 'Unknown field selection');
     }
@@ -70,10 +70,13 @@ export default {
         })), current_page: 2, total_pages: 2,
       });
     }
+    if (url.pathname === '/api/v4/acme/stories/124') {
+      return Response.json({ entity: { id: 124, team: null, estimate: 0, workflow_state: { id: 2 } } });
+    }
     if (url.pathname === '/api/v4/acme/stories/123') {
       // Keep reporting started, even after a revert, so the second Guardian
       // delivery must find its existing warning instead of exiting on state.
-      return Response.json({ entity: { id: 123, team: null, workflow_state: { id: 2 } } });
+      return Response.json({ entity: { id: 123, team: null, estimate: null, workflow_state: { id: 2 } } });
     }
     return reject(request, 'Unmocked API resource');
   },

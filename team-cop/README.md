@@ -10,6 +10,10 @@ it reads the Story's existing comments and checks their author against Team Cop'
 member ID. It re-reads the Story before commenting and never changes the workflow
 state.
 
+For a different rule that warns and reverts Stories started without an Estimate,
+see [Estimate Guardian](../estimate-guardian). Team Cop only checks Team membership and
+never changes workflow state.
+
 See [Custom Agents](../docs/custom-agents.md) for payloads and installation concepts.
 
 ## Deployment

@@ -118,7 +118,7 @@ A story `update` action carries a `changes` list describing the transaction's di
 
 Two habits follow from that:
 
-- **Filter on `changes` before calling the API.** An agent that only cares about, say, `workflow_state` and `team` can drop every other update without a request. When the key is absent, assume anything could have changed and fall through to the slow path.
+- **Filter on `changes` before calling the API.** An agent that only cares about, say, `workflow_state` and `estimate` can drop every other update without a request. When the key is absent, assume anything could have changed and fall through to the slow path.
 - **Trust an entry's `removes` only after matching its `adds`.** Deliveries are handled asynchronously, so by the time an agent re-reads the story it may have moved again. If `adds[0].id` isn't the story's current value, the entry describes an older change and reverting to its `removes` would send the story somewhere it never was.
 
 Actions for other entity types, and story updates whose `changes` key is absent, say *that* an entity changed but not *what*. An agent that still needs the difference reconstructs it:
@@ -133,4 +133,4 @@ An agent subscribed to observer deliveries will also see the changes it makes it
 
 For anything that both reads and writes, the actor check alone is thin. Pair it with a check of the durable effect — "have I already commented on this story?" — so a restart, a missed id, or a manual retry can't produce a second round of writes.
 
-See [`guardian`](../guardian) for a worked example of both, and [`quote-agent`](../quote-agent) for one that only responds to interaction triggers.
+See [Estimate Guardian](../estimate-guardian), which warns and reverts Stories started without an Estimate, for a worked example of both, and [`quote-agent`](../quote-agent) for one that only responds to interaction triggers.
