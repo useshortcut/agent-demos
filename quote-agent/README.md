@@ -11,8 +11,9 @@ For background on the platform itself — payload shapes, trigger semantics, and
 - **Runtime**: Cloudflare Workers (Hono framework)
 - **Storage**: Cloudflare KV (`TOKENS` namespace) — stores OAuth credentials per workspace
 - **Delivery coordination**: SQLite Durable Object (`QUOTE_DELIVERIES`) — serializes interactions per workspace and stores completed-delivery receipts
-- **Auth**: OAuth 2.0 authorization code flow with the Shortcut v4 API
-- **Webhooks**: Receives signed HMAC-SHA256 payloads from Shortcut
+- **Shortcut client**: [`@shortcut/client`](https://www.npmjs.com/package/@shortcut/client) — `ShortcutV4Client` (plus `client.paginate` for cursor pages) for API calls, `ShortcutOAuth` for the token exchange and refresh, `ShortcutWebhookClient.verifyBody` for webhook verification
+- **Auth**: OAuth 2.0 authorization code flow with the Shortcut v4 API via `ShortcutOAuth`; the demo owns credential storage and the refresh policy (proactively within 5 minutes of expiry, once reactively on a 401)
+- **Webhooks**: Receives signed HMAC-SHA256 payloads from Shortcut; the demo caps the body at 2 MB, then `verifyBody` checks the signature and the delivery envelope before anything is parsed or acted on
 
 ### Endpoints
 
@@ -39,8 +40,11 @@ serializes concurrent interactions, including token refresh. Before posting, it
 scans current comments for a matching `external_id` authored by this agent. This
 recovers a successful POST if execution stopped before its receipt was saved.
 The API comment lists include threaded replies, so this works for replies too.
-Cursor pages stay on the same API origin and resource; malformed, incomplete,
-or failed scans abort processing instead of being treated as an empty list.
+The scan walks every page with `client.paginate`, which follows `next_page_url`
+only to the same API origin, sends nothing but the cursor and `fields`, and
+throws on loops, unsafe links, or incomplete lists; a failed scan aborts
+processing instead of being treated as an empty list. The library rejects the
+request; the demo owns the receipts, the marker check, and the threading.
 
 Failures return HTTP 503 without storing a receipt. This demo does not enqueue
 its own retries or guarantee that Shortcut redelivers failures. It also cannot
@@ -130,11 +134,14 @@ completes; once you see that line, the agent is live.
 
 Scopes are logged on connection and refresh. Older stored credentials report
 `unknown` until a token response supplies scopes; a refresh without a scope
-field preserves previously known scopes. All Shortcut requests use a 15-second timeout. Request error logs include
-method, pathname, status, and bounded API error codes (`tag`, `error`, `code`).
-Free-form error messages/descriptions and response bodies are intentionally
-omitted because they can echo user content or credentials. OAuth state, codes,
-tokens, and query strings are not application-logged. Automatic invocation logs
+field preserves previously known scopes. All Shortcut requests go through
+`@shortcut/client` with a `fetch` wrapper that adds a 15-second timeout; the
+library itself sets none. A failed request rejects with the `Response`, which
+is never logged whole: request error logs include method, pathname, status, and
+bounded API error codes (`tag`, `error`, `code`). Free-form error
+messages/descriptions and response bodies are intentionally omitted because
+they can echo user content or credentials. OAuth state, codes, tokens, cursors,
+and query strings are not application-logged. Automatic invocation logs
 are disabled to avoid storing callback URLs, but interactive `wrangler tail`
 can still display those URLs: redact codes and state before sharing a tail.
 

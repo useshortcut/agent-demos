@@ -6,6 +6,9 @@
     "lib": ["ES2022"],
     "types": ["@cloudflare/workers-types"],
     "strict": true,
+    // @shortcut/client's webhook declarations reference node:http types, which
+    // a Workers project does not install.
+    "skipLibCheck": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },

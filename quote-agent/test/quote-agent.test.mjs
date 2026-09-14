@@ -19,7 +19,8 @@ function harness() {
   };
   restartCoordinator();
   const deliver = (id = 'delivery', overrides = {}) => {
-    const payload = { id, version: 'v2', installation_id: 'install', workspace2: { id: 'workspace', url_slug: 'acme' }, actor: { member_id: 'user' }, trigger: { type: 'assigned', entity_type: 'story', entity_id: '123' }, ...overrides };
+    const payload = { id, version: 'v2', timestamp: '2026-01-01T00:00:00.000Z', installation_id: 'install', workspace2: { id: 'workspace', url_slug: 'acme' },
+      actor: { member_id: 'user', displayable_name: 'Ada' }, trigger: { type: 'assigned', entity_type: 'story', entity_id: '123' }, ...overrides };
     const body = JSON.stringify(payload);
     return mod.default.request('/webhook', { method: 'POST', body, headers: { 'Payload-Signature': createHmac('sha256', 'signing').update(body).digest('hex') } }, env);
   };
@@ -112,7 +113,7 @@ it('recovers a post-before-receipt interruption from current comments across cur
     }
     if (!marker) return Response.json({ entities: [], current_page: 1, total_pages: 0 });
     if (parsed.searchParams.has('cursor')) return Response.json({ entities: [{ id: 1, external_id: marker, author: { id: 'quote' } }], current_page: 2, total_pages: 2 });
-    return Response.json({ entities: [], current_page: 1, total_pages: 2, next_page_url: `${parsed.pathname}?cursor=next` });
+    return Response.json({ entities: [], current_page: 1, total_pages: 2, next_page_url: `${parsed.pathname}?cursor=next&fields=${parsed.searchParams.get('fields')}` });
   });
   const h = harness();
   await h.deliver();
@@ -160,7 +161,6 @@ for (const entityType of ['story', 'epic']) {
 
 for (const next of [
   'https://evil.example/comments?cursor=secret',
-  '/api/v4/acme/stories/999/comments?cursor=secret',
   '/api/v4/acme/stories/123/comments?cursor=secret&limit=100',
   '/api/v4/acme/stories/123/comments?cursor=secret#fragment',
   null,
@@ -186,7 +186,7 @@ it('rejects repeated cursors and malformed lists without posting or caching succ
   t.mock.method(globalThis, 'fetch', async (_url, options) => {
     calls++;
     assert.notEqual(options.method, 'POST');
-    return Response.json({ entities: [], current_page: calls, total_pages: 3, next_page_url: '?cursor=repeat' });
+    return Response.json({ entities: [], current_page: calls, total_pages: 3, next_page_url: '/api/v4/acme/stories/123/comments?cursor=repeat' });
   });
   const h = harness();
   assert.equal((await h.deliver()).status, 503);
@@ -201,7 +201,8 @@ it('refreshes once on 401, preserves missing refresh scopes, and reports unknown
     assert.ok(options.signal instanceof AbortSignal);
     if (new URL(url).pathname.includes('oauth-authorization')) {
       refreshes++;
-      return Response.json({ access_token: 'renewed-access', refresh_token: 'renewed-refresh', access_token_expires_at: '2099-01-01T00:00:00Z' });
+      return Response.json({ access_token: 'renewed-access', refresh_token: 'renewed-refresh', access_token_expires_at: '2099-01-01T00:00:00Z',
+        permission_id: 'quote', workspace2_id: 'workspace', workspace2_slug: 'acme' });
     }
     if (options.method === 'POST') {
       assert.equal(options.headers.Authorization, 'Bearer renewed-access');
@@ -235,7 +236,7 @@ it('does not post without OAuth or for self-triggered interactions', async (t) =
   t.mock.method(console, 'error', () => {});
   t.mock.method(globalThis, 'fetch', async () => { assert.fail('should not call the API'); });
   const h = harness();
-  assert.equal((await h.deliver('self', { actor: { member_id: 'quote' } })).status, 200);
+  assert.equal((await h.deliver('self', { actor: { member_id: 'quote', displayable_name: 'Quote Agent' } })).status, 200);
   h.data.clear();
   assert.equal((await h.deliver()).status, 503);
   assert.equal(h.records.size, 0);
@@ -289,8 +290,9 @@ it('acknowledges observer deliveries without touching storage or the API', async
   t.mock.method(globalThis, 'fetch', async () => assert.fail('observer deliveries must not call the API'));
   const h = harness();
   const before = [...h.data.keys()];
-  const body = JSON.stringify({ id: 'observer', version: 'v2', installation_id: 'install', workspace2: { id: 'workspace', url_slug: 'acme' },
-    actor: { member_id: 'user' }, actions: [{ action: 'update', entity_type: 'story', id: 123, changes: [{ attribute: '<script>', adds: [1], removes: [] }] }] });
+  const body = JSON.stringify({ id: 'observer', version: 'v2', timestamp: '2026-01-01T00:00:00.000Z', installation_id: 'install', workspace2: { id: 'workspace', url_slug: 'acme' },
+    actor: { member_id: 'user', displayable_name: 'Ada' },
+    actions: [{ action: 'update', entity_type: 'story', id: 123, global_id: 'story:123', app_url: null, changes: [{ attribute: '<script>', adds: [1], removes: [] }] }] });
   assert.equal((await mod.default.request('/webhook', signed(body), h.env)).status, 200);
   assert.deepEqual([...h.data.keys()], before);
   assert.equal(h.records.size, 0);
