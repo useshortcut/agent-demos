@@ -6,8 +6,8 @@ import { it } from 'node:test';
 import { build } from 'esbuild';
 
 const source = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
-const compiled = await build({ stdin: { contents: source + '\nexport { listAll, alreadyWarned, startedStateIds, apiJson, guardStory, refreshCredentials, resolveActorMention, couldBreachRule };', resolveDir: new URL('../src', import.meta.url).pathname, loader: 'ts' }, bundle: true, format: 'esm', platform: 'node', write: false });
-const { listAll, alreadyWarned, startedStateIds, apiJson, guardStory, refreshCredentials, resolveActorMention, couldBreachRule, EstimateGuardianStory, default: app } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text + '\n//# sourceURL=estimate-guardian-test-bundle.mjs').toString('base64')}`);
+const compiled = await build({ stdin: { contents: source + '\nexport { alreadyWarned, startedStateIds, withRefresh, guardStory, refreshCredentials, resolveActorMention, couldBreachRule };', resolveDir: new URL('../src', import.meta.url).pathname, loader: 'ts' }, bundle: true, format: 'esm', platform: 'node', write: false });
+const { alreadyWarned, startedStateIds, withRefresh, guardStory, refreshCredentials, resolveActorMention, couldBreachRule, EstimateGuardianStory, default: app } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text + '\n//# sourceURL=estimate-guardian-test-bundle.mjs').toString('base64')}`);
 function session() {
   const data = new Map();
   const kv = { async get(k) { return data.get(k) ?? null; }, async put(k, v) { data.set(k, v); }, async list({ prefix }) { return { keys: [...data.keys()].filter((name) => name.startsWith(prefix)).map((name) => ({ name })) }; } };
@@ -18,19 +18,24 @@ function session() {
 
 it('follows cursor pagination without a page parameter', async (t) => {
   const urls = [];
-  t.mock.method(globalThis, 'fetch', async (url) => {
+  const s = session();
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
     urls.push(url);
     const parsed = new URL(url);
+    assert.equal(init.headers.Authorization, 'Bearer private-access');
+    assert.equal(parsed.searchParams.get('fields'), 'id,type');
     if (parsed.searchParams.has('page')) return Response.json({ message: 'page is not allowed' }, { status: 400 });
     if (parsed.searchParams.has('cursor')) {
       assert.equal(parsed.searchParams.has('limit'), false);
       assert.equal(parsed.searchParams.get('cursor'), 'opaque+cursor=');
-      return Response.json({ entities: [{ id: 2 }], current_page: 2, total_pages: 2 });
+      return Response.json({ entities: [{ id: 2, type: 'started' }], current_page: 2, total_pages: 2 });
     }
-    return Response.json({ entities: [{ id: 1 }], current_page: 1, total_pages: 2, next_page_url: 'https://api.example.com/api/v4/acme/workflow-states?cursor=opaque%2Bcursor%3D&fields=id,type' });
+    assert.equal(parsed.searchParams.get('limit'), '100');
+    return Response.json({ entities: [{ id: 1, type: 'started' }, { id: 3, type: 'done' }], current_page: 1, total_pages: 2, next_page_url: 'https://api.example.com/api/v4/acme/workflow-states?cursor=opaque%2Bcursor%3D&fields=id,type' });
   });
-  assert.deepEqual(await listAll(session(), '/workflow-states?fields=id,type'), [{ id: 1 }, { id: 2 }]);
+  assert.deepEqual(await startedStateIds(s), new Set([1, 2]));
   assert.equal(urls.length, 2);
+  assert.deepEqual(JSON.parse(s.data.get('started-states:v2:workspace')), [1, 2]);
 });
 
 it('does not interpret a failed comment lookup as no previous warning', async (t) => {
@@ -57,7 +62,7 @@ it('uses request timeouts and logs safe endpoint diagnostics', async (t) => {
     signal = options.signal;
     return Response.json({ tag: 'invalid_params', message: 'Rejected private-access private-refresh private-client private body', text: 'private body' }, { status: 400 });
   });
-  try { await apiJson(session(), 'POST', '/stories/123/comments?fields=id', { text: 'private body' }); } catch {}
+  try { await withRefresh(session(), (ws) => ws.createStoryComment(123, { text: 'private body' }, { fields: 'id' })); } catch {}
   assert.ok(signal instanceof AbortSignal);
   assert.match(JSON.stringify(logs), /invalid_params/);
   assert.doesNotMatch(JSON.stringify(logs), /private-access|private-refresh|private-client|private body/);
@@ -74,47 +79,53 @@ it('persists and reports OAuth scopes', async (t) => {
   assert.deepEqual(JSON.parse(await s.kv.get('creds:workspace')).scopes, ['read', 'comment-write']);
 });
 
+// Unsafe continuation links are refused before a second request is made, so a
+// leaked bearer token or a smuggled parameter never leaves the API origin.
+const endpoint = 'https://api.example.com/api/v4/acme/workflow-states';
 for (const next of [
   'https://evil.example/api/v4/acme/workflow-states?cursor=secret',
-  '/api/v4/other/workflow-states?cursor=secret',
-  '/api/v4/acme/members?cursor=secret',
   'https://user:pass@api.example.com/api/v4/acme/workflow-states?cursor=secret',
-  '?cursor=secret#fragment', '?cursor=secret&page=2', '?cursor=secret&limit=100',
-  '?cursor=a&cursor=b', '?cursor=secret&fields=description', '?fields=id,type',
+  `${endpoint}?cursor=secret#fragment`, `${endpoint}?cursor=secret&page=2`, `${endpoint}?cursor=secret&limit=100`,
+  `${endpoint}?cursor=a&cursor=b`, `${endpoint}?fields=id,type`, '?cursor=secret',
 ]) {
   it(`rejects unsafe next-page URL ${next}`, async (t) => {
     let calls = 0;
+    const s = session();
     t.mock.method(globalThis, 'fetch', async () => {
       calls++;
-      return Response.json({ entities: [], current_page: 1, total_pages: 2, next_page_url: next });
+      return Response.json({ entities: [{ id: 1, type: 'started' }], current_page: 1, total_pages: 2, next_page_url: next });
     });
-    await assert.rejects(listAll(session(), '/workflow-states?fields=id,type'), /next-page/);
+    await assert.rejects(startedStateIds(s), /invalid, unsafe, or incomplete/);
     assert.equal(calls, 1);
+    assert.equal(s.data.has('started-states:v2:workspace'), false);
   });
 }
 
-it('restores requested fields for relative cursor URLs and rejects cursor loops', async (t) => {
+it('retains requested fields and drops limit on cursor pages, and rejects cursor loops', async (t) => {
   let calls = 0;
+  const s = session();
   t.mock.method(globalThis, 'fetch', async (url) => {
     calls++;
     const params = new URL(url).searchParams;
     assert.equal(params.get('fields'), 'id,type');
     assert.equal(params.get('limit'), calls === 1 ? '100' : null);
-    return Response.json({ entities: [], next_page_url: '?cursor=repeat' });
+    assert.equal(params.has('page'), false);
+    return Response.json({ entities: [{ id: 1, type: 'started' }], next_page_url: `${endpoint}?cursor=repeat&fields=id,type` });
   });
-  await assert.rejects(listAll(session(), '/workflow-states?fields=id,type'), /repeated/);
+  await assert.rejects(startedStateIds(s), /invalid, unsafe, or incomplete/);
   assert.equal(calls, 2);
+  assert.equal(s.data.has('started-states:v2:workspace'), false);
 });
 
 for (const envelope of [
-  { entities: [], current_page: 1, total_pages: 2 },
-  { entities: [], current_page: 2, total_pages: 2 },
-  { entities: [], current_page: 1, total_pages: 1, next_page_url: '?cursor=unexpected' },
+  { entities: [{ id: 1, type: 'started' }], current_page: 1, total_pages: 2 },
   { entities: null },
 ]) {
   it(`rejects incomplete/malformed list ${JSON.stringify(envelope)}`, async (t) => {
+    const s = session();
     t.mock.method(globalThis, 'fetch', async () => Response.json(envelope));
-    await assert.rejects(listAll(session(), '/workflow-states?fields=id,type'));
+    await assert.rejects(startedStateIds(s), /invalid, unsafe, or incomplete/);
+    assert.equal(s.data.has('started-states:v2:workspace'), false);
   });
 }
 
@@ -136,12 +147,12 @@ function businessFetch(t, { comments = [], commentStatus = 200, lookupStatus = 2
     const url = new URL(raw);
     if (init.method !== 'GET') {
       writes.push({ method: init.method, path: url.pathname, body: JSON.parse(init.body) });
-      return Response.json({ id: 321 }, { status: init.method === 'POST' ? commentStatus : 200 });
+      return Response.json({ entity: { id: 321 } }, { status: init.method === 'POST' ? commentStatus : 200 });
     }
     if (url.pathname.endsWith('/workflow-states')) return Response.json({ entities: [{ id: 2, type: 'started' }] });
     if (url.pathname.endsWith('/comments')) return Response.json({ entities: comments }, { status: lookupStatus });
     if (url.pathname.endsWith('/history')) return Response.json({ changes: historyChanges });
-    return Response.json({ estimate, team, workflow_state: { id: 2 } });
+    return Response.json({ entity: { estimate, team, workflow_state: { id: 2 } } });
   });
   return writes;
 }
@@ -155,7 +166,7 @@ it('leaves comment and workflow untouched when comment lookup fails', async (t) 
 it('finds its warning on a later comment page', async (t) => {
   let calls = 0;
   t.mock.method(globalThis, 'fetch', async () => ++calls === 1
-    ? Response.json({ entities: [], current_page: 1, total_pages: 2, next_page_url: '?cursor=next' })
+    ? Response.json({ entities: [], current_page: 1, total_pages: 2, next_page_url: 'https://api.example.com/api/v4/acme/stories/123/comments?cursor=next&fields=text,author,deleted,external_id' })
     : Response.json({ entities: [warning], current_page: 2, total_pages: 2 }));
   assert.equal(await alreadyWarned(session(), 123), true);
   assert.equal(calls, 2);
@@ -184,6 +195,13 @@ it('warns and reverts an unestimated Story even when it has a Team', async (t) =
 
 it('ignores an unavailable estimate field instead of treating a malformed Story as unestimated', async (t) => {
   t.mock.method(globalThis, 'fetch', async () => Response.json({ entity: { workflow_state: { id: 2 } } }));
+  const s = session();
+  await guardStory(s, action, async () => assert.fail('must not warn'));
+  assert.equal(await s.recovery.get(), undefined);
+});
+
+it('treats a null entity as an unavailable Story rather than an unestimated one', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ entity: null }));
   const s = session();
   await guardStory(s, action, async () => assert.fail('must not warn'));
   assert.equal(await s.recovery.get(), undefined);
@@ -290,6 +308,24 @@ it('rejects unsigned and mis-signed webhooks, with no bypass flag', async (t) =>
   assert.equal((await app.request('/webhook', signed(body), env)).status, 200);
 });
 
+it('accepts a full observer envelope and rejects a partial one before acting on it', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  t.mock.method(globalThis, 'fetch', async () => assert.fail('must not call Shortcut for an unconnected workspace'));
+  const { env } = session();
+  const full = { id: 'delivery', version: 'v2', timestamp: '2026-01-01T00:00:00.000Z', installation_id: 'installation',
+    workspace2: { id: 'unconnected', url_slug: 'acme' }, actor: { displayable_name: 'Ada', member_id: 'ada' },
+    actions: [{ ...action, global_id: 'v2:s:unconnected:123' }] };
+  assert.equal((await app.request('/webhook', signed(JSON.stringify(full)), env)).status, 200);
+  const { global_id, ...partialAction } = full.actions[0];
+  assert.ok(global_id);
+  for (const partial of [{ ...full, actions: [partialAction] }, { ...full, workspace2: undefined }, { ...full, actor: {} }, { actions: full.actions }]) {
+    const response = await app.request('/webhook', signed(JSON.stringify(partial)), env);
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: 'Invalid payload' });
+  }
+  assert.equal((await app.request('/webhook', signed('{not json'), env)).status, 400);
+});
+
 it('refuses webhooks and OAuth until every secret is configured, instead of skipping verification', async (t) => {
   t.mock.method(globalThis, 'fetch', async () => assert.fail('must not call Shortcut without configuration'));
   const { env } = session();
@@ -322,13 +358,17 @@ it('encodes the actor member id in the API path and sanitizes display-name fallb
   assert.equal(await resolveActorMention(s, {}), 'Someone');
 });
 
+// The token endpoint always reports the workspace; the library rejects a rotation that omits it.
+const rotated = { access_token: 'rotated-token', refresh_token: 'rotated-refresh', access_token_expires_at: '2099-01-01T00:00:00Z',
+  permission_id: 'estimate-guardian', workspace2_id: 'workspace', workspace2_slug: 'acme' };
+
 it('preserves granted scopes on refresh when omitted and replaces them when explicitly returned', async (t) => {
   const s = session();
   s.creds.scopes = ['read', 'comment-write'];
   let calls = 0;
   t.mock.method(globalThis, 'fetch', async (_url, init) => {
     assert.ok(init.signal instanceof AbortSignal);
-    return Response.json({ access_token: 'rotated-token', refresh_token: 'rotated-refresh', access_token_expires_at: '2099-01-01T00:00:00Z', ...(++calls === 1 ? {} : { scope: 'read' }) });
+    return Response.json({ ...rotated, ...(++calls === 1 ? {} : { scope: 'read' }) });
   });
   await refreshCredentials(s);
   assert.deepEqual(s.creds.scopes, ['read', 'comment-write']);
@@ -339,9 +379,11 @@ it('preserves granted scopes on refresh when omitted and replaces them when expl
 
 it('keeps unknown scopes unknown on refresh for legacy credentials', async (t) => {
   const s = session();
-  t.mock.method(globalThis, 'fetch', async () => Response.json({ access_token: 'rotated-token', refresh_token: 'rotated-refresh', access_token_expires_at: '2099-01-01T00:00:00Z' }));
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ ...rotated }));
   await refreshCredentials(s);
+  assert.equal(s.creds.token, 'rotated-token');
   assert.equal(s.creds.scopes, undefined);
+  assert.equal(JSON.parse(await s.kv.get('creds:workspace')).scopes, undefined);
 });
 
 it('uses a 15 second timeout and never logs thrown network error contents', async (t) => {
@@ -349,7 +391,7 @@ it('uses a 15 second timeout and never logs thrown network error contents', asyn
   t.mock.method(console, 'error', (...args) => logs.push(args));
   t.mock.method(AbortSignal, 'timeout', (duration) => { assert.equal(duration, 15_000); return new AbortController().signal; });
   t.mock.method(globalThis, 'fetch', async () => { throw new Error('private-access https://example.com/?code=private-code'); });
-  await assert.rejects(apiJson(session(), 'GET', '/stories/123?fields=estimate'), /Network request failed or timed out/);
+  await assert.rejects(withRefresh(session(), (ws) => ws.getStory(123, { fields: 'estimate' })), /Network request failed or timed out/);
   assert.doesNotMatch(JSON.stringify(logs), /private-access|private-code|https:/);
 });
 
@@ -377,20 +419,31 @@ it('refreshes once on 401 and uses the rotated token', async (t) => {
   const s = session();
   const tokens = [];
   t.mock.method(globalThis, 'fetch', async (url, init) => {
-    if (new URL(url).pathname.endsWith('/token')) return Response.json({ access_token: 'rotated-token', refresh_token: 'rotated-refresh', access_token_expires_at: '2099-01-01T00:00:00Z', scope: 'read' });
+    if (new URL(url).pathname.endsWith('/token')) return Response.json({ ...rotated, scope: 'read' });
     tokens.push(init.headers.Authorization);
-    return tokens.length === 1 ? Response.json({ error: 'invalid_token' }, { status: 401 }) : Response.json({ id: 123 });
+    return tokens.length === 1 ? Response.json({ error: 'invalid_token' }, { status: 401 }) : Response.json({ entity: { id: 123 } });
   });
-  assert.deepEqual(await apiJson(s, 'GET', '/stories/123?fields=id'), { id: 123 });
+  assert.deepEqual(await withRefresh(s, (ws) => ws.getStory(123, { fields: 'id' })), { entity: { id: 123 } });
   assert.deepEqual(tokens, ['Bearer private-access', 'Bearer rotated-token']);
+  assert.equal(JSON.parse(await s.kv.get('creds:workspace')).token, 'rotated-token');
 });
 
-it('unwraps v4 single-entity responses while retaining list envelopes', async (t) => {
-  const responses = [{ entity: { estimate: null, workflow_state: { id: 2 } } }, { entities: [{ id: 2 }] }, { entity: null }];
-  t.mock.method(globalThis, 'fetch', async () => Response.json(responses.shift()));
-  assert.deepEqual(await apiJson(session(), 'GET', '/stories/123?fields=estimate,workflow_state'), { estimate: null, workflow_state: { id: 2 } });
-  assert.deepEqual(await apiJson(session(), 'GET', '/workflow-states?fields=id'), { entities: [{ id: 2 }] });
-  assert.equal(await apiJson(session(), 'GET', '/stories/123?fields=id'), null);
+it('refreshes only once on a persistent 401 and rejects with the response, never the body', async (t) => {
+  const s = session();
+  let refreshes = 0;
+  let requests = 0;
+  t.mock.method(console, 'error', () => {});
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    if (new URL(url).pathname.endsWith('/token')) {
+      refreshes++;
+      return Response.json({ ...rotated });
+    }
+    requests++;
+    return Response.json({ error: 'invalid_token' }, { status: 401 });
+  });
+  await assert.rejects(withRefresh(s, (ws) => ws.getStory(123, { fields: 'id' })), (error) => error instanceof Response && error.status === 401);
+  assert.equal(refreshes, 1);
+  assert.equal(requests, 2);
 });
 
 function recoveryFixture(t, { patchFailures = 1, ambiguousPost = false, commitPost = true } = {}) {

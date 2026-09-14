@@ -1,4 +1,25 @@
 import { Hono } from 'hono';
+import {
+  SHORTCUT_V4_BASE_URL,
+  ShortcutOAuth,
+  ShortcutOAuthError,
+  ShortcutV4Client,
+  grantedScopes,
+  isShortcutV4RequestError,
+  type ShortcutOAuthTokens,
+  type ShortcutV4Page,
+  type ShortcutWorkspaceApi,
+} from '@shortcut/client/v4';
+import {
+  ShortcutWebhookClient,
+  ShortcutWebhookError,
+  isShortcutObserverPayload,
+  isShortcutValidationPayload,
+  type ShortcutChangeValue,
+  type ShortcutObserverAction,
+  type ShortcutVerifiedDelivery,
+  type ShortcutWebhookActor,
+} from '@shortcut/client/webhooks';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -21,6 +42,8 @@ function configured(env: Env): boolean {
   return REQUIRED_SECRETS.every((key) => typeof env[key] === 'string' && env[key].trim() !== '');
 }
 
+const apiBase = (env: Env) => env.SHORTCUT_API_BASE ?? SHORTCUT_V4_BASE_URL;
+
 type WorkspaceCredentials = {
   token: string;
   slug: string;
@@ -30,51 +53,9 @@ type WorkspaceCredentials = {
   scopes?: string[]; // absent for credentials issued before scope reporting
 };
 
-// --- Observer webhook (v2 envelope) ----------------------------------------
-
-// One entry per tracked attribute a transaction touched, in the same shape as
-// the v4 story history API: refs render as slim entities, everything else as
-// plain scalars. A cardinality-one replacement is adds=[new] removes=[old];
-// setting a previously-unset attribute has removes=[], clearing one has adds=[].
-type ChangeEntry = {
-  attribute: string;
-  adds: ChangeValue[];
-  removes: ChangeValue[];
-  truncated?: boolean; // a string value was cut at 8,192 chars
-};
-
-type ChangeValue = SlimRef<number | string> | string | number | boolean;
-
-type ObserverAction = {
-  action: 'create' | 'update' | 'delete';
-  id: number | string;
-  entity_type: string;
-  global_id: string;
-  app_url: string | null;
-  /** @deprecated Frozen for legacy consumers — read `app_url`. */
-  uri?: string | null;
-  // Story update actions only. `[]` means nothing tracked changed. An absent
-  // key means the diff was unavailable for this delivery, never that nothing
-  // changed — Estimate Guardian falls back to story history in that case.
-  changes?: ChangeEntry[];
-};
-
-type ObserverActor = {
-  displayable_name: string;
-  member_id?: string;
-  automation_id?: string;
-  webhook_id?: string;
-};
-
-type ObserverPayload = {
-  id: string;
-  version: 'v2';
-  timestamp: string;
-  actor: ObserverActor;
-  workspace2: { id: string; url_slug: string };
-  installation_id: string;
-  actions: ObserverAction[];
-};
+// The observer delivery itself — envelope, actions, and the per-attribute
+// `changes` diff in the same shape as v4 story history — is typed and validated
+// by `@shortcut/client/webhooks`.
 
 // --- Shortcut v4 API shapes ------------------------------------------------
 
@@ -87,7 +68,9 @@ type SlimRef<Id = number> = { id: Id; entity_type: string; name?: string };
 // workspace.
 //
 // Unknown field names are a 400, so each constant below is the exact field list
-// for the type under it. Change one, change the other.
+// for the type under it. Change one, change the other. The library's generated
+// entity types describe whole entities; these narrow types describe what the
+// responses actually carry once `fields` has trimmed them.
 
 const STORY_FIELDS = 'estimate,workflow_state';
 type Story = {
@@ -115,18 +98,6 @@ type Member = { mention_name: string };
 // Writes need just enough of a response to tell success from failure.
 const ID_ONLY_FIELDS = 'id';
 type EntityId = { id: number | null };
-
-// `GET /stories/{id}/history` returns entries in the same shape as an action's
-// `changes` (plus a timestamp), so one type covers both sources.
-type StoryHistory = { changes: ChangeEntry[] };
-
-// v4 requests use cursors; page numbers are response metadata only.
-type ListEnvelope<T> = {
-  entities: T[];
-  current_page?: number;
-  total_pages?: number;
-  next_page_url?: string | null;
-};
 
 // ---------------------------------------------------------------------------
 // The warning
@@ -156,6 +127,9 @@ type Session = {
   creds: WorkspaceCredentials;
   deliveryId: string;
   recovery: RecoveryStore;
+  // The v4 client for these credentials, built on first use. A refresh swaps
+  // its token in place, so one client serves the whole session.
+  client?: ShortcutV4Client;
 };
 
 type Recovery = {
@@ -193,19 +167,20 @@ async function finishRecovery(s: Session, recovery: Recovery, outcome: Recovery[
 /** Continue only the warning created by this operation, never an old warning. */
 async function completeRevert(s: Session, recovery: Recovery) {
   if (recovery.phase === 'commenting') {
-    const comments = await listAll<StoryComment>(s, `/stories/${recovery.storyId}/comments?fields=${COMMENT_FIELDS}`);
+    const comments = await listAll<StoryComment>(s, (ws) => ws.listStoryComments(recovery.storyId, { fields: COMMENT_FIELDS, limit: 100 }));
     const posted = comments.some((comment) => !comment.deleted && comment.author?.id === recovery.memberId && comment.external_id === recovery.marker);
     if (!posted) return; // POST may have failed or not yet become visible. Never POST again.
     recovery.phase = 'warned';
     await s.recovery.save(recovery);
   }
-  if (recovery.previousStateId === null) {
+  const previousStateId = recovery.previousStateId;
+  if (previousStateId === null) {
     await finishRecovery(s, recovery, 'warned-only');
     return;
   }
   // The comment/lookup can take time. Read immediately before *every* PATCH,
   // including recovery, rather than reusing the initial Story snapshot.
-  const story = await apiJson<Story>(s, 'GET', `/stories/${recovery.storyId}?fields=${STORY_FIELDS}`);
+  const story = await apiEntity<Story>(s, (ws) => ws.getStory(recovery.storyId, { fields: STORY_FIELDS }));
   if (!story) return;
   if (Date.now() >= recovery.deadline) {
     await finishRecovery(s, recovery, 'exhausted');
@@ -215,9 +190,8 @@ async function completeRevert(s: Session, recovery: Recovery) {
     await finishRecovery(s, recovery, 'superseded');
     return;
   }
-  const reverted = await apiJson<EntityId>(s, 'PATCH', `/stories/${recovery.storyId}?fields=${ID_ONLY_FIELDS}`, {
-    workflow_state_id: recovery.previousStateId,
-  });
+  const reverted = await apiEntity<EntityId>(s, (ws) =>
+    ws.updateStory(recovery.storyId, { workflow_state_id: previousStateId }, { fields: ID_ONLY_FIELDS }));
   if (reverted) await finishRecovery(s, recovery, 'reverted');
 }
 
@@ -243,14 +217,15 @@ async function recoverRevert(s: Session, recovery: Recovery) {
   }
 }
 
-function shortcutApiBase(env: Env) {
-  return env.SHORTCUT_API_BASE ?? 'https://api.app.shortcut.com';
-}
+// ---------------------------------------------------------------------------
+// Outgoing requests — bounded, and logged without secrets
+// ---------------------------------------------------------------------------
 
 const REQUEST_TIMEOUT_MS = 15_000;
 
-// Only these diagnostics are ever logged. Never log an Error object: fetch
-// errors and provider responses can contain credentials, URLs, or user text.
+// Only these diagnostics are ever logged. Never log an Error object or a
+// rejected Response: fetch errors and provider bodies can contain credentials,
+// URLs, or user text.
 class ShortcutRequestError extends Error {}
 
 function sensitiveStrings(value: unknown): string[] {
@@ -278,35 +253,69 @@ function safeErrorDetails(body: unknown, sensitive: string[]): Record<string, st
   return details;
 }
 
-async function request(url: string, init: RequestInit, sensitive: string[]): Promise<Response> {
-  const endpoint = new URL(url);
-  const diagnostics = { method: init.method ?? 'GET', path: endpoint.pathname };
-  let res: Response;
-  try {
-    res = await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-  } catch {
-    console.error('Shortcut request failed', { ...diagnostics, message: 'Network request failed or timed out' });
-    throw new ShortcutRequestError('Network request failed or timed out');
-  }
-  if (!res.ok) {
-    let body: unknown;
-    try { body = await res.clone().json(); } catch { /* No raw HTML/text logging. */ }
-    console.error('Shortcut request rejected', {
-      ...safeErrorDetails(body, [...sensitive, ...[...endpoint.searchParams].filter(([key]) => key !== 'fields' && key !== 'limit').map(([, value]) => value)]),
-      ...diagnostics, status: res.status,
-    });
-  }
-  return res;
+/** Everything a request body carries, so a provider echoing it back is redacted. */
+function bodyStrings(body: BodyInit | null | undefined): string[] {
+  if (body instanceof URLSearchParams) return [...body.values()];
+  if (typeof body !== 'string') return [];
+  try { return sensitiveStrings(JSON.parse(body)); } catch { return [body]; }
 }
 
-async function responseJson<T>(res: Response): Promise<T> {
-  try { return await res.json() as T; } catch {
-    throw new ShortcutRequestError('Response body could not be read as JSON');
-  }
+/**
+ * The `fetch` handed to the library. The library sets no timeout of its own,
+ * so every request gets one here; it also reports each failure as method,
+ * endpoint path and status only. `sensitive()` lists the strings that must
+ * never reach a log — credentials and OAuth material — and the request's own
+ * body and query values (cursors included) are redacted alongside them.
+ */
+function shortcutFetch(sensitive: () => string[]): typeof fetch {
+  return async (input, init) => {
+    const endpoint = new URL(input instanceof Request ? input.url : input);
+    const diagnostics = { method: init?.method ?? 'GET', path: endpoint.pathname };
+    let res: Response;
+    try {
+      // The library passes `signal: null`; spreading `init` first lets the timeout win.
+      const upstream = await fetch(input, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+      // The library parses a clone and never reads the original body, which
+      // would hold the connection open until the timeout fires. Buffer it here
+      // so the response handed to the library is fully in memory.
+      const bytes = await upstream.arrayBuffer();
+      res = new Response(bytes.byteLength ? bytes : null,
+        { status: upstream.status, statusText: upstream.statusText, headers: upstream.headers });
+    } catch {
+      console.error('Shortcut request failed', { ...diagnostics, message: 'Network request failed or timed out' });
+      throw new ShortcutRequestError('Network request failed or timed out');
+    }
+    if (!res.ok) {
+      let body: unknown;
+      try { body = await res.clone().json(); } catch { /* No raw HTML/text logging. */ }
+      const query = [...endpoint.searchParams].filter(([key]) => key !== 'fields' && key !== 'limit').map(([, value]) => value);
+      console.error('Shortcut request rejected', {
+        ...safeErrorDetails(body, [...sensitive(), ...bodyStrings(init?.body), ...query]),
+        ...diagnostics, status: res.status,
+      });
+    }
+    return res;
+  };
 }
 
-function grantedScopes(data: { scope?: unknown }, fallback?: string[]): string[] | undefined {
-  return typeof data.scope === 'string' ? [...new Set(data.scope.trim().split(/\s+/).filter(Boolean))] : fallback;
+const sessionSecrets = (s: Session) => [s.env.CLIENT_SECRET, s.env.CLIENT_ID, s.creds.token, s.creds.refreshToken];
+
+function clientFor(s: Session): ShortcutV4Client {
+  return (s.client ??= new ShortcutV4Client({
+    token: s.creds.token, baseUrl: apiBase(s.env), fetch: shortcutFetch(() => sessionSecrets(s)),
+  }));
+}
+
+function oauthFor(env: Env, sensitive: () => string[]): ShortcutOAuth {
+  return new ShortcutOAuth({
+    clientId: env.CLIENT_ID, clientSecret: env.CLIENT_SECRET, redirectUri: env.REDIRECT_URI,
+    baseUrl: apiBase(env), fetch: shortcutFetch(sensitive),
+  });
+}
+
+/** Scopes as the token endpoint reported them. An omitted `scope` is unknown, not none. */
+function reportedScopes(tokens: Pick<ShortcutOAuthTokens, 'scope'>, fallback?: string[]): string[] | undefined {
+  return typeof tokens.scope === 'string' ? grantedScopes(tokens) : fallback;
 }
 
 // ---------------------------------------------------------------------------
@@ -328,39 +337,28 @@ async function storeCredentials(kv: KVNamespace, workspaceId: string, creds: Wor
 
 async function refreshCredentials(s: Session): Promise<WorkspaceCredentials | null> {
   console.log(`Refreshing token for workspace ${s.workspaceId}`);
-  const res = await request(`${shortcutApiBase(s.env)}/oauth-authorization-code-flow/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: s.creds.refreshToken,
-      client_id: s.env.CLIENT_ID,
-      client_secret: s.env.CLIENT_SECRET,
-    }),
-  }, [s.env.CLIENT_SECRET, s.env.CLIENT_ID, s.creds.token, s.creds.refreshToken]);
-
-  if (!res.ok) {
-    return null;
+  let tokens: ShortcutOAuthTokens;
+  try {
+    tokens = await oauthFor(s.env, () => sessionSecrets(s)).refreshAccessToken(s.creds.refreshToken);
+  } catch (error) {
+    // A rejected token request was already reported, redacted, by the fetch
+    // wrapper. Its message carries provider text, so it is not repeated here.
+    if (error instanceof ShortcutOAuthError) return null;
+    throw error;
   }
 
-  const data = await responseJson<{
-    access_token: string;
-    refresh_token: string;
-    access_token_expires_at: string;
-    scope?: string;
-  }>(res);
-
   const updated: WorkspaceCredentials = {
-    token: data.access_token,
+    token: tokens.access_token,
     slug: s.creds.slug,
-    refreshToken: data.refresh_token,
-    expiresAt: data.access_token_expires_at,
+    refreshToken: tokens.refresh_token,
+    expiresAt: tokens.access_token_expires_at,
     memberId: s.creds.memberId, // preserved from the original OAuth flow
-    scopes: grantedScopes(data, s.creds.scopes),
+    scopes: reportedScopes(tokens, s.creds.scopes),
   };
 
   await storeCredentials(s.kv, s.workspaceId, updated);
   s.creds = updated;
+  clientFor(s).setToken(updated.token);
   console.log('Estimate Guardian OAuth refreshed', { workspaceId: s.workspaceId, scopes: updated.scopes ?? 'unknown' });
   return updated;
 }
@@ -374,86 +372,58 @@ function isExpiringSoon(creds: WorkspaceCredentials): boolean {
 // Shortcut v4 API (with auto-refresh on 401)
 // ---------------------------------------------------------------------------
 
-async function apiFetch(s: Session, method: string, path: string, body?: unknown): Promise<Response> {
-  const sensitive = [s.env.CLIENT_SECRET, s.env.CLIENT_ID, s.creds.token, s.creds.refreshToken, ...sensitiveStrings(body)];
+/**
+ * Runs one call against the workspace-bound API. The token is refreshed
+ * proactively near expiry, and once more if the call still comes back 401 —
+ * it can expire between the check and the request. Any other rejection is
+ * the library's: the `Response` for an HTTP failure, or the wrapper's
+ * `ShortcutRequestError` for a network failure.
+ */
+async function withRefresh<T>(s: Session, call: (ws: ShortcutWorkspaceApi) => Promise<T>): Promise<T> {
   if (isExpiringSoon(s.creds) && !(await refreshCredentials(s))) {
     throw new ShortcutRequestError('Token refresh failed');
   }
-
-  const url = `${shortcutApiBase(s.env)}/api/v4/${encodeURIComponent(s.creds.slug)}${path}`;
-  const init = (): RequestInit => ({
-    method,
-    headers: {
-      Authorization: `Bearer ${s.creds.token}`,
-      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-
-  const send = () => request(url, init(), [...sensitive, s.creds.token, s.creds.refreshToken]);
-  let res = await send();
-
-  // The token can expire between the check above and the call itself.
-  if (res.status === 401) {
-    if (!(await refreshCredentials(s))) return res;
-    res = await send();
+  const client = clientFor(s);
+  try {
+    return await call(client.workspace(s.creds.slug));
+  } catch (error) {
+    if (!isShortcutV4RequestError(error) || error.status !== 401 || !(await refreshCredentials(s))) throw error;
+    return call(client.workspace(s.creds.slug));
   }
-  return res;
 }
 
-async function apiJson<T>(s: Session, method: string, path: string, body?: unknown): Promise<T | null> {
-  const res = await apiFetch(s, method, path, body);
-  if (!res.ok) {
-    return null;
+/** The result of one call, or null when the API rejected it. Network failures still throw. */
+async function attempt<T>(s: Session, call: (ws: ShortcutWorkspaceApi) => Promise<T>): Promise<T | null> {
+  try {
+    return await withRefresh(s, call);
+  } catch (error) {
+    if (isShortcutV4RequestError(error)) return null;
+    throw error;
   }
-  const data = await responseJson<T | { entity: T | null }>(res);
-  // Detail and write responses use { entity }; list responses use { entities }.
-  return data && typeof data === 'object' && 'entity' in data ? data.entity : data as T;
 }
 
-/** Walks every page of a v4 list endpoint. */
-async function listAll<T>(s: Session, path: string): Promise<T[]> {
+/** A single-entity read or write, unwrapped from `{ entity }`, or null when it was rejected. */
+async function apiEntity<T>(s: Session, call: (ws: ShortcutWorkspaceApi) => Promise<{ entity: unknown }>): Promise<T | null> {
+  const wrapper = await attempt(s, call);
+  return wrapper && typeof wrapper === 'object' && wrapper.entity ? (wrapper.entity as T) : null;
+}
+
+/**
+ * Every entity of a list endpoint. `paginate` follows `next_page_url` cursors
+ * and fails closed on a rejected page, an unsafe or repeated link, or a
+ * missing one — so this never returns a partial list as if it were complete.
+ */
+async function listAll<T>(s: Session, list: (ws: ShortcutWorkspaceApi) => Promise<ShortcutV4Page<unknown>>): Promise<T[]> {
   const out: T[] = [];
-  const prefix = `/api/v4/${encodeURIComponent(s.creds.slug)}`;
-  const endpoint = new URL(`${shortcutApiBase(s.env)}${prefix}${path}`);
-  const fields = endpoint.searchParams.get('fields');
-  const seen = new Set<string>();
-  let nextPath = `${path}${path.includes('?') ? '&' : '?'}limit=100`;
-  for (let page = 1; ; page += 1) {
-    const envelope = await apiJson<ListEnvelope<T>>(s, 'GET', nextPath);
-    if (!envelope || !Array.isArray(envelope.entities)) {
-      throw new ShortcutRequestError('List lookup failed or returned an invalid page');
-    }
-    const { current_page: current, total_pages: total, next_page_url: next } = envelope;
-    if ((current !== undefined || total !== undefined) &&
-      (!Number.isInteger(current) || !Number.isInteger(total) || current !== page || total! < 0 || current! > Math.max(1, total!))) {
-      throw new ShortcutRequestError('List returned invalid pagination metadata');
-    }
-    out.push(...envelope.entities);
-    if (next === undefined || next === null || next === '') {
-      if (current !== undefined && total !== undefined && current < total) {
-        throw new ShortcutRequestError('List response is missing its next page');
-      }
-      return out;
-    }
-    if (typeof next !== 'string' || page >= 10_000 || (current !== undefined && total !== undefined && current >= total)) {
-      throw new ShortcutRequestError('List returned inconsistent pagination');
-    }
-    let url: URL;
-    try { url = new URL(next, endpoint); } catch {
-      throw new ShortcutRequestError('List returned an invalid next-page URL');
-    }
-    const cursor = url.searchParams.get('cursor');
-    if (url.origin !== endpoint.origin || url.pathname !== endpoint.pathname || url.username || url.password || url.hash ||
-      !cursor || url.searchParams.getAll('cursor').length !== 1 || url.searchParams.getAll('fields').length > 1 ||
-      [...url.searchParams.keys()].some((key) => key !== 'cursor' && key !== 'fields') ||
-      (url.searchParams.has('fields') && url.searchParams.get('fields') !== fields) || seen.has(cursor)) {
-      throw new ShortcutRequestError('List returned an unsafe or repeated next-page URL');
-    }
-    seen.add(cursor);
-    if (fields !== null) url.searchParams.set('fields', fields);
-    nextPath = url.pathname.slice(prefix.length) + url.search;
+  try {
+    for await (const item of clientFor(s).paginate(withRefresh(s, list))) out.push(item as T);
+  } catch (error) {
+    if (error instanceof ShortcutRequestError) throw error;
+    throw new ShortcutRequestError(isShortcutV4RequestError(error)
+      ? 'List lookup failed'
+      : 'List returned an invalid, unsafe, or incomplete page');
   }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -471,7 +441,7 @@ async function startedStateIds(s: Session): Promise<Set<number>> {
   const cached = await s.kv.get(cacheKey);
   if (cached) return new Set(JSON.parse(cached) as number[]);
 
-  const states = await listAll<WorkflowState>(s, `/workflow-states?fields=${WORKFLOW_STATE_FIELDS}`);
+  const states = await listAll<WorkflowState>(s, (ws) => ws.listWorkflowStates({ fields: WORKFLOW_STATE_FIELDS, limit: 100 }));
   // Don't cache a failed lookup as "no started states" — that would silently
   // disable the agent for an hour.
   if (states.length === 0) return new Set();
@@ -483,10 +453,7 @@ async function startedStateIds(s: Session): Promise<Set<number>> {
 
 /** True if this agent has already warned on the story. */
 async function alreadyWarned(s: Session, storyId: number): Promise<boolean> {
-  const comments = await listAll<StoryComment>(
-    s,
-    `/stories/${storyId}/comments?fields=${COMMENT_FIELDS}`,
-  );
+  const comments = await listAll<StoryComment>(s, (ws) => ws.listStoryComments(storyId, { fields: COMMENT_FIELDS, limit: 100 }));
   return comments.some(
     (comment) =>
       !comment.deleted &&
@@ -496,8 +463,8 @@ async function alreadyWarned(s: Session, storyId: number): Promise<boolean> {
 }
 
 /** The id carried by a slim ref, or null for scalars and missing values. */
-function refId(value: ChangeValue | undefined): number | null {
-  return typeof value === 'object' && typeof value.id === 'number' ? value.id : null;
+function refId(value: ShortcutChangeValue | undefined): number | null {
+  return typeof value === 'object' && value !== null && typeof value.id === 'number' ? value.id : null;
 }
 
 /**
@@ -508,7 +475,7 @@ function refId(value: ChangeValue | undefined): number | null {
  * the API. When the key is absent the diff was unavailable for this delivery,
  * and the story has to be checked the slow way.
  */
-function couldBreachRule(action: ObserverAction): boolean {
+function couldBreachRule(action: ShortcutObserverAction): boolean {
   if (!action.changes) return true;
   return action.changes.some(
     (change) => change.attribute === 'workflow_state' || change.attribute === 'estimate',
@@ -529,19 +496,15 @@ function couldBreachRule(action: ObserverAction): boolean {
  */
 async function previousWorkflowStateId(
   s: Session,
-  action: ObserverAction,
+  action: ShortcutObserverAction,
   storyId: number,
   currentStateId: number,
 ): Promise<number | null> {
-  const isMove = (change: ChangeEntry) => change.attribute === 'workflow_state';
+  const isMove = (change: { attribute: string }) => change.attribute === 'workflow_state';
 
-  let latest = action.changes?.find(isMove);
+  let latest: { adds: ShortcutChangeValue[]; removes: ShortcutChangeValue[] } | undefined = action.changes?.find(isMove);
   if (!latest) {
-    const history = await apiJson<StoryHistory>(
-      s,
-      'GET',
-      `/stories/${storyId}/history?fields=workflow_state&limit=1`,
-    );
+    const history = await attempt(s, (ws) => ws.getStoryHistory(storyId, { fields: 'workflow_state', limit: 1 }));
     latest = history?.changes?.find(isMove);
   }
 
@@ -559,13 +522,12 @@ function safeDisplayName(name: unknown): string {
   return cleaned || 'Someone';
 }
 
-async function resolveActorMention(s: Session, actor: ObserverActor): Promise<string> {
+async function resolveActorMention(s: Session, actor: ShortcutWebhookActor): Promise<string> {
   if (!actor.member_id) return safeDisplayName(actor.displayable_name);
-  const member = await apiJson<Member>(
-    s,
-    'GET',
-    `/members/${encodeURIComponent(actor.member_id)}?fields=${MEMBER_FIELDS}`,
-  );
+  // Generated operations splice path parameters in as given, and this one
+  // comes from the delivery, so it is encoded here.
+  const memberId = encodeURIComponent(actor.member_id);
+  const member = await apiEntity<Member>(s, (ws) => ws.getMember(memberId, { fields: MEMBER_FIELDS }));
   // Falling back to the display name keeps the comment readable even though it
   // won't render as a real mention.
   return member?.mention_name ? `@${member.mention_name}` : safeDisplayName(actor.displayable_name);
@@ -579,7 +541,7 @@ async function resolveActorMention(s: Session, actor: ObserverActor): Promise<st
  * is *now*: deliveries are handled asynchronously, and the story may have
  * gained an estimate or moved again since this one was queued.
  */
-async function guardStory(s: Session, action: ObserverAction, actorMention: () => Promise<string>) {
+async function guardStory(s: Session, action: ShortcutObserverAction, actorMention: () => Promise<string>) {
   const storyId = Number(action.id);
   const pending = await s.recovery.get();
   if (pending && pending.phase !== 'finished') {
@@ -594,7 +556,7 @@ async function guardStory(s: Session, action: ObserverAction, actorMention: () =
     return;
   }
   if (pending?.deliveryId === s.deliveryId) return;
-  const story = await apiJson<Story>(s, 'GET', `/stories/${storyId}?fields=${STORY_FIELDS}`);
+  const story = await apiEntity<Story>(s, (ws) => ws.getStory(storyId, { fields: STORY_FIELDS }));
   if (!story) return;
 
   if (story.estimate !== null) return; // has an estimate — nothing to enforce
@@ -620,9 +582,8 @@ async function guardStory(s: Session, action: ObserverAction, actorMention: () =
   };
   await s.recovery.save(recovery);
   try {
-    const posted = await apiJson<EntityId>(s, 'POST', `/stories/${storyId}/comments?fields=${ID_ONLY_FIELDS}`, {
-      text, external_id: recovery.marker,
-    });
+    const posted = await apiEntity<EntityId>(s, (ws) =>
+      ws.createStoryComment(storyId, { text, external_id: recovery.marker }, { fields: ID_ONLY_FIELDS }));
     if (!posted) {
       console.error(`Could not confirm comment on story ${storyId}, skipping revert`);
       return;
@@ -662,7 +623,7 @@ export class EstimateGuardianStory {
     return this.serialize(async () => {
       try {
         const { workspaceId, deliveryId, action, actor } = await request.json() as {
-          workspaceId: string; deliveryId: string; action: ObserverAction; actor: ObserverActor;
+          workspaceId: string; deliveryId: string; action: ShortcutObserverAction; actor: ShortcutWebhookActor;
         };
         const creds = await getCredentials(this.env.TOKENS, workspaceId);
         if (!creds || actor?.member_id === creds.memberId) return Response.json({ ok: true });
@@ -705,22 +666,12 @@ export class EstimateGuardianStory {
 }
 
 // ---------------------------------------------------------------------------
-// Webhook signature verification
+// Webhook body
 // ---------------------------------------------------------------------------
 
-async function verifySignature(secret: string, body: Uint8Array, signature: string): Promise<boolean> {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['verify'],
-  );
-  return crypto.subtle.verify('HMAC', key, hexToBytes(signature), body);
-}
-
 // Deliveries are small; anything larger is not a delivery. Reading with a cap
-// keeps an oversized body from being buffered and hashed in full.
+// keeps an oversized body from being buffered and hashed in full — the
+// library only checks the size of bytes it is handed, so the cap lives here.
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 /** The raw request body, or null if it exceeds the cap. */
@@ -749,14 +700,6 @@ async function readBody(request: Request): Promise<Uint8Array | null> {
   return body;
 }
 
-function hexToBytes(hex: string): Uint8Array {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(hex.slice(i, i + 2), 16);
-  }
-  return bytes;
-}
-
 // ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
@@ -782,53 +725,35 @@ app.get('/oauth/callback', async (c) => {
 
   const code = c.req.query('code');
   if (!code) return c.text('Missing code', 400);
+  const state = c.req.query('state') ?? '';
 
   try {
-    const res = await request(`${shortcutApiBase(c.env)}/oauth-authorization-code-flow/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        code,
-        client_id: c.env.CLIENT_ID,
-        client_secret: c.env.CLIENT_SECRET,
-        grant_type: 'authorization_code',
-        redirect_uri: c.env.REDIRECT_URI,
-      }),
-    }, [code, c.req.query('state') ?? '', c.env.CLIENT_ID, c.env.CLIENT_SECRET, c.env.REDIRECT_URI]);
+    const oauth = oauthFor(c.env, () => [code, state, c.env.CLIENT_ID, c.env.CLIENT_SECRET, c.env.REDIRECT_URI]);
+    const tokens = await oauth.exchangeAuthorizationCode(code);
+    const scopes = reportedScopes(tokens);
 
-    if (!res.ok) {
-      return c.text('Token exchange failed. Check worker logs.', 500);
-    }
-
-    const data = await responseJson<{
-      access_token: string;
-      refresh_token: string;
-      access_token_expires_at: string;
-      permission_id: string;
-      workspace2_id: string;
-      workspace2_slug: string;
-      scope?: string;
-    }>(res);
-
-    const scopes = grantedScopes(data);
-
-    await storeCredentials(c.env.TOKENS, data.workspace2_id, {
-      token: data.access_token,
-      slug: data.workspace2_slug,
-      refreshToken: data.refresh_token,
-      expiresAt: data.access_token_expires_at,
-      memberId: data.permission_id ?? '',
+    await storeCredentials(c.env.TOKENS, tokens.workspace2_id, {
+      token: tokens.access_token,
+      slug: tokens.workspace2_slug,
+      refreshToken: tokens.refresh_token,
+      expiresAt: tokens.access_token_expires_at,
+      memberId: tokens.permission_id ?? '',
       scopes,
     });
 
-    console.log('Estimate Guardian OAuth connected', { workspaceId: data.workspace2_id, slug: data.workspace2_slug, scopes: scopes ?? 'unknown' });
+    console.log('Estimate Guardian OAuth connected', { workspaceId: tokens.workspace2_id, slug: tokens.workspace2_slug, scopes: scopes ?? 'unknown' });
     return c.html(
       `<h2>✅ Connected!</h2>
        <p>Your workspace is now guarded.</p>
        <p>You can close this tab.</p>`,
     );
   } catch (err) {
-    console.error('Estimate Guardian OAuth failed', { message: err instanceof ShortcutRequestError ? err.message : 'Could not connect workspace' });
+    // A rejected exchange was already reported, redacted, by the fetch wrapper.
+    // The code, state, and the provider's own text stay out of the logs.
+    console.error('Estimate Guardian OAuth failed', {
+      message: err instanceof ShortcutOAuthError ? 'Token exchange rejected'
+        : err instanceof ShortcutRequestError ? err.message : 'Could not connect workspace',
+    });
     return c.text('Token exchange failed. Check worker logs.', 500);
   }
 });
@@ -840,26 +765,28 @@ app.get('/oauth/callback', async (c) => {
 app.post('/webhook', async (c) => {
   const rawBody = await readBody(c.req.raw);
   if (rawBody === null) return c.json({ error: 'Payload too large' }, 413);
-  const signature = c.req.header('Payload-Signature') ?? '';
 
-  if (!(await verifySignature(c.env.WEBHOOK_SECRET, rawBody, signature))) {
-    console.error('Invalid webhook signature');
-    return c.json({ error: 'Invalid signature' }, 401);
-  }
-
-  let payload: ObserverPayload & { type?: string };
+  // Signature first, then the envelope: a delivery missing its id, workspace,
+  // actor, or a well-formed action never gets past here.
+  let delivery: ShortcutVerifiedDelivery;
   try {
-    payload = JSON.parse(new TextDecoder().decode(rawBody));
-  } catch {
-    return c.json({ error: 'Invalid JSON' }, 400);
+    delivery = await new ShortcutWebhookClient(c.env.WEBHOOK_SECRET).verifyBody(rawBody, c.req.header('Payload-Signature'));
+  } catch (error) {
+    if (!(error instanceof ShortcutWebhookError)) throw error;
+    if (error.status === 413) return c.json({ error: 'Payload too large' }, 413);
+    if (error.status === 401) {
+      console.error('Invalid webhook signature');
+      return c.json({ error: 'Invalid signature' }, 401);
+    }
+    return c.json({ error: 'Invalid payload' }, 400);
   }
+  const { payload } = delivery;
 
-  // Validation pings carry no workspace.
-  if (payload.type === 'validation') return c.json({ ok: true });
-  if (!Array.isArray(payload.actions)) return c.json({ ok: true });
+  // Validation pings carry no workspace, and interaction deliveries are not
+  // subscribed: both are acknowledged and otherwise ignored.
+  if (isShortcutValidationPayload(payload) || !isShortcutObserverPayload(payload)) return c.json({ ok: true });
 
-  const workspaceId = payload.workspace2?.id;
-  if (typeof workspaceId !== 'string' || !workspaceId) return c.json({ error: 'Missing workspace' }, 400);
+  const workspaceId = payload.workspace2.id;
   const creds = await getCredentials(c.env.TOKENS, workspaceId);
   if (!creds) {
     console.warn(`No credentials for workspace ${workspaceId}`);
@@ -869,7 +796,7 @@ app.post('/webhook', async (c) => {
   // The comment and the revert both come back as observer deliveries. Ignoring
   // our own edits is the first line of defence against reacting to ourselves;
   // the already-warned check is the second.
-  if (payload.actor?.member_id && payload.actor.member_id === creds.memberId) {
+  if (payload.actor.member_id && payload.actor.member_id === creds.memberId) {
     return c.json({ ok: true });
   }
 
@@ -881,14 +808,13 @@ app.post('/webhook', async (c) => {
   );
   if (updates.length === 0) return c.json({ ok: true });
 
-  if (typeof payload.id !== 'string' || !payload.id) return c.json({ error: 'Missing delivery id' }, 400);
   // Await the coordinator: any in-flight warning/revert and its recovery alarm
   // must be durable before Shortcut sees success. Duplicate calls serialize.
   for (const action of updates) {
     if (!Number.isSafeInteger(Number(action.id)) || Number(action.id) <= 0) return c.json({ error: 'Invalid story id' }, 400);
     const id = c.env.ESTIMATE_GUARDIAN_STORIES.idFromName(JSON.stringify([workspaceId, Number(action.id)]));
     const response = await c.env.ESTIMATE_GUARDIAN_STORIES.get(id).fetch('https://estimate-guardian.internal/guard', {
-      method: 'POST', body: JSON.stringify({ workspaceId, deliveryId: payload.id, action, actor: payload.actor ?? {} }),
+      method: 'POST', body: JSON.stringify({ workspaceId, deliveryId: payload.id, action, actor: payload.actor }),
     });
     if (!response.ok) return c.json({ error: 'Could not process story' }, 503);
   }

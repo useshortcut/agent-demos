@@ -28,6 +28,16 @@ Estimate Guardian subscribes to **observer** deliveries for the `story` entity t
 
 Steps 3–7 run in a Durable Object keyed by workspace and Story, serializing duplicate deliveries. The webhook waits for the coordinator to finish its first attempt; any incomplete warning/revert has durable recovery progress and an alarm before the webhook acknowledges success.
 
+### Built on `@shortcut/client`
+
+The Shortcut-facing plumbing comes from the official [`@shortcut/client`](https://www.npmjs.com/package/@shortcut/client) package rather than hand-rolled requests:
+
+- **`ShortcutV4Client`** (`@shortcut/client/v4`) makes every API call. `client.workspace(slug)` binds the workspace, each operation takes its `fields`, a failed request rejects with the `Response` (narrowed by `isShortcutV4RequestError`), and `client.paginate` walks list endpoints.
+- **`ShortcutOAuth`** does the authorization-code exchange and the token refresh against `/oauth-authorization-code-flow/token`.
+- **`ShortcutWebhookClient.verifyBody`** (`@shortcut/client/webhooks`) checks the `Payload-Signature` HMAC over the raw bytes and validates the delivery envelope, so a payload missing its id, workspace, actor, or a well-formed action is a 400 before any of it is read. The library's `ShortcutObserverPayload` / `ShortcutObserverAction` / `ShortcutChangeEntry` types describe the delivery.
+
+The demo still owns everything specific to being *this* agent: the rule and its recovery, reading the body under a 2 MB cap (413 before verification), credential storage in KV, the refresh policy (proactively within five minutes of expiry, once more on a 401, then `client.setToken`), and diagnostics. The library sets no request timeout and logs nothing itself, so the demo hands it a `fetch` wrapper that applies a 15-second `AbortSignal.timeout` and reports each failure as method, endpoint path, status, and redacted error strings — never the `Response` or error object, whose body can echo request content.
+
 ### Reading the diff
 
 A story update action carries the transaction's diff in `changes`, one entry per tracked attribute, in the same shape as the v4 story history API:
@@ -75,9 +85,9 @@ PATCH /stories/123?fields=id
 
 Updates that don't touch the workflow state or estimate cost nothing; moves and estimate changes that turn out to be fine cost exactly one two-field story read. Writes ask for `id` alone — just enough to tell success from failure.
 
-List requests follow `next_page_url` cursors, retaining the requested `fields` and omitting `limit` after the first page. Cursor URLs must stay on the same API origin and endpoint. Failed, malformed, incomplete, or looping lists stop processing: Estimate Guardian never treats an unavailable comment list as "no warning," nor caches a partial workflow-state list. The versioned state-cache key bypasses potentially partial caches written by earlier releases.
+List requests go through `client.paginate`, which follows `next_page_url` cursors — sending only `cursor` and the link's `fields` after the first page, never `page` or `limit` — and refuses to continue on a link that leaves the API origin, carries credentials, a fragment, or extra parameters, on a repeated cursor, or when a page claims more pages but has no link. Any of those, or a rejected page, is a thrown error rather than a shorter list: Estimate Guardian never treats an unavailable comment list as "no warning," nor caches a partial workflow-state list. The versioned state-cache key bypasses potentially partial caches written by earlier releases.
 
-Single-entity API responses are unwrapped from `{ entity: ... }`; list envelopes remain intact for pagination.
+Single-entity reads and writes come back as `{ entity: ... }`. A rejected one (any non-2xx) reads as *unavailable*, which every caller treats as "do nothing now" — retry from the alarm, skip the revert, fall back to the display name — never as a fact about the story.
 
 Unknown field names are a **400**, not a silently ignored param, so each `*_FIELDS` constant in `src/index.ts` sits directly above the type it fills and the two are meant to be edited together.
 
@@ -203,7 +213,7 @@ npm install
 npx wrangler dev
 ```
 
-Before deploying changes, run `npm test`, `npx tsc --noEmit`, and `npx wrangler deploy --dry-run` from this directory. Tests cover signature and secret enforcement, body limits, cursor validation, failed lookups, comment-before-revert behavior, warning suppression, actor sanitization, token refresh/scopes, and safe diagnostics.
+Before deploying changes, run `npm test`, `npx tsc --noEmit`, and `npx wrangler deploy --dry-run` from this directory. Tests cover signature, envelope, and secret enforcement, body limits, cursor validation, failed lookups, comment-before-revert behavior, warning suppression, actor sanitization, token refresh/scopes, and safe diagnostics.
 
 The worker runs at `http://localhost:8787`. Signatures are always required, including locally: point a tunnel at the worker and let Shortcut deliver real, signed payloads, or sign test bodies yourself with the webhook secret. The agent app's **Redirect URIs** field takes one per line — add `http://localhost:8787/oauth/callback` as a second entry so the local OAuth flow can land.
 
