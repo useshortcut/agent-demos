@@ -243,11 +243,12 @@ describe("Team Cop processor", () => {
 });
 
 describe("verifyWebhookSignature", () => {
-  it("accepts the raw body signed with the configured secret", () => {
+  it("accepts the raw body signed with the configured secret", async () => {
     const rawBody = Buffer.from('{"hello":"world"}');
     const signature = createHmac("sha256", "secret").update(rawBody).digest("hex");
 
-    assert.equal(verifyWebhookSignature(rawBody, signature, "secret"), true);
-    assert.equal(verifyWebhookSignature(rawBody, "00", "secret"), false);
+    assert.equal(await verifyWebhookSignature(rawBody, signature, "secret"), true);
+    assert.equal(await verifyWebhookSignature(rawBody, "00", "secret"), false);
+    assert.equal(await verifyWebhookSignature(rawBody, signature, "other-secret"), false);
   });
 });

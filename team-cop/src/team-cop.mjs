@@ -1,5 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
-import { Buffer } from "node:buffer";
+import { verifyShortcutWebhookSignature } from "@shortcut/client/webhooks";
 
 export const REMINDER_TEXT = "Stories need to be in a Team! Please add one!";
 
@@ -29,11 +28,11 @@ export function safeDisplayName(name) {
   return cleaned || null;
 }
 
+// Constant-time HMAC-SHA256 over the exact request bytes (WebCrypto). A copy
+// keeps a pooled Buffer's neighbours out of the digest.
 export function verifyWebhookSignature(rawBody, signature, secret) {
-  const expected = createHmac("sha256", secret).update(rawBody).digest();
-  const received = Buffer.from(signature, "hex");
-
-  return received.length === expected.length && timingSafeEqual(received, expected);
+  const bytes = typeof rawBody === "string" ? rawBody : new Uint8Array(rawBody);
+  return verifyShortcutWebhookSignature(secret, bytes, signature);
 }
 
 function processedKey(payload, action, reason) {

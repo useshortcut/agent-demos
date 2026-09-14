@@ -88,8 +88,9 @@ for (const match of [true, false]) {
       // Mirror v4's allowed query parameters, including cursor exclusivity.
       if (parsed.searchParams.has("page")) return Response.json({ message: "page is not allowed" }, { status: 400 });
       if (parsed.searchParams.has("cursor")) {
-        assert.equal(url, next);
-        assert.equal(parsed.searchParams.has("limit"), false);
+        // The opaque cursor is sent back exactly, with fields but without limit or page.
+        assert.equal(parsed.pathname, path);
+        assert.deepEqual(Object.fromEntries(parsed.searchParams), { cursor: "opaque+cursor=", fields: "id,author,deleted" });
         return Response.json({ current_page: 2, total_pages: 2, entities: match ? [existing] : [] });
       }
       assert.equal(parsed.searchParams.get("limit"), "100");
@@ -102,19 +103,68 @@ for (const match of [true, false]) {
   });
 }
 
-for (const next of ["https://evil.example/steal?cursor=x", `${base}/api/v4/other/stories/123/comments?cursor=x`, `${base}${path}?cursor=loop`]) {
+// The bearer token must only follow links back to this API origin under /api/v4/.
+for (const next of ["https://evil.example/steal?cursor=x", "https://api.example.com:8443/api/v4/acme/stories/123/comments?cursor=x",
+  `${base}/oauth-authorization-code-flow/token?cursor=x`, `${base}${path}?cursor=x&page=2`, `${base}${path}?cursor=x&cursor=y`,
+  `${base}${path}?cursor=`, `${base}${path}?cursor=x#fragment`, `https://user:pw@api.example.com${path}?cursor=x`,
+  `${base}${path}?cursor=loop`, 42]) {
   it(`fails closed on unsafe or repeated next-page URLs: ${next}`, async () => {
     let calls = 0;
     const c = client(async (url, options) => {
       assert.notEqual(options.method, "POST");
-      assert.ok(url.startsWith(`${base}${path}?`));
+      assert.ok(url.startsWith(`${base}${path}?`), "pagination must stay on the comments endpoint");
       assert.ok(++calls <= 2, "pagination must not loop");
       return Response.json({ current_page: 1, total_pages: 3, entities: [], next_page_url: next });
     });
     await assert.rejects(c.postStoryComment("workspace", credentials, 123, comment), /pagination|next.page|cursor/i);
-    assert.equal(calls, next.includes("loop") ? 2 : 1);
+    assert.equal(calls, String(next).includes("loop") ? 2 : 1);
   });
 }
+
+it("does not post when a page has no entities array", async () => {
+  const c = client(async (url, options) => {
+    assert.notEqual(options.method, "POST");
+    return Response.json({ current_page: 1, total_pages: 1, entities: { id: 5 } });
+  });
+  await assert.rejects(c.postStoryComment("workspace", credentials, 123, comment), /entities|pagination|page/i);
+});
+
+it("refreshes once on a 401 during the comment scan and retries with the new token", async () => {
+  const tokens = [];
+  let refreshes = 0;
+  const c = client(async (url, options) => {
+    if (url.endsWith("/token")) {
+      refreshes += 1;
+      return Response.json({ access_token: "fresh-access", refresh_token: "fresh-refresh", workspace2_id: "workspace",
+        workspace2_slug: "acme", access_token_expires_at: "2099-01-01T00:00:00Z", permission_id: "cop" });
+    }
+    const token = new Headers(options.headers).get("authorization");
+    tokens.push(token);
+    if (token !== "Bearer fresh-access") return Response.json({ error: "unauthorized" }, { status: 401 });
+    if (options.method === "POST") return Response.json({ entity: { id: 6 } });
+    return Response.json({ current_page: 1, total_pages: 1, entities: [] });
+  });
+  const creds = { ...credentials };
+  assert.equal((await c.postStoryComment("workspace", creds, 123, comment)).id, 6);
+  assert.equal(refreshes, 1);
+  assert.deepEqual(tokens, ["Bearer secret-access", "Bearer fresh-access", "Bearer fresh-access"]);
+  assert.equal(creds.accessToken, "fresh-access");
+  assert.equal(creds.refreshToken, "fresh-refresh");
+});
+
+it("does not retry a second 401 after refreshing", async () => {
+  const logs = [];
+  let requests = 0;
+  const c = client(async (url) => url.endsWith("/token")
+    ? Response.json({ access_token: "fresh-access", refresh_token: "fresh-refresh", workspace2_id: "workspace",
+      workspace2_slug: "acme", access_token_expires_at: "2099-01-01T00:00:00Z" })
+    : (requests += 1, Response.json({ error: "unauthorized" }, { status: 401 })),
+  { error(message, details) { logs.push([message, details]); } });
+  await assert.rejects(c.getStory("workspace", { ...credentials }, 123), { status: 401 });
+  assert.equal(requests, 2);
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0][1].status, 401);
+});
 
 it("does not post when a multi-page response omits its next-page URL", async () => {
   const c = client(async (url, options) => {
