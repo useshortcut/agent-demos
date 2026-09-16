@@ -109,7 +109,7 @@ test(`${demo}: actual Cloudflare runtime, mock Shortcut only`, { timeout: 45_000
     assert.equal((await results()).requests.filter((item) => item.path.endsWith('/token')).length, 1);
 
     const envelope = (id) => ({ id, version: 'v2', timestamp: new Date().toISOString(), installation_id: 'installation',
-      workspace2: { id: 'workspace', url_slug: 'acme' }, actor: { member_id: 'user', displayable_name: 'Ada' } });
+      workspace2: { id: 'workspace', url_slug: 'acme' }, actor: { member_id: 'user', displayable_name: 'Ada', mention_name: 'ada' } });
     const deliver = async (id, properties) => {
       const response = await send({ ...envelope(id), ...properties });
       assert.equal(response.status, demo === 'team-cop' ? 202 : 200, await response.text());

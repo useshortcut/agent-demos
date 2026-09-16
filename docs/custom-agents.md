@@ -14,7 +14,7 @@ Shortcut Custom Agents is a platform that lets developers create, publish, and i
 
 **Webhook Signing** — All deliveries are signed with HMAC-SHA256 using a per-app secret. The hex digest is sent in the `Payload-Signature` request header.
 
-**JavaScript client** — [`@shortcut/client`](https://github.com/useshortcut/shortcut-client-js) 3.3.1 ships two entrypoints for agents: `@shortcut/client/v4` (`ShortcutV4Client` for the workspace-scoped v4 API with cursor pagination, `ShortcutOAuth` for the install's code exchange and token refresh) and `@shortcut/client/webhooks` (`ShortcutWebhookClient` for signature verification and typed observer and interaction payloads). Both are Fetch-based and run on Node.js 20+, Cloudflare Workers, Deno, and Bun. The demos in this repo use them.
+**JavaScript client** — [`@shortcut/client`](https://github.com/useshortcut/shortcut-client-js) 3.4.0 ships two entrypoints for agents: `@shortcut/client/v4` (`ShortcutV4Client` for the workspace-scoped v4 API with cursor pagination, `ShortcutOAuth` for the install's code exchange and token refresh) and `@shortcut/client/webhooks` (`ShortcutWebhookClient` for signature verification and typed observer and interaction payloads). Both are Fetch-based and run on Node.js 20+, Cloudflare Workers, Deno, and Bun. The demos in this repo use them.
 
 ## Payload Shapes
 
@@ -27,7 +27,8 @@ Shortcut Custom Agents is a platform that lets developers create, publish, and i
   "timestamp": "<iso8601ms>",
   "actor": {
     "displayable_name": "Ada",
-    "member_id": "<permission-uuid>"
+    "member_id": "<permission-uuid>",
+    "mention_name": "ada"
   },
   "workspace2": { "id": "<uuid>", "url_slug": "my-workspace" },
   "installation_id": "<uuid>",
@@ -68,7 +69,7 @@ Action fields:
   "id": "<audit-key-uuid>",
   "version": "v2",
   "timestamp": "<iso8601ms>",
-  "actor": { "displayable_name": "Ada", "member_id": "<uuid>" },
+  "actor": { "displayable_name": "Ada", "member_id": "<uuid>", "mention_name": "ada" },
   "workspace2": { "id": "<uuid>", "url_slug": "my-workspace" },
   "installation_id": "<uuid>",
   "trigger": {
@@ -130,6 +131,8 @@ Actions for other entity types, and story updates whose `changes` key is absent,
 - **Nested references are slim** — a `workflow_state` in either source has an id and a name but no `type`. Fetching `GET /api/v4/{slug}/workflow-states` gives the `type` (`unstarted`, `started`, `done`) for each state; it changes rarely and caches well.
 
 ### Avoiding feedback loops
+
+`actor.mention_name` is the acting member's @-handle, present whenever the actor is a member with one and absent (not null) for automation, webhook, and integration actors; use it to address the person without fetching the member.
 
 An agent subscribed to observer deliveries will also see the changes it makes itself. Filter on `actor.member_id` against the agent's own member id (returned as `permission_id` in the OAuth token response) before acting on a delivery — otherwise a comment the agent posts triggers a delivery that prompts another comment.
 

@@ -347,15 +347,12 @@ it('rejects oversized webhook bodies before verifying them', async (t) => {
   assert.equal((await app.fetch(new Request(stream, { headers: { 'Payload-Signature': 'ab' } }), env)).status, 413);
 });
 
-it('encodes the actor member id in the API path and sanitizes display-name fallbacks', async (t) => {
-  const urls = [];
-  t.mock.method(globalThis, 'fetch', async (url) => { urls.push(url); return Response.json({ entity: {} }); });
-  const s = session();
-  const name = await resolveActorMention(s, { member_id: '../stories/123?x=1#y', displayable_name: '[@admin](https://evil.example)  O\'Brien\n<b>' });
-  assert.equal(new URL(urls[0]).pathname, '/api/v4/acme/members/..%2Fstories%2F123%3Fx%3D1%23y');
-  assert.equal(name, "admin https evil.example O'Brien b");
-  assert.equal(await resolveActorMention(s, { displayable_name: '***' }), 'Someone');
-  assert.equal(await resolveActorMention(s, {}), 'Someone');
+it('addresses the actor by the mention name the delivery carries and sanitizes display-name fallbacks', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => { assert.fail('the actor needs no member lookup'); });
+  assert.equal(await resolveActorMention({ member_id: 'm', mention_name: 'ada', displayable_name: 'Ada' }), '@ada');
+  assert.equal(await resolveActorMention({ member_id: '../stories/123?x=1#y', displayable_name: '[@admin](https://evil.example)  O\'Brien\n<b>' }), "admin https evil.example O'Brien b");
+  assert.equal(await resolveActorMention({ displayable_name: '***' }), 'Someone');
+  assert.equal(await resolveActorMention({}), 'Someone');
 });
 
 // The token endpoint always reports the workspace; the library rejects a rotation that omits it.
@@ -502,12 +499,11 @@ function recoveryFixture(t, { patchFailures = 1, ambiguousPost = false, commitPo
     }
     if (path.endsWith('/workflow-states')) return Response.json({ entities: [{ id: 2, type: 'started' }] });
     if (path.endsWith('/comments')) return Response.json({ entities: remote.comments });
-    if (path.includes('/members/')) return Response.json({ entity: { mention_name: 'ada' } });
     return Response.json({ entity: remote.story });
   });
   const coordinator = () => new EstimateGuardianStory(state, s.env);
   const deliver = async (deliveryId = 'delivery') => coordinator().fetch(new Request('https://internal/guard', {
-    method: 'POST', body: JSON.stringify({ workspaceId: 'workspace', deliveryId, action, actor: { member_id: 'ada', displayable_name: 'Ada' } }),
+    method: 'POST', body: JSON.stringify({ workspaceId: 'workspace', deliveryId, action, actor: { member_id: 'ada', mention_name: 'ada', displayable_name: 'Ada' } }),
   }));
   return { s, records, remote, coordinator, deliver };
 }

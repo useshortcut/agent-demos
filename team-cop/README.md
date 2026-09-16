@@ -90,7 +90,7 @@ Shortcut API access goes through the official [`@shortcut/client`](https://www.n
 package: `ShortcutV4Client` and its `paginate` helper for v4 requests, `ShortcutOAuth`
 for the token exchange and refresh, and `verifyShortcutWebhookSignature` for webhook
 signatures. Team Cop itself owns the SQLite Durable Object state, delivery receipts,
-retries, the token refresh policy, and log redaction.
+retries, the `refresh.run` callback the client calls to rotate tokens, and logging via `summarizeShortcutV4Error`.
 
 - Verifies the raw webhook body with the library's constant-time HMAC-SHA256 check
   (WebCrypto) before parsing or queueing.
@@ -98,7 +98,7 @@ retries, the token refresh policy, and log redaction.
   HTTP 202. A single coordinator serializes API processing and token refresh.
 - Processes Story creates and updates where `started` adds `true`. When the diff
   is unavailable, Team Cop cannot identify the transition and skips that update.
-- Fetches only `team` from the Story and `mention_name` from the actor's Member,
+- Fetches only `team` from the Story and takes `mention_name` from the delivery's actor,
   through `ShortcutV4Client` with a `fetch` wrapper that bounds every request to
   15 seconds.
 - Ignores its own writes and persists processed action/delivery receipts. For each

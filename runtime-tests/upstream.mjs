@@ -38,8 +38,7 @@ export default {
     }
     const comments = /^\/api\/v4\/acme\/(stories|epics)\/\d+\/comments$/.test(url.pathname);
     const allowedFields = request.method !== 'GET' ? ['id'] : comments ? ['id', 'text', 'author', 'deleted', 'external_id'] :
-      url.pathname.endsWith('/workflow-states') ? ['id', 'type'] :
-      url.pathname.includes('/members/') ? ['mention_name'] : ['team', 'estimate', 'workflow_state'];
+      url.pathname.endsWith('/workflow-states') ? ['id', 'type'] : ['team', 'estimate', 'workflow_state'];
     if (url.searchParams.get('fields').split(',').some((field) => !allowedFields.includes(field))) {
       return reject(request, 'Unknown field selection');
     }
@@ -54,7 +53,6 @@ export default {
       return Response.json({ entity: { id: 123 } });
     }
     if (request.method !== 'GET') return reject(request, 'Unexpected method');
-    if (url.pathname === '/api/v4/acme/members/user') return Response.json({ entity: { mention_name: 'ada' } });
     if (url.pathname === '/api/v4/acme/workflow-states') {
       return Response.json({ entities: [{ id: 2, type: 'started' }], current_page: 1, total_pages: 1 });
     }

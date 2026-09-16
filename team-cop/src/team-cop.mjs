@@ -99,8 +99,8 @@ export function createTeamCopProcessor({ client, logger = console, state }) {
         continue;
       }
 
-      const member = await client.getMember(workspaceId, credentials, actor.member_id);
-      const addressee = member.mention_name ? `@${member.mention_name}` : safeDisplayName(actor.displayable_name);
+      // The delivery carries the member's handle, so no lookup is needed.
+      const addressee = actor.mention_name ? `@${actor.mention_name}` : safeDisplayName(actor.displayable_name);
       if (!addressee) {
         logger.warn("Cannot address reminder because the actor has no mention name", {
           actorMemberId: actor.member_id,
