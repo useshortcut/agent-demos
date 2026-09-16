@@ -7,9 +7,7 @@
     "types": ["@cloudflare/workers-types"],
     "strict": true,
     "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    // @shortcut/client/webhooks declares a Node.js (req, res) handler overload against node:http; this Worker never uses it.
-    "skipLibCheck": true
+    "noUnusedParameters": true
   },
   "include": ["src"]
 }

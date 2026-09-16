@@ -6,6 +6,7 @@ import {
   ShortcutV4Client,
   grantedScopes,
   isShortcutV4RequestError,
+  type ShortcutOAuthRefreshTokens,
   type ShortcutOAuthTokens,
   type ShortcutV4Page,
 } from '@shortcut/client/v4';
@@ -62,26 +63,11 @@ function shortcutApiBase(env: Env) {
   return env.SHORTCUT_API_BASE ?? 'https://api.app.shortcut.com';
 }
 
+// The library aborts every API, pagination, and OAuth request, including
+// reading its body, after this long, so a stalled upstream cannot keep the
+// Durable Object busy.
 const REQUEST_TIMEOUT_MS = 15_000;
 const TOKEN_PATH = '/oauth-authorization-code-flow/token';
-
-// The library sends `signal: null`; overriding after spreading `init` bounds
-// every API, pagination, and OAuth request to the same timeout. The body is
-// buffered here because the library parses a clone and leaves the original
-// unread, which would otherwise hold the connection (and keep the Durable
-// Object busy) until the timeout fires.
-const timedFetch: typeof fetch = async (input, init) => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  try {
-    const response = await fetch(input, { ...init, signal: controller.signal });
-    const body = await response.arrayBuffer();
-    return new Response(body.byteLength ? body : null,
-      { status: response.status, statusText: response.statusText, headers: response.headers });
-  } finally {
-    clearTimeout(timer);
-  }
-};
 
 function oauthClient(env: Env) {
   return new ShortcutOAuth({
@@ -89,7 +75,7 @@ function oauthClient(env: Env) {
     clientSecret: env.CLIENT_SECRET,
     redirectUri: env.REDIRECT_URI,
     baseUrl: shortcutApiBase(env),
-    fetch: timedFetch,
+    timeoutMs: REQUEST_TIMEOUT_MS,
   });
 }
 
@@ -171,7 +157,7 @@ async function refreshCredentials(
   creds: WorkspaceCredentials,
 ): Promise<WorkspaceCredentials | null> {
   console.log(`Refreshing token for workspace ${workspaceId}`);
-  let tokens: ShortcutOAuthTokens;
+  let tokens: ShortcutOAuthRefreshTokens;
   try {
     tokens = await oauthClient(env).refreshAccessToken(creds.refreshToken);
   } catch (error) {
@@ -212,7 +198,7 @@ class WorkspaceApi {
   private readonly client: ShortcutV4Client;
 
   constructor(private readonly env: Env, private readonly workspaceId: string, private readonly creds: WorkspaceCredentials) {
-    this.client = new ShortcutV4Client({ token: creds.token, baseUrl: shortcutApiBase(env), fetch: timedFetch });
+    this.client = new ShortcutV4Client({ token: creds.token, baseUrl: shortcutApiBase(env), timeoutMs: REQUEST_TIMEOUT_MS });
   }
 
   async alreadyPosted(entityType: string, entityId: number, marker: string): Promise<boolean> {
@@ -261,8 +247,6 @@ class WorkspaceApi {
       return await run();
     } catch (error) {
       if (isShortcutV4RequestError(error)) {
-        // The buffered Response carries no URL; cursor pages share the
-        // requested resource path with the first page anyway.
         logRejected(details, error.status, error.error, [this.creds.token, this.creds.refreshToken, this.env.CLIENT_SECRET]);
         throw new ShortcutRequestRejected(error.status);
       }

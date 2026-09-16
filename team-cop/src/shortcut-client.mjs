@@ -70,16 +70,8 @@ function requestBodyStrings(body) {
   return strings;
 }
 
-// A failed v4 request rejects with the Response; `error` holds the parsed
-// JSON body, or the parse failure when the body was not JSON.
-async function rejectedBody(response) {
-  if (!(response.error instanceof Error)) return response.error;
-  try {
-    return (await response.text()) || null;
-  } catch {
-    return null;
-  }
-}
+// The library aborts each request, including reading its body, after this long.
+const REQUEST_TIMEOUT_MS = 15_000;
 
 // Unrequested fields are never returned; `deleted` marks tombstones.
 const COMMENT_FIELDS = "id,author,deleted";
@@ -92,16 +84,7 @@ export class ShortcutClient {
     this.logger = logger;
     this.redirectUri = redirectUri;
     this.state = state;
-    // The library clears `signal`; bound every outgoing request after spreading its init.
-    // It also parses a clone of the response and never reads the original body,
-    // which would hold the connection open until the timeout fires, so buffer
-    // the body and hand the library an in-memory Response.
-    this.fetch = async (url, init) => {
-      const response = await fetchImpl(url, { ...init, signal: AbortSignal.timeout(15_000) });
-      const body = await response.arrayBuffer();
-      return new Response(body.byteLength ? body : null,
-        { status: response.status, statusText: response.statusText, headers: response.headers });
-    };
+    this.fetch = fetchImpl;
   }
 
   #oauth() {
@@ -111,6 +94,7 @@ export class ShortcutClient {
       clientSecret: this.clientSecret,
       fetch: this.fetch,
       redirectUri: this.redirectUri,
+      timeoutMs: REQUEST_TIMEOUT_MS,
     });
   }
 
@@ -179,11 +163,10 @@ export class ShortcutClient {
       ...requestBodyStrings(body)];
     if (isExpiringSoon(credentials)) await this.#refresh(workspaceId, credentials);
 
-    // Requests within one operation are sequential, so the failed request is the last one issued.
-    let requested;
     const client = new ShortcutV4Client({
       baseUrl: this.apiBase,
-      fetch: (url, init) => { requested = String(url); return this.fetch(url, init); },
+      fetch: this.fetch,
+      timeoutMs: REQUEST_TIMEOUT_MS,
       token: credentials.accessToken,
     });
     const attempt = () => operation(client.workspace(credentials.slug), client);
@@ -205,11 +188,13 @@ export class ShortcutClient {
     }
     if (!isShortcutV4RequestError(error)) throw error;
 
-    const responseBody = await rejectedBody(error);
+    // `error.error` is the parsed JSON body, the raw text, or null.
+    const responseBody = error.error;
     let pathname = `/api/v4/${encodeURIComponent(credentials.slug)}${path}`;
     try {
-      // Cursor pages request the URL the API supplied; log its path, never its query.
-      const url = new URL(requested ?? error.url);
+      // The rejected Response carries the URL the library requested, cursor
+      // pages included; log its path, never its query.
+      const url = new URL(error.url);
       pathname = url.pathname;
       sensitiveValues.push(...url.searchParams.getAll("cursor"));
     } catch {
@@ -235,11 +220,9 @@ export class ShortcutClient {
   }
 
   async getMember(workspaceId, credentials, memberId) {
-    // Only the workspace slug is encoded by the library.
-    const memberPath = encodeURIComponent(memberId);
     const { entity } = await this.#authorized(workspaceId, credentials,
-      { method: "GET", path: `/members/${memberPath}` },
-      (ws) => ws.getMember(memberPath, { fields: "mention_name" }));
+      { method: "GET", path: `/members/${memberId}` },
+      (ws) => ws.getMember(memberId, { fields: "mention_name" }));
     return entity;
   }
 
