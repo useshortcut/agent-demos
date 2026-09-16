@@ -1,180 +1,93 @@
-# Shortcut Quote Agent Service
+# Quote Agent
 
-A toy Cloudflare Worker that demonstrates the Shortcut Custom Agents platform. When installed in a Shortcut workspace it responds to interaction triggers (assigned, @-mentioned, comment-reply) by posting a random quote as a comment on the relevant story or epic.
+A Cloudflare Worker that shows the interaction side of Shortcut Custom Agents. Installed in a workspace, it posts a random quote as a comment whenever someone assigns it a story or epic, @-mentions it, or replies to one of its comments.
 
-For background on the platform itself — payload shapes, trigger semantics, and the app review lifecycle — see [../docs/custom-agents.md](../docs/custom-agents.md).
+For the platform itself (payload shapes, triggers, app review), see [docs/custom-agents.md](../docs/custom-agents.md).
 
----
+## What it does
 
-## Architecture
-
-- **Runtime**: Cloudflare Workers (Hono framework)
-- **Storage**: Cloudflare KV (`TOKENS` namespace) — stores OAuth credentials per workspace
-- **Delivery coordination**: SQLite Durable Object (`QUOTE_DELIVERIES`) — serializes interactions per workspace and stores completed-delivery receipts
-- **Shortcut client**: [`@shortcut/client`](https://www.npmjs.com/package/@shortcut/client) — `ShortcutV4Client` (plus `client.paginate` for cursor pages) for API calls, `ShortcutOAuth` for the token exchange and refresh, `ShortcutWebhookClient.verifyBody` for webhook verification
-- **Auth**: OAuth 2.0 authorization code flow with the Shortcut v4 API via `ShortcutOAuth`; the demo owns credential storage and the `refresh.run` callback, and the client refreshes proactively within 5 minutes of expiry and once reactively on a 401
-- **Webhooks**: Receives signed HMAC-SHA256 payloads from Shortcut; the demo caps the body at 2 MB, then `verifyBody` checks the signature and the delivery envelope before anything is parsed or acted on
-
-### Endpoints
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/` | Health check (unauthenticated, so it lists no workspaces) |
-| `GET` | `/oauth/callback` | OAuth redirect target — exchanges code for token, stores credentials |
-| `POST` | `/webhook` | Receives Shortcut interaction webhooks; observer deliveries are acknowledged and ignored |
-
-### Trigger handling
-
-| Trigger | Behaviour |
+| Trigger | Response |
 |---|---|
-| `assigned` | Posts a quote on the assigned story/epic |
-| `comment-reply` | Replies in the same thread (under the original agent comment) |
-| `mentioned` in a top-level comment | Replies nested under that comment |
-| `mentioned` in a nested comment | Replies under the thread root (max depth 1) |
-| Observer delivery | Acknowledged and ignored; no KV write or comment posted |
+| Assigned a story or epic | Posts a quote as a comment |
+| Mentioned in a top-level comment | Replies under that comment |
+| Mentioned in a reply | Replies under the thread's root (threads are one level deep) |
+| Reply to one of its comments | Replies in the same thread |
+| Observer delivery | Acknowledged and ignored |
 
-Each interaction is identified by its installation, workspace, and delivery ID.
-Redelivery of that interaction does not post again; a new mention, assignment, or
-reply still gets a new quote, even on the same Story or Epic. The coordinator
-serializes concurrent interactions, including token refresh. Before posting, it
-scans current comments for a matching `external_id` authored by this agent. This
-recovers a successful POST if execution stopped before its receipt was saved.
-The API comment lists include threaded replies, so this works for replies too.
-The scan walks every page with `client.paginate`, which follows `next_page_url`
-only to the same API origin, sends nothing but the cursor and `fields`, and
-throws on loops, unsafe links, or incomplete lists; a failed scan aborts
-processing instead of being treated as an empty list. The library rejects the
-request; the demo owns the receipts, the marker check, and the threading.
+## How it works
 
-Failures return HTTP 503 without storing a receipt. This demo does not enqueue
-its own retries or guarantee that Shortcut redelivers failures. It also cannot
-guarantee exactly-once external writes if a timed-out POST is still in flight
-when another attempt checks comments. Completed receipts currently have no
-retention cleanup; adapt this reference implementation for sustained traffic.
+- **Runtime**: Cloudflare Workers with Hono. OAuth credentials live in a KV namespace (`TOKENS`), one record per workspace.
+- **Verification**: the worker caps the body at 2 MB, then `ShortcutWebhookClient.verifyBody` checks the signature and the delivery envelope before anything is parsed.
+- **Coordination**: a SQLite Durable Object per workspace serializes interactions and stores a receipt for each completed delivery. A redelivered interaction does not post again; a new mention, assignment, or reply on the same story still gets a new quote.
+- **Recovery**: before posting, the coordinator scans the entity's comments for one it already posted with this delivery's `external_id`. That recovers a post that succeeded before its receipt was saved. The scan uses `client.paginate` and fails closed, so an incomplete list never counts as "not posted".
+- **Client**: `@shortcut/client` makes the API calls, refreshes the token through the demo's `refresh.run` callback, and walks cursor pages. The demo owns credential storage, receipts, and threading.
 
----
+Failures return 503 without a receipt. The demo does not queue its own retries and does not guarantee exactly-once writes if a timed-out post is still in flight when the next attempt scans comments. Receipts are never pruned. Adapt it before running it under real traffic.
 
 ## Setup
 
-Setup bounces between two places: a terminal in this directory, and Shortcut's **Agents** page. The worker gets deployed first, because its URL is part of the agent app's configuration in Shortcut.
+You will move between a terminal in this directory and Shortcut's **Agents** page. Deploy first, because the worker's URL goes into the agent app.
 
-### 1. Install dependencies and log in to Cloudflare
+1. Install dependencies and log in to Cloudflare:
 
-```bash
-npm install
-npx wrangler login
-```
+   ```bash
+   npm install
+   npx wrangler login
+   ```
 
-### 2. Create the KV namespace
+2. Create the KV namespace. Copy the two printed ids into `wrangler.toml` as the `id` and `preview_id` of the `TOKENS` binding:
 
-```bash
-npx wrangler kv namespace create TOKENS
-npx wrangler kv namespace create TOKENS --preview
-```
+   ```bash
+   npx wrangler kv namespace create TOKENS
+   npx wrangler kv namespace create TOKENS --preview
+   ```
 
-Each command prints an id — copy them into `wrangler.toml` as the `id` and `preview_id` of the existing `TOKENS` binding.
+3. Deploy. The checked-in `wrangler.toml` also creates the Durable Object. Note the URL wrangler prints:
 
-### 3. Deploy the worker
+   ```bash
+   npx wrangler deploy
+   ```
 
-```bash
-npx wrangler deploy
-```
+4. In Shortcut, open **Agents** in the sidebar and click **Add an agent** under **Agents Built By Your Organization**:
 
-Note the URL wrangler prints — `https://shortcut-agent-service.<your-subdomain>.workers.dev`. The next two steps need it. (The worker can't do anything useful yet; its secrets are still missing.)
-
-Wrangler creates the SQLite Durable Object class using the included `v1`
-migration. Keep the `TOKENS` namespace IDs unchanged when upgrading an existing
-deployment; OAuth credentials remain in KV, so this change does not require
-reauthorization. Existing interactions processed by the old version have no
-receipt or per-delivery comment marker and cannot be retroactively deduplicated.
-
-### 4. Create the agent app in Shortcut
-
-In Shortcut:
-
-1. Click **Agents** in the sidebar.
-2. Under **Agents Built By Your Organization**, click **Add an agent**.
-3. Fill out the **New Application** form:
-   - **Name** and **Mention Handle** — your choice; something like "Wise Bot". Icon and descriptions are optional.
-   - **OAuth Scopes**: **Read** and **Write** — the agent comments on both stories and epics, and the narrower **Create Comments** scope only covers story comments.
+   - **Name** and **Mention Handle**: your choice, for example "Wise Bot".
+   - **OAuth Scopes**: Read and Write. The agent comments on epics as well as stories, and the narrower Create Comments scope covers only story comments.
    - **Redirect URIs**: `https://<your-worker>.workers.dev/oauth/callback`
-4. Click **Create Application**, then set the delivery settings on the application:
+
+   After creating it, set the delivery settings:
+
    - **Webhook URL**: `https://<your-worker>.workers.dev/webhook`
-   - **Interaction triggers**: `assigned`, `comment-reply`, and `mentioned` — these are what make the agent respond.
-   - **Subscribed entity types**: none needed — this agent only acts on interaction triggers and ignores observer deliveries.
+   - **Interaction triggers**: assigned, comment-reply, and mentioned
+   - **Subscribed entity types**: none
 
-Creating the app gives you its **client id**, **client secret**, and **webhook secret** — keep them at hand for the next step.
+   Keep the client id, client secret, and webhook secret for the next step.
 
-### 5. Push the secrets
+5. Push the secrets:
 
-```bash
-echo "<client-id>"      | npx wrangler secret put CLIENT_ID
-echo "<client-secret>"  | npx wrangler secret put CLIENT_SECRET
-echo "<webhook-secret>" | npx wrangler secret put WEBHOOK_SECRET
-echo "https://<your-worker>.workers.dev/oauth/callback" \
-                         | npx wrangler secret put REDIRECT_URI
-```
+   ```bash
+   echo "<client-id>"      | npx wrangler secret put CLIENT_ID
+   echo "<client-secret>"  | npx wrangler secret put CLIENT_SECRET
+   echo "<webhook-secret>" | npx wrangler secret put WEBHOOK_SECRET
+   echo "https://<your-worker>.workers.dev/oauth/callback" \
+                            | npx wrangler secret put REDIRECT_URI
+   ```
 
-Do **not** set `SHORTCUT_API_BASE` in production — the default is correct. Until all four secrets are set, `/webhook` and `/oauth/callback` return 503.
+   Until all four are set, `/webhook` and `/oauth/callback` return 503. Leave `SHORTCUT_API_BASE` unset in production.
 
-### 6. Install the app in your workspace
+6. Install the app in a workspace and click **Allow** on the consent page. Shortcut lands on the worker's `/oauth/callback`, which stores the credentials.
 
-Install the agent app in a workspace — as its builder you can always install it, regardless of review status. Shortcut runs the OAuth flow (click **Allow** on the consent page) and redirects to the worker's `/oauth/callback`, which stores the workspace credentials in KV keyed by `creds:{workspace_id}`.
+7. Run `npx wrangler tail` and look for `Quote Agent connected`. `GET /` is a bare health check and says nothing about connected workspaces.
 
-### 7. Verify
+## Try it
 
-```bash
-curl https://<your-worker>.workers.dev/
-```
-
-The response is a bare health check. It is unauthenticated, so it deliberately
-says nothing about which workspaces are connected. `npx wrangler tail` shows
-`Quote Agent connected` with the workspace and its scopes when the install
-completes; once you see that line, the agent is live.
-
-Scopes are logged on connection and refresh. Older stored credentials report
-`unknown` until a token response supplies scopes; a refresh without a scope
-field preserves previously known scopes. All Shortcut requests go through
-`@shortcut/client` with a 15-second `timeoutMs`, which the library applies to
-each request including reading its body. A failed request rejects with the `Response`, which
-is never logged whole: request error logs are `summarizeShortcutV4Error(error)`, that is
-method, pathname, status, and identifier-shaped API error codes (`tag`, `code`). Free-form error
-messages/descriptions and response bodies are intentionally omitted because
-they can echo user content or credentials. OAuth state, codes, tokens, cursors,
-and query strings are not application-logged. Automatic invocation logs
-are disabled to avoid storing callback URLs, but interactive `wrangler tail`
-can still display those URLs: redact codes and state before sharing a tail.
-
----
-
-## Trying it out
-
-1. @-mention the agent in a comment on a story — it replies in-thread with a quote.
-2. Assign it a story or epic — it posts a quote as a comment.
-
----
+1. @-mention the agent in a comment on a story. It replies in the thread with a quote.
+2. Assign it a story or an epic. It posts a quote as a comment.
 
 ## Local development
 
-Local dev reuses the agent app from step 4. Copy `.dev.vars.example` to `.dev.vars` and fill it in with that app's credentials:
+Copy `.dev.vars.example` to `.dev.vars`, fill in the agent app's credentials with `REDIRECT_URI=http://localhost:8787/oauth/callback`, and run `npx wrangler dev`. Add that redirect URI to the agent app as a second entry. Signatures are always required, so either point a tunnel at the worker or sign test bodies yourself with the webhook secret.
 
-```
-CLIENT_ID=<your-agent-app-client-id>
-CLIENT_SECRET=<your-agent-app-client-secret>
-REDIRECT_URI=http://localhost:8787/oauth/callback
-WEBHOOK_SECRET=<your-agent-app-webhook-secret>
-```
-
-Then:
-
-```bash
-npm install
-npx wrangler dev
-```
-
-The worker runs at `http://localhost:8787`. Signatures are always required, including locally: point a tunnel at the worker and let Shortcut deliver real, signed payloads, or sign test bodies yourself with the webhook secret. The agent app's **Redirect URIs** field takes one per line — add `http://localhost:8787/oauth/callback` as a second entry so the local OAuth flow can land.
-
-Run checks from this directory:
+Before deploying a change:
 
 ```bash
 npm test
@@ -182,8 +95,10 @@ npx tsc --noEmit
 npx wrangler deploy --dry-run
 ```
 
----
+## Logging
+
+API and OAuth requests time out after 15 seconds. A failure is logged as its method, endpoint path, status, and a provider error code when there is one. Bodies, query strings, tokens, OAuth codes and state, and comment text are never logged. Cloudflare's automatic invocation logs are off, but an interactive `wrangler tail` can still show callback URLs, so redact codes and state before sharing one.
 
 ## Quotes
 
-Quotes are loaded from `src/quotes.json` at bundle time. Add or remove quotes there and redeploy.
+Quotes come from `src/quotes.json`, bundled at deploy time. Edit the file and redeploy.
