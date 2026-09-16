@@ -108,18 +108,18 @@ test(`${demo}: actual Cloudflare runtime, mock Shortcut only`, { timeout: 45_000
     assert.equal(connected.status, 200, await connected.text());
     assert.equal((await results()).requests.filter((item) => item.path.endsWith('/token')).length, 1);
 
-    const envelope = (id) => ({ id, version: 'v2', installation_id: 'installation',
+    const envelope = (id) => ({ id, version: 'v2', timestamp: new Date().toISOString(), installation_id: 'installation',
       workspace2: { id: 'workspace', url_slug: 'acme' }, actor: { member_id: 'user', displayable_name: 'Ada' } });
     const deliver = async (id, properties) => {
       const response = await send({ ...envelope(id), ...properties });
       assert.equal(response.status, demo === 'team-cop' ? 202 : 200, await response.text());
     };
     if (demo === 'estimate-guardian') {
-      await deliver('zero-estimate', { actions: [{ action: 'update', entity_type: 'story', id: 124,
+      await deliver('zero-estimate', { actions: [{ action: 'update', entity_type: 'story', id: 124, global_id: 'v2:s:workspace:124',
         changes: [{ attribute: 'workflow_state', adds: [{ id: 2 }], removes: [{ id: 1 }] }] }] });
       assert.equal((await results()).posts.length, 0, 'A zero-point Estimate must not trigger a warning');
       assert.equal((await results()).patches.length, 0, 'A zero-point Estimate must not trigger a revert');
-      const properties = { actions: [{ action: 'update', entity_type: 'story', id: 123,
+      const properties = { actions: [{ action: 'update', entity_type: 'story', id: 123, global_id: 'v2:s:workspace:123',
         changes: [{ attribute: 'workflow_state', adds: [{ id: 2 }], removes: [{ id: 1 }] }] }] };
       await deliver('started', properties);
       const first = await results();
@@ -162,7 +162,7 @@ test(`${demo}: actual Cloudflare runtime, mock Shortcut only`, { timeout: 45_000
         (rows) => rows.some((row) => row.key === `installation:${id}` && JSON.parse(row.value).status === 'complete'),
         `Team Cop alarm completion for ${id}`,
       );
-      const created = { actions: [{ action: 'create', entity_type: 'story', id: 123 }] };
+      const created = { actions: [{ action: 'create', entity_type: 'story', id: 123, global_id: 'v2:s:workspace:123' }] };
       await deliver('created', created);
       await completion('created');
       let posted = (await results()).posts;
@@ -172,7 +172,7 @@ test(`${demo}: actual Cloudflare runtime, mock Shortcut only`, { timeout: 45_000
       await deliver('created', created);
       await completion('created');
       // A distinct event must read the existing comment instead of posting again.
-      await deliver('started', { actions: [{ action: 'update', entity_type: 'story', id: 123,
+      await deliver('started', { actions: [{ action: 'update', entity_type: 'story', id: 123, global_id: 'v2:s:workspace:123',
         changes: [{ attribute: 'started', adds: [true], removes: [false] }] }] });
       await completion('started');
       const state = await results();

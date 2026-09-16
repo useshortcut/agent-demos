@@ -1,4 +1,11 @@
 import { createHash } from "node:crypto";
+import {
+  ShortcutOAuth,
+  ShortcutOAuthError,
+  ShortcutV4Client,
+  grantedScopes,
+  isShortcutV4RequestError,
+} from "@shortcut/client/v4";
 
 export class ShortcutApiError extends Error {
   constructor(message, { body, status }) {
@@ -13,33 +20,22 @@ function fingerprint(value) {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
 }
 
-function grantedScopes(token, fallback = []) {
-  if (typeof token?.scope !== "string") return fallback;
-  return token.scope
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-}
-
-function tokenErrorDetails(body, status) {
-  const error = typeof body === "object" && body !== null ? body.error : null;
-  const errorDescription =
-    typeof body === "object" && body !== null ? body.error_description : null;
+function tokenErrorDetails(error) {
   let hint;
 
-  if (error === "invalid_client") {
+  if (error.error === "invalid_client") {
     hint =
       "Verify the local credentials match this Agent Application and the API environment.";
-  } else if (error === "invalid_grant") {
+  } else if (error.error === "invalid_grant") {
     hint =
       "The authorization code may be expired or already used, or REDIRECT_URI may not exactly match the saved URI.";
   }
 
   return {
-    error: typeof error === "string" ? error : "unknown_oauth_error",
-    ...(typeof errorDescription === "string" ? { errorDescription } : {}),
+    error: error.error,
+    ...(typeof error.errorDescription === "string" ? { errorDescription: error.errorDescription } : {}),
     ...(hint ? { hint } : {}),
-    status,
+    status: error.status,
   };
 }
 
@@ -66,27 +62,22 @@ function safeApiErrorDetails(body, sensitiveValues) {
 }
 
 function requestBodyStrings(body) {
-  if (typeof body !== "string") return [];
-  try {
-    const strings = [];
-    JSON.parse(body, (_key, value) => {
-      if (typeof value === "string") strings.push(value);
-      return value;
-    });
-    return [body, ...strings];
-  } catch {
-    return [body];
-  }
+  const strings = [];
+  JSON.stringify(body, (_key, value) => {
+    if (typeof value === "string") strings.push(value);
+    return value;
+  });
+  return strings;
 }
 
-async function responseBody(response) {
-  const text = await response.text();
-  if (!text) return null;
-
+// A failed v4 request rejects with the Response; `error` holds the parsed
+// JSON body, or the parse failure when the body was not JSON.
+async function rejectedBody(response) {
+  if (!(response.error instanceof Error)) return response.error;
   try {
-    return JSON.parse(text);
+    return (await response.text()) || null;
   } catch {
-    return text;
+    return null;
   }
 }
 
@@ -98,55 +89,63 @@ export class ShortcutClient {
     this.apiBase = apiBase.replace(/\/$/, "");
     this.clientId = clientId;
     this.clientSecret = clientSecret;
-    this.fetch = fetchImpl;
     this.logger = logger;
     this.redirectUri = redirectUri;
     this.state = state;
+    // The library clears `signal`; bound every outgoing request after spreading its init.
+    // It also parses a clone of the response and never reads the original body,
+    // which would hold the connection open until the timeout fires, so buffer
+    // the body and hand the library an in-memory Response.
+    this.fetch = async (url, init) => {
+      const response = await fetchImpl(url, { ...init, signal: AbortSignal.timeout(15_000) });
+      const body = await response.arrayBuffer();
+      return new Response(body.byteLength ? body : null,
+        { status: response.status, statusText: response.statusText, headers: response.headers });
+    };
   }
 
-  async #tokenRequest(params) {
-    const endpoint = `${this.apiBase}/oauth-authorization-code-flow/token`;
+  #oauth() {
+    return new ShortcutOAuth({
+      baseUrl: this.apiBase,
+      clientId: this.clientId,
+      clientSecret: this.clientSecret,
+      fetch: this.fetch,
+      redirectUri: this.redirectUri,
+    });
+  }
+
+  async #tokenRequest(grantType, request) {
     const diagnostics = {
       apiBase: this.apiBase,
       clientIdFingerprint: fingerprint(this.clientId),
-      grantType: params.grant_type,
-      ...(params.redirect_uri ? { redirectUri: params.redirect_uri } : {}),
+      grantType,
+      ...(grantType === "authorization_code" ? { redirectUri: this.redirectUri } : {}),
     };
     this.logger.info?.("Shortcut OAuth token request", diagnostics);
 
-    const response = await this.fetch(endpoint, {
-      signal: AbortSignal.timeout(15_000),
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams(params),
-    });
-    const body = await responseBody(response);
-    if (!response.ok) {
+    let token;
+    try {
+      token = await request(this.#oauth());
+    } catch (error) {
+      if (!(error instanceof ShortcutOAuthError)) throw error;
       this.logger.error?.("Shortcut OAuth token request rejected", {
         ...diagnostics,
-        ...tokenErrorDetails(body, response.status),
+        ...tokenErrorDetails(error),
       });
-      throw new ShortcutApiError(`Shortcut token request failed with HTTP ${response.status}`, {
-        body,
-        status: response.status,
+      throw new ShortcutApiError(`Shortcut token request failed with HTTP ${error.status}`, {
+        body: { error: error.error, error_description: error.errorDescription },
+        status: error.status,
       });
     }
     this.logger.info?.("Shortcut OAuth token request accepted", {
       ...diagnostics,
-      grantedScopes: grantedScopes(body),
-      status: response.status,
+      grantedScopes: grantedScopes(token),
     });
-    return body;
+    return token;
   }
 
   async exchangeAuthorizationCode(code) {
-    const token = await this.#tokenRequest({
-      client_id: this.clientId,
-      client_secret: this.clientSecret,
-      code,
-      grant_type: "authorization_code",
-      redirect_uri: this.redirectUri,
-    });
+    const token = await this.#tokenRequest("authorization_code", (oauth) => oauth.exchangeAuthorizationCode(code));
     const credentials = {
       accessToken: token.access_token,
       expiresAt: token.access_token_expires_at,
@@ -161,139 +160,116 @@ export class ShortcutClient {
   }
 
   async #refresh(workspaceId, credentials) {
-    const token = await this.#tokenRequest({
-      client_id: this.clientId,
-      client_secret: this.clientSecret,
-      grant_type: "refresh_token",
-      refresh_token: credentials.refreshToken,
-    });
-    const refreshed = {
-      ...credentials,
+    const token = await this.#tokenRequest("refresh_token", (oauth) => oauth.refreshAccessToken(credentials.refreshToken));
+    Object.assign(credentials, {
       accessToken: token.access_token,
       expiresAt: token.access_token_expires_at,
       refreshToken: token.refresh_token,
-      scopes: grantedScopes(token, credentials.scopes),
-    };
-    Object.assign(credentials, refreshed);
+      // An older grant may not report its scopes; never forget the known ones.
+      scopes: typeof token.scope === "string" ? grantedScopes(token) : credentials.scopes,
+    });
     await this.state.setWorkspace(workspaceId, credentials);
     return credentials;
   }
 
-  async #authorizedRequest(workspaceId, credentials, path, options = {}) {
+  // Runs `operation(workspaceApi, client)` with fresh credentials: refreshes
+  // proactively near expiry and once more on a 401, then retries the operation.
+  async #authorized(workspaceId, credentials, { method, path, body }, operation) {
     const sensitiveValues = [this.clientSecret, credentials.accessToken, credentials.refreshToken,
-      ...requestBodyStrings(options.body)];
-    let activeCredentials = credentials;
-    if (isExpiringSoon(activeCredentials)) {
-      activeCredentials = await this.#refresh(workspaceId, activeCredentials);
+      ...requestBodyStrings(body)];
+    if (isExpiringSoon(credentials)) await this.#refresh(workspaceId, credentials);
+
+    // Requests within one operation are sequential, so the failed request is the last one issued.
+    let requested;
+    const client = new ShortcutV4Client({
+      baseUrl: this.apiBase,
+      fetch: (url, init) => { requested = String(url); return this.fetch(url, init); },
+      token: credentials.accessToken,
+    });
+    const attempt = () => operation(client.workspace(credentials.slug), client);
+    let error;
+    try {
+      return await attempt();
+    } catch (caught) {
+      error = caught;
+      if (isShortcutV4RequestError(caught) && caught.status === 401) {
+        await this.#refresh(workspaceId, credentials);
+        sensitiveValues.push(credentials.accessToken, credentials.refreshToken);
+        client.setToken(credentials.accessToken);
+        try {
+          return await attempt();
+        } catch (retried) {
+          error = retried;
+        }
+      }
     }
+    if (!isShortcutV4RequestError(error)) throw error;
 
-    const request = (token) => {
-      sensitiveValues.push(token, activeCredentials.refreshToken);
-      return this.fetch(`${this.apiBase}/api/v4/${encodeURIComponent(activeCredentials.slug)}${path}`, {
-        signal: AbortSignal.timeout(15_000),
-        ...options,
-        headers: {
-          accept: "application/json",
-          authorization: `Bearer ${token}`,
-          ...options.headers,
-        },
-      });
-    };
-
-    let response = await request(activeCredentials.accessToken);
-    if (response.status === 401) {
-      activeCredentials = await this.#refresh(workspaceId, activeCredentials);
-      response = await request(activeCredentials.accessToken);
-    }
-
-    const body = await responseBody(response);
-    if (!response.ok) {
-      const url = new URL(`${this.apiBase}/api/v4/${encodeURIComponent(activeCredentials.slug)}${path}`);
+    const responseBody = await rejectedBody(error);
+    let pathname = `/api/v4/${encodeURIComponent(credentials.slug)}${path}`;
+    try {
+      // Cursor pages request the URL the API supplied; log its path, never its query.
+      const url = new URL(requested ?? error.url);
+      pathname = url.pathname;
       sensitiveValues.push(...url.searchParams.getAll("cursor"));
-      this.logger.error?.("Shortcut API request rejected", {
-        ...safeApiErrorDetails(body, sensitiveValues),
-        method: options.method ?? "GET",
-        path: url.pathname,
-        status: response.status,
-      });
-      throw new ShortcutApiError(`Shortcut API request failed with HTTP ${response.status}`, {
-        body,
-        status: response.status,
-      });
+    } catch {
+      // Keep the intended path when no request URL is known.
     }
-    return body?.entity ?? body;
+    this.logger.error?.("Shortcut API request rejected", {
+      ...safeApiErrorDetails(responseBody, sensitiveValues),
+      method,
+      path: pathname,
+      status: error.status,
+    });
+    throw new ShortcutApiError(`Shortcut API request failed with HTTP ${error.status}`, {
+      body: responseBody,
+      status: error.status,
+    });
   }
 
-  getStory(workspaceId, credentials, storyId) {
-    return this.#authorizedRequest(workspaceId, credentials, `/stories/${storyId}?fields=team`);
+  async getStory(workspaceId, credentials, storyId) {
+    const { entity } = await this.#authorized(workspaceId, credentials,
+      { method: "GET", path: `/stories/${storyId}` },
+      (ws) => ws.getStory(storyId, { fields: "team" }));
+    return entity;
   }
 
-  getMember(workspaceId, credentials, memberId) {
-    return this.#authorizedRequest(
-      workspaceId,
-      credentials,
-      `/members/${encodeURIComponent(memberId)}?fields=mention_name`,
-    );
+  async getMember(workspaceId, credentials, memberId) {
+    // Only the workspace slug is encoded by the library.
+    const memberPath = encodeURIComponent(memberId);
+    const { entity } = await this.#authorized(workspaceId, credentials,
+      { method: "GET", path: `/members/${memberPath}` },
+      (ws) => ws.getMember(memberPath, { fields: "mention_name" }));
+    return entity;
   }
 
   // Returns this agent's existing live comment on the Story, or null. The
   // Story's current comments are authoritative, not a cached reminder flag.
+  // `paginate` follows v4's `next_page_url` cursors, restricted to this API
+  // origin, and throws rather than finishing on an incomplete or looping list.
   async findOwnComment(workspaceId, credentials, storyId) {
     if (typeof credentials.memberId !== "string" || !credentials.memberId.trim()) {
       throw new Error("Missing Team Cop member ID; cannot check prior comments");
     }
-    const commentsPath = `/stories/${storyId}/comments`;
-    const endpoint = new URL(`${this.apiBase}/api/v4/${encodeURIComponent(credentials.slug)}${commentsPath}`);
-    let path = `${commentsPath}?fields=${COMMENT_FIELDS}&limit=100`;
-    const cursors = new Set();
-    for (let page = 1; ; page += 1) {
-      const result = await this.#authorizedRequest(workspaceId, credentials, path);
-      const currentPage = result?.current_page ?? page;
-      if (!Array.isArray(result?.entities) || !Number.isInteger(result.total_pages) || result.total_pages < 0 ||
-          !Number.isInteger(currentPage) || currentPage < 1) {
-        throw new Error("Invalid comment pagination response; cannot check prior reminder");
-      }
-      // v4 lists deleted comments "with minimal information": `deleted` is true and the id may be null.
-      const existing = result.entities.find((item) =>
-        item.id != null && !item.deleted && item.author?.id === credentials.memberId);
-      if (existing) return existing;
-      if (result.next_page_url == null) {
-        if (currentPage < result.total_pages) {
-          throw new Error("Incomplete comment pagination: missing next-page URL");
+    return this.#authorized(workspaceId, credentials,
+      { method: "GET", path: `/stories/${storyId}/comments` },
+      async (ws, client) => {
+        const comments = client.paginate(ws.listStoryComments(storyId, { fields: COMMENT_FIELDS, limit: 100 }));
+        for await (const item of comments) {
+          // v4 lists deleted comments "with minimal information": `deleted` is true and the id may be null.
+          if (item.id != null && !item.deleted && item.author?.id === credentials.memberId) return item;
         }
-        break;
-      }
-      let next;
-      try {
-        if (typeof result.next_page_url !== "string") throw new Error();
-        next = new URL(result.next_page_url, endpoint);
-      } catch {
-        throw new Error("Invalid comment pagination next-page URL");
-      }
-      // Never send our bearer token to a server or resource supplied by a response.
-      if (next.origin !== endpoint.origin || next.pathname !== endpoint.pathname ||
-          next.username || next.password || next.hash ||
-          [...next.searchParams.keys()].some((key) => key !== "cursor" && key !== "fields") ||
-          next.searchParams.getAll("cursor").length !== 1) {
-        throw new Error("Unsafe comment pagination next-page URL");
-      }
-      const cursor = next.searchParams.get("cursor");
-      if (!cursor || cursors.has(cursor)) throw new Error("Invalid or repeated comment pagination cursor");
-      cursors.add(cursor);
-      // Cursor requests cannot also send limit/page. Keep the fields needed for deduplication.
-      path = `${commentsPath}?cursor=${encodeURIComponent(cursor)}&fields=${COMMENT_FIELDS}`;
-    }
-    return null;
+        return null;
+      });
   }
 
   // Posts the comment unless this agent has already commented on the Story.
   async postStoryComment(workspaceId, credentials, storyId, comment) {
     const existing = await this.findOwnComment(workspaceId, credentials, storyId);
     if (existing) return { ...existing, alreadyCommented: true };
-    return this.#authorizedRequest(workspaceId, credentials, `/stories/${storyId}/comments?fields=id`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(comment),
-    });
+    const { entity } = await this.#authorized(workspaceId, credentials,
+      { body: comment, method: "POST", path: `/stories/${storyId}/comments` },
+      (ws) => ws.createStoryComment(storyId, comment, { fields: "id" }));
+    return entity;
   }
 }

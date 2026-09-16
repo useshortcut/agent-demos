@@ -14,6 +14,8 @@ Shortcut Custom Agents is a platform that lets developers create, publish, and i
 
 **Webhook Signing** — All deliveries are signed with HMAC-SHA256 using a per-app secret. The hex digest is sent in the `Payload-Signature` request header.
 
+**JavaScript client** — [`@shortcut/client`](https://github.com/useshortcut/shortcut-client-js) 3.3.0 ships two entrypoints for agents: `@shortcut/client/v4` (`ShortcutV4Client` for the workspace-scoped v4 API with cursor pagination, `ShortcutOAuth` for the install's code exchange and token refresh) and `@shortcut/client/webhooks` (`ShortcutWebhookClient` for signature verification and typed observer and interaction payloads). Both are Fetch-based and run on Node.js 20+, Cloudflare Workers, Deno, and Bun. The demos in this repo use them.
+
 ## Payload Shapes
 
 ### Observer (v2 envelope)

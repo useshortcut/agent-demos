@@ -10,6 +10,14 @@ function jsonResponse(body, status = 200) {
   });
 }
 
+// The library percent-encodes query values and capitalizes header names;
+// compare what the API receives rather than the exact string.
+function requested(url) {
+  const parsed = new URL(url);
+  return { path: parsed.pathname, query: Object.fromEntries(parsed.searchParams) };
+}
+const header = (options, name) => new Headers(options.headers).get(name);
+
 describe("ShortcutClient", () => {
   for (const operation of ["authorization code exchange", "token refresh", "authorized API request"]) {
     it(`preserves the global fetch receiver during ${operation}`, async (t) => {
@@ -57,7 +65,7 @@ describe("ShortcutClient", () => {
         assert.deepEqual(await client.getStory("workspace-1", credentials, 123), { id: 123 });
         if (operation === "token refresh") {
           assert.equal(calls[0][1].body.get("grant_type"), "refresh_token");
-          assert.equal(calls[1][1].headers.authorization, "Bearer new-access-token");
+          assert.equal(header(calls[1][1], "authorization"), "Bearer new-access-token");
         }
       }
       assert.equal(calls.length, operation === "token refresh" ? 2 : 1);
@@ -171,12 +179,19 @@ describe("ShortcutClient", () => {
     await client.getMember("workspace-1", credentials, "member/id");
     await client.postStoryComment("workspace-1", credentials, 123, { text: "@kurt hello" });
 
-    assert.equal(calls[0][0], "https://api.example.com/api/v4/my%20workspace/stories/123?fields=team");
-    assert.equal(calls[1][0], "https://api.example.com/api/v4/my%20workspace/members/member%2Fid?fields=mention_name");
-    assert.equal(calls[2][0], "https://api.example.com/api/v4/my%20workspace/stories/123/comments?fields=id,author,deleted&limit=100");
-    assert.equal(calls[3][0], "https://api.example.com/api/v4/my%20workspace/stories/123/comments?fields=id");
+    assert.ok(calls.every(([url]) => url.startsWith("https://api.example.com/api/v4/my%20workspace/")));
+    assert.deepEqual(requested(calls[0][0]), { path: "/api/v4/my%20workspace/stories/123", query: { fields: "team" } });
+    assert.deepEqual(requested(calls[1][0]),
+      { path: "/api/v4/my%20workspace/members/member%2Fid", query: { fields: "mention_name" } });
+    assert.deepEqual(requested(calls[2][0]),
+      { path: "/api/v4/my%20workspace/stories/123/comments", query: { fields: "id,author,deleted", limit: "100" } });
+    assert.deepEqual(requested(calls[3][0]), { path: "/api/v4/my%20workspace/stories/123/comments", query: { fields: "id" } });
     assert.equal(calls[3][1].method, "POST");
     assert.deepEqual(JSON.parse(calls[3][1].body), { text: "@kurt hello" });
+    for (const [, options] of calls) {
+      assert.equal(header(options, "authorization"), "Bearer access-token");
+      assert.ok(options.signal instanceof AbortSignal, "requests are bounded by a timeout signal");
+    }
   });
 
   it("mutates shared credentials after refresh so later calls reuse the new token", async () => {
@@ -193,8 +208,11 @@ describe("ShortcutClient", () => {
           return jsonResponse({
             access_token: "new-access-token",
             access_token_expires_at: "2099-01-01T00:00:00Z",
+            permission_id: "agent-member",
             refresh_token: "new-refresh-token",
             scope: "read comment-write",
+            workspace2_id: "workspace-1",
+            workspace2_slug: "acme",
           });
         }
         return jsonResponse({ entity: { id: 123 } });
@@ -213,7 +231,9 @@ describe("ShortcutClient", () => {
 
     assert.equal(calls.filter(([url]) => url.endsWith("/token")).length, 1);
     assert.equal(credentials.accessToken, "new-access-token");
+    assert.equal(credentials.refreshToken, "new-refresh-token");
+    assert.equal(credentials.memberId, "agent-member");
     assert.deepEqual(credentials.scopes, ["read", "comment-write"]);
-    assert.equal(calls[2][1].headers.authorization, "Bearer new-access-token");
+    assert.equal(header(calls[2][1], "authorization"), "Bearer new-access-token");
   });
 });

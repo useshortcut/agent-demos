@@ -93,12 +93,12 @@ it("OAuth credentials and action receipts survive restart, and alarms post only 
       access_token: "token", refresh_token: "refresh", permission_id: "cop",
       workspace2_id: "workspace", workspace2_slug: "acme", scope: "read comment-write",
     });
-    if (url.includes("/members/")) return Response.json({ mention_name: "ada" });
+    if (url.includes("/members/")) return Response.json({ entity: { mention_name: "ada" } });
     if (url.includes("/comments?") && options.method !== "POST") {
       return Response.json({ entities: [], total_pages: 1 });
     }
-    if (options.method === "POST") return Response.json({ id: 1 });
-    return Response.json({ team: null });
+    if (options.method === "POST") return Response.json({ entity: { id: 1 } });
+    return Response.json({ entity: { team: null } });
   });
   let object = new TeamCop(ctx, env);
   assert.equal((await object.fetch(new Request("https://worker/oauth/callback?code=test"))).status, 200);

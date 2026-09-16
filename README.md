@@ -17,6 +17,7 @@ An agent app is a web service you own. Shortcut sends it signed webhooks when so
 ## Docs
 
 - [Shortcut Custom Agents overview](./docs/custom-agents.md) — key concepts, webhook payload shapes, interaction triggers, and the app review lifecycle.
+- [`@shortcut/client`](https://github.com/useshortcut/shortcut-client-js) — the official JavaScript client. Its `@shortcut/client/v4` entrypoint covers the v4 API and the agent OAuth flow, and `@shortcut/client/webhooks` verifies deliveries and types their payloads. All three demos are built on it.
 - [Shortcut REST API](https://developer.shortcut.com/api/rest/v3) — full API reference.
 
 ## Building your own
@@ -25,6 +26,8 @@ An agent app is a web service you own. Shortcut sends it signed webhooks when so
 2. Stand up a service with two public endpoints — an OAuth redirect target and a webhook receiver — and register their URLs on the app.
 3. Install the app in a workspace from the integrations catalog and complete the OAuth flow.
 4. Verify the `Payload-Signature` header (HMAC-SHA256 over the raw request body) on every delivery before acting on it.
+
+Steps 2 to 4 are what `@shortcut/client` does for you: `ShortcutOAuth` completes the install's code exchange and refreshes tokens, `ShortcutV4Client` calls the API for one workspace and walks cursor-paged lists, and `ShortcutWebhookClient` verifies and parses each delivery. What's left for your service is storing credentials, deciding when to refresh, and the rule itself.
 
 `quote-agent` implements all four steps, including per-interaction delivery coordination; start there.
 

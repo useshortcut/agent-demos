@@ -17,5 +17,8 @@
     "esbuild": "^0.28.1",
     "miniflare": "5.20260907.0-alpha",
     "wrangler": "^4.129.1"
+  },
+  "dependencies": {
+    "@shortcut/client": "^3.3.0"
   }
 }

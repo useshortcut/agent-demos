@@ -86,30 +86,41 @@ testing another environment.
 
 ## How it works
 
-- Verifies the raw webhook body with HMAC-SHA256 before parsing or queueing.
+Shortcut API access goes through the official [`@shortcut/client`](https://www.npmjs.com/package/@shortcut/client)
+package: `ShortcutV4Client` and its `paginate` helper for v4 requests, `ShortcutOAuth`
+for the token exchange and refresh, and `verifyShortcutWebhookSignature` for webhook
+signatures. Team Cop itself owns the SQLite Durable Object state, delivery receipts,
+retries, the token refresh policy, and log redaction.
+
+- Verifies the raw webhook body with the library's constant-time HMAC-SHA256 check
+  (WebCrypto) before parsing or queueing.
 - Persists each delivery and schedules a Durable Object alarm before returning
   HTTP 202. A single coordinator serializes API processing and token refresh.
 - Processes Story creates and updates where `started` adds `true`. When the diff
   is unavailable, Team Cop cannot identify the transition and skips that update.
-- Fetches only `team` from the Story and `mention_name` from the actor's Member.
+- Fetches only `team` from the Story and `mention_name` from the actor's Member,
+  through `ShortcutV4Client` with a `fetch` wrapper that bounds every request to
+  15 seconds.
 - Ignores its own writes and persists processed action/delivery receipts. For each
   new qualifying event it scans the Story's comments for any non-deleted comment
   authored by Team Cop before posting. The comment history is the check; there is
   no permanent "already reminded" Story flag. If all Team Cop comments on a Story
-  are deleted, a later qualifying event posts again. The scan follows v4's
-  `next_page_url` cursor links, restricted to the same API origin and Story
-  comments endpoint, and fails closed on incomplete or looping pagination rather
-  than risk a duplicate reminder.
+  are deleted, a later qualifying event posts again. The scan uses the library's
+  `paginate`, which follows v4's `next_page_url` cursor links only back to the
+  same API origin under `/api/v4/`, sends just `cursor` and `fields` on later
+  pages, and fails closed on incomplete or looping pagination rather than risk a
+  duplicate reminder.
 - Allows one initial attempt plus **five retries** with exponential backoff.
   Interrupted processing also consumes an attempt. Exhausted jobs remain in
   SQLite without further alarms for that job; redelivery does not reset the cap.
   Completed-delivery and action receipts are pruned after seven days.
-- Persists OAuth scopes and refreshes expiring tokens.
+- Persists OAuth scopes and refreshes tokens with `ShortcutOAuth`: proactively
+  within five minutes of expiry, and once more on a 401 before retrying the request.
 
 For API failures, look for `Shortcut API request rejected` before the delivery's
 retry log. It identifies the HTTP method, endpoint pathname, status, and sanitized
-error details without logging authorization headers, query strings, or request
-bodies. Exhausted deliveries remain failed after deployment; test a fix with a
+error details without logging authorization headers, query strings, cursors, or
+request bodies; the library's rejected `Response` is never logged whole. Exhausted deliveries remain failed after deployment; test a fix with a
 new Story event rather than expecting the old delivery to restart automatically.
 Deliveries that arrive before OAuth completes fail and are exhausted the same way,
 so test with a new teamless Story after connecting.

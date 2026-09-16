@@ -1,4 +1,3 @@
-import { Buffer } from "node:buffer";
 import { ShortcutClient } from "./shortcut-client.mjs";
 import { createTeamCopProcessor, verifyWebhookSignature } from "./team-cop.mjs";
 import { DurableState, MAX_ATTEMPTS } from "./durable-state.mjs";
@@ -8,7 +7,7 @@ const json = (body, status = 200) => Response.json(body, { status });
 
 async function readBody(request) {
   const reader = request.body?.getReader();
-  if (!reader) return Buffer.alloc(0);
+  if (!reader) return new Uint8Array();
   const chunks = [];
   let size = 0;
   for (;;) {
@@ -19,9 +18,15 @@ async function readBody(request) {
       await reader.cancel();
       return null;
     }
-    chunks.push(Buffer.from(value));
+    chunks.push(value);
   }
-  return Buffer.concat(chunks);
+  const raw = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    raw.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return raw;
 }
 
 export default {
@@ -44,11 +49,11 @@ export default {
 
     const raw = await readBody(request);
     if (raw === null) return json({ error: "payload too large" }, 413);
-    if (!verifyWebhookSignature(raw, request.headers.get("Payload-Signature") ?? "", env.WEBHOOK_SECRET)) {
+    if (!await verifyWebhookSignature(raw, request.headers.get("Payload-Signature") ?? "", env.WEBHOOK_SECRET)) {
       return json({ error: "invalid signature" }, 401);
     }
     let payload;
-    try { payload = JSON.parse(raw.toString("utf8")); }
+    try { payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw)); }
     catch { return json({ error: "invalid JSON" }, 400); }
     if (payload?.type === "validation") return json({ ok: true });
     if (!Array.isArray(payload?.actions)) return json({ ignored: true });
