@@ -176,18 +176,15 @@ describe("ShortcutClient", () => {
     };
 
     await client.getStory("workspace-1", credentials, 123);
-    await client.getMember("workspace-1", credentials, "member/id");
     await client.postStoryComment("workspace-1", credentials, 123, { text: "@kurt hello" });
 
     assert.ok(calls.every(([url]) => url.startsWith("https://api.example.com/api/v4/my%20workspace/")));
     assert.deepEqual(requested(calls[0][0]), { path: "/api/v4/my%20workspace/stories/123", query: { fields: "team" } });
     assert.deepEqual(requested(calls[1][0]),
-      { path: "/api/v4/my%20workspace/members/member%2Fid", query: { fields: "mention_name" } });
-    assert.deepEqual(requested(calls[2][0]),
       { path: "/api/v4/my%20workspace/stories/123/comments", query: { fields: "id,author,deleted", limit: "100" } });
-    assert.deepEqual(requested(calls[3][0]), { path: "/api/v4/my%20workspace/stories/123/comments", query: { fields: "id" } });
-    assert.equal(calls[3][1].method, "POST");
-    assert.deepEqual(JSON.parse(calls[3][1].body), { text: "@kurt hello" });
+    assert.deepEqual(requested(calls[2][0]), { path: "/api/v4/my%20workspace/stories/123/comments", query: { fields: "id" } });
+    assert.equal(calls[2][1].method, "POST");
+    assert.deepEqual(JSON.parse(calls[2][1].body), { text: "@kurt hello" });
     for (const [, options] of calls) {
       assert.equal(header(options, "authorization"), "Bearer access-token");
       assert.ok(options.signal instanceof AbortSignal, "requests are bounded by a timeout signal");
@@ -227,7 +224,7 @@ describe("ShortcutClient", () => {
     };
 
     await client.getStory("workspace-1", credentials, 123);
-    await client.getMember("workspace-1", credentials, "member-1");
+    await client.getStory("workspace-1", credentials, 124);
 
     assert.equal(calls.filter(([url]) => url.endsWith("/token")).length, 1);
     assert.equal(credentials.accessToken, "new-access-token");

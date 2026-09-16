@@ -12,7 +12,7 @@ For background on the platform itself — payload shapes, trigger semantics, and
 - **Storage**: Cloudflare KV (`TOKENS` namespace) — stores OAuth credentials per workspace
 - **Delivery coordination**: SQLite Durable Object (`QUOTE_DELIVERIES`) — serializes interactions per workspace and stores completed-delivery receipts
 - **Shortcut client**: [`@shortcut/client`](https://www.npmjs.com/package/@shortcut/client) — `ShortcutV4Client` (plus `client.paginate` for cursor pages) for API calls, `ShortcutOAuth` for the token exchange and refresh, `ShortcutWebhookClient.verifyBody` for webhook verification
-- **Auth**: OAuth 2.0 authorization code flow with the Shortcut v4 API via `ShortcutOAuth`; the demo owns credential storage and the refresh policy (proactively within 5 minutes of expiry, once reactively on a 401)
+- **Auth**: OAuth 2.0 authorization code flow with the Shortcut v4 API via `ShortcutOAuth`; the demo owns credential storage and the `refresh.run` callback, and the client refreshes proactively within 5 minutes of expiry and once reactively on a 401
 - **Webhooks**: Receives signed HMAC-SHA256 payloads from Shortcut; the demo caps the body at 2 MB, then `verifyBody` checks the signature and the delivery envelope before anything is parsed or acted on
 
 ### Endpoints
@@ -137,8 +137,8 @@ Scopes are logged on connection and refresh. Older stored credentials report
 field preserves previously known scopes. All Shortcut requests go through
 `@shortcut/client` with a 15-second `timeoutMs`, which the library applies to
 each request including reading its body. A failed request rejects with the `Response`, which
-is never logged whole: request error logs include method, pathname, status, and
-bounded API error codes (`tag`, `error`, `code`). Free-form error
+is never logged whole: request error logs are `summarizeShortcutV4Error(error)`, that is
+method, pathname, status, and identifier-shaped API error codes (`tag`, `code`). Free-form error
 messages/descriptions and response bodies are intentionally omitted because
 they can echo user content or credentials. OAuth state, codes, tokens, cursors,
 and query strings are not application-logged. Automatic invocation logs

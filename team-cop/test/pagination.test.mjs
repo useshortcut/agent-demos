@@ -194,7 +194,6 @@ it("logs API method, path and safe error details without credentials or comment 
   assert.equal(logs[0][1].path, path);
   assert.equal(logs[0][1].status, 400);
   assert.match(JSON.stringify(logs), /invalid_params/);
-  assert.match(JSON.stringify(logs), /Rejected/);
   assert.doesNotMatch(JSON.stringify(logs), /secret-access|secret-refresh|secret-client|private reminder text|Bearer/);
 });
 
@@ -227,7 +226,7 @@ it("posts on an empty list and does not mistake another author's comment for its
   }
 });
 
-it("bounds error details and omits arbitrary response fields", async () => {
+it("logs identifier codes only, never messages or arbitrary response fields", async () => {
   const logs = [];
   const c = client(async () => Response.json({
     message: `Invalid\nrequest ${"x".repeat(2000)}`,
@@ -237,8 +236,8 @@ it("bounds error details and omits arbitrary response fields", async () => {
   }, { status: 400 }), { error(...args) { logs.push(args); } });
   await assert.rejects(c.getStory("workspace", credentials, 123), /HTTP 400/);
   assert.equal(logs.length, 1);
-  assert.ok(logs[0][1].message.length <= 500);
-  assert.doesNotMatch(logs[0][1].message, /[\r\n]/);
+  assert.equal(logs[0][1].tag, "invalid_params");
+  assert.equal(logs[0][1].message, undefined);
   assert.doesNotMatch(JSON.stringify(logs), /unrelated private text|unknown-secret|authorization/);
 });
 

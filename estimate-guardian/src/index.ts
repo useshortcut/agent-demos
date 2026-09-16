@@ -6,7 +6,7 @@ import {
   ShortcutV4Client,
   grantedScopes,
   isShortcutV4RequestError,
-  type ShortcutOAuthRefreshTokens,
+  summarizeShortcutV4Error,
   type ShortcutOAuthTokens,
   type ShortcutV4Page,
   type ShortcutWorkspaceApi,
@@ -92,9 +92,6 @@ type StoryComment = {
   author: SlimRef<string> | null;
   external_id?: string | null;
 };
-
-const MEMBER_FIELDS = 'mention_name';
-type Member = { mention_name: string };
 
 // Writes need just enough of a response to tell success from failure.
 const ID_ONLY_FIELDS = 'id';
@@ -223,105 +220,62 @@ async function recoverRevert(s: Session, recovery: Recovery) {
 // ---------------------------------------------------------------------------
 
 const REQUEST_TIMEOUT_MS = 15_000;
+const TOKEN_PATH = '/oauth-authorization-code-flow/token';
 
 // Only these diagnostics are ever logged. Never log an Error object or a
 // rejected Response: fetch errors and provider bodies can contain credentials,
 // URLs, or user text.
 class ShortcutRequestError extends Error {}
 
-/**
- * The library aborts a stalled request, or a stalled body read, with a
- * `TimeoutError`; surface it like any other network failure.
- */
-async function bounded<T>(run: () => Promise<T>): Promise<T> {
-  try {
-    return await run();
-  } catch (error) {
-    if ((error as { name?: unknown } | null)?.name === 'TimeoutError') {
-      throw new ShortcutRequestError('Network request failed or timed out');
-    }
-    throw error;
-  }
+/** A provider error code, only when it is an identifier and not free text. */
+function errorCode(code: unknown): { code?: string } {
+  return typeof code === 'string' && /^[a-z][a-z0-9_]{0,79}$/.test(code) ? { code } : {};
 }
 
-function sensitiveStrings(value: unknown): string[] {
-  if (typeof value === 'string') return [value];
-  if (value && typeof value === 'object') return Object.values(value).flatMap(sensitiveStrings);
-  return [];
-}
-
-function safeErrorDetails(body: unknown, sensitive: string[]): Record<string, string> {
-  if (!body || typeof body !== 'object') return {};
-  const redactions = [...new Set(sensitive.filter(Boolean).flatMap((value) =>
-    [value, encodeURIComponent(value), encodeURIComponent(value).replace(/%20/g, '+'), JSON.stringify(value).slice(1, -1)],
-  ))].sort((a, b) => b.length - a.length);
-  const details: Record<string, string> = {};
-  for (const key of ['tag', 'error', 'message', 'error_description']) {
-    const raw = (body as Record<string, unknown>)[key];
-    if (typeof raw !== 'string') continue;
-    // Strip URLs before replacing a redirect URI prefix, otherwise its query
-    // string could survive without the URL prefix that identifies it.
-    let value = raw.replace(/https?:\/\/\S+/gi, '[redacted URL]');
-    for (const secret of redactions) value = value.split(secret).join('[redacted]');
-    details[key] = value.replace(/Bearer\s+\S+/gi, '[redacted]')
-      .replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 500);
-  }
-  return details;
-}
-
-/** Everything a request body carries, so a provider echoing it back is redacted. */
-function bodyStrings(body: BodyInit | null | undefined): string[] {
-  if (body instanceof URLSearchParams) return [...body.values()];
-  if (typeof body !== 'string') return [];
-  try { return sensitiveStrings(JSON.parse(body)); } catch { return [body]; }
-}
+type FailureKind = 'rejected' | 'refresh' | 'network' | 'unexpected';
 
 /**
- * The `fetch` handed to the library. The library bounds each request with
- * `timeoutMs` and reads every body exactly once; this wrapper only reports
- * each failure as method, endpoint path and status. `sensitive()` lists the
- * strings that must never reach a log — credentials and OAuth material — and
- * the request's own body and query values (cursors included) are redacted
- * alongside them.
+ * Logs a failed library call as method, pathname, status, and identifier-shaped
+ * codes — `summarizeShortcutV4Error` leaves the body, query, and headers out —
+ * and says which kind of failure it was so the caller can map it.
  */
-function shortcutFetch(sensitive: () => string[]): typeof fetch {
-  return async (input, init) => {
-    const endpoint = new URL(input instanceof Request ? input.url : input);
-    const diagnostics = { method: init?.method ?? 'GET', path: endpoint.pathname };
-    let res: Response;
-    try {
-      res = await fetch(input, init);
-    } catch {
-      console.error('Shortcut request failed', { ...diagnostics, message: 'Network request failed or timed out' });
-      throw new ShortcutRequestError('Network request failed or timed out');
-    }
-    if (!res.ok) {
-      // The library reads the original body, so the log reads a clone.
-      let body: unknown;
-      try { body = await res.clone().json(); } catch { /* No raw HTML/text logging. */ }
-      const query = [...endpoint.searchParams].filter(([key]) => key !== 'fields' && key !== 'limit').map(([, value]) => value);
-      console.error('Shortcut request rejected', {
-        ...safeErrorDetails(body, [...sensitive(), ...bodyStrings(init?.body), ...query]),
-        ...diagnostics, status: res.status,
-      });
-    }
-    return res;
-  };
+function logFailure(error: unknown): FailureKind {
+  const summary = summarizeShortcutV4Error(error);
+  if (summary) {
+    console.error('Shortcut request rejected', summary);
+    return 'rejected';
+  }
+  if (error instanceof ShortcutOAuthError) {
+    console.error('Shortcut request rejected', { method: 'POST', path: TOKEN_PATH, status: error.status, ...errorCode(error.error) });
+    return 'refresh';
+  }
+  if ((error as { name?: unknown } | null)?.name === 'TimeoutError' || error instanceof TypeError) {
+    console.error('Shortcut request failed', { message: 'Network request failed or timed out' });
+    return 'network';
+  }
+  console.error('Shortcut request failed', { message: 'Unexpected client failure' });
+  return 'unexpected';
 }
-
-const sessionSecrets = (s: Session) => [s.env.CLIENT_SECRET, s.env.CLIENT_ID, s.creds.token, s.creds.refreshToken];
 
 function clientFor(s: Session): ShortcutV4Client {
+  // One client per session. It rotates the token itself: before a request
+  // within five minutes of expiry, and once more after a 401, then retries.
   return (s.client ??= new ShortcutV4Client({
     token: s.creds.token, baseUrl: apiBase(s.env), timeoutMs: REQUEST_TIMEOUT_MS,
-    fetch: shortcutFetch(() => sessionSecrets(s)),
+    refresh: {
+      expiresAt: s.creds.expiresAt,
+      run: async () => {
+        const { token, expiresAt } = await refreshCredentials(s);
+        return { token, expiresAt };
+      },
+    },
   }));
 }
 
-function oauthFor(env: Env, sensitive: () => string[]): ShortcutOAuth {
+function oauthFor(env: Env): ShortcutOAuth {
   return new ShortcutOAuth({
     clientId: env.CLIENT_ID, clientSecret: env.CLIENT_SECRET, redirectUri: env.REDIRECT_URI,
-    baseUrl: apiBase(env), timeoutMs: REQUEST_TIMEOUT_MS, fetch: shortcutFetch(sensitive),
+    baseUrl: apiBase(env), timeoutMs: REQUEST_TIMEOUT_MS,
   });
 }
 
@@ -347,18 +301,14 @@ async function storeCredentials(kv: KVNamespace, workspaceId: string, creds: Wor
 // Token refresh
 // ---------------------------------------------------------------------------
 
-async function refreshCredentials(s: Session): Promise<WorkspaceCredentials | null> {
+/**
+ * Rotates the tokens and persists them. The client calls this itself; a
+ * refused rotation rejects with the library's `ShortcutOAuthError`, which the
+ * request that needed it reports.
+ */
+async function refreshCredentials(s: Session): Promise<WorkspaceCredentials> {
   console.log(`Refreshing token for workspace ${s.workspaceId}`);
-  let tokens: ShortcutOAuthRefreshTokens;
-  try {
-    tokens = await bounded(() => oauthFor(s.env, () => sessionSecrets(s)).refreshAccessToken(s.creds.refreshToken));
-  } catch (error) {
-    // A rejected token request was already reported, redacted, by the fetch
-    // wrapper. Its message carries provider text, so it is not repeated here.
-    if (error instanceof ShortcutOAuthError) return null;
-    throw error;
-  }
-
+  const tokens = await oauthFor(s.env).refreshAccessToken(s.creds.refreshToken);
   const updated: WorkspaceCredentials = {
     token: tokens.access_token,
     slug: s.creds.slug,
@@ -367,40 +317,29 @@ async function refreshCredentials(s: Session): Promise<WorkspaceCredentials | nu
     memberId: s.creds.memberId, // preserved from the original OAuth flow
     scopes: reportedScopes(tokens, s.creds.scopes),
   };
-
   await storeCredentials(s.kv, s.workspaceId, updated);
   s.creds = updated;
-  clientFor(s).setToken(updated.token);
   console.log('Estimate Guardian OAuth refreshed', { workspaceId: s.workspaceId, scopes: updated.scopes ?? 'unknown' });
   return updated;
 }
 
-function isExpiringSoon(creds: WorkspaceCredentials): boolean {
-  if (!creds.expiresAt) return false;
-  return new Date(creds.expiresAt).getTime() < Date.now() + 5 * 60 * 1000;
-}
-
 // ---------------------------------------------------------------------------
-// Shortcut v4 API (with auto-refresh on 401)
+// Shortcut v4 API
 // ---------------------------------------------------------------------------
 
 /**
- * Runs one call against the workspace-bound API. The token is refreshed
- * proactively near expiry, and once more if the call still comes back 401 —
- * it can expire between the check and the request. Any other rejection is
- * the library's `Response` for an HTTP failure, or a `ShortcutRequestError`
- * for a network failure or timeout.
+ * One call against the workspace-bound API. The client refreshes the token
+ * itself. A rejected request rethrows the library's `Response` after logging
+ * it; a refused refresh, a network failure, or a timeout becomes a
+ * `ShortcutRequestError`.
  */
 async function withRefresh<T>(s: Session, call: (ws: ShortcutWorkspaceApi) => Promise<T>): Promise<T> {
-  if (isExpiringSoon(s.creds) && !(await refreshCredentials(s))) {
-    throw new ShortcutRequestError('Token refresh failed');
-  }
-  const client = clientFor(s);
   try {
-    return await bounded(() => call(client.workspace(s.creds.slug)));
+    return await call(clientFor(s).workspace(s.creds.slug));
   } catch (error) {
-    if (!isShortcutV4RequestError(error) || error.status !== 401 || !(await refreshCredentials(s))) throw error;
-    return bounded(() => call(client.workspace(s.creds.slug)));
+    const kind = logFailure(error);
+    if (kind === 'rejected') throw error;
+    throw new ShortcutRequestError(kind === 'refresh' ? 'Token refresh failed' : 'Network request failed or timed out');
   }
 }
 
@@ -427,13 +366,16 @@ async function apiEntity<T>(s: Session, call: (ws: ShortcutWorkspaceApi) => Prom
  */
 async function listAll<T>(s: Session, list: (ws: ShortcutWorkspaceApi) => Promise<ShortcutV4Page<unknown>>): Promise<T[]> {
   const out: T[] = [];
+  const client = clientFor(s);
   try {
-    for await (const item of clientFor(s).paginate(withRefresh(s, list))) out.push(item as T);
+    for await (const item of client.paginate(list(client.workspace(s.creds.slug)))) out.push(item as T);
   } catch (error) {
-    if (error instanceof ShortcutRequestError) throw error;
-    throw new ShortcutRequestError(isShortcutV4RequestError(error)
-      ? 'List lookup failed'
-      : 'List returned an invalid, unsafe, or incomplete page');
+    const kind = logFailure(error);
+    throw new ShortcutRequestError(
+      kind === 'rejected' ? 'List lookup failed'
+        : kind === 'refresh' ? 'Token refresh failed'
+        : kind === 'network' ? 'Network request failed or timed out'
+        : 'List returned an invalid, unsafe, or incomplete page');
   }
   return out;
 }
@@ -534,14 +476,14 @@ function safeDisplayName(name: unknown): string {
   return cleaned || 'Someone';
 }
 
-async function resolveActorMention(s: Session, actor: ShortcutWebhookActor): Promise<string> {
-  const memberId = actor.member_id;
-  if (!memberId) return safeDisplayName(actor.displayable_name);
-  // The generated operation URL-encodes the id, which comes from the delivery.
-  const member = await apiEntity<Member>(s, (ws) => ws.getMember(memberId, { fields: MEMBER_FIELDS }));
-  // Falling back to the display name keeps the comment readable even though it
-  // won't render as a real mention.
-  return member?.mention_name ? `@${member.mention_name}` : safeDisplayName(actor.displayable_name);
+/**
+ * How the warning addresses the person who moved the story. The delivery
+ * carries the member's `mention_name`, so no lookup is needed; an actor
+ * without one (an automation, or a member with no handle) gets their
+ * sanitized display name, readable even though it won't render as a mention.
+ */
+function resolveActorMention(actor: ShortcutWebhookActor): string {
+  return actor.mention_name ? `@${actor.mention_name}` : safeDisplayName(actor.displayable_name);
 }
 
 /**
@@ -552,7 +494,7 @@ async function resolveActorMention(s: Session, actor: ShortcutWebhookActor): Pro
  * is *now*: deliveries are handled asynchronously, and the story may have
  * gained an estimate or moved again since this one was queued.
  */
-async function guardStory(s: Session, action: ShortcutObserverAction, actorMention: () => Promise<string>) {
+async function guardStory(s: Session, action: ShortcutObserverAction, actorMention: () => string | Promise<string>) {
   const storyId = Number(action.id);
   const pending = await s.recovery.get();
   if (pending && pending.phase !== 'finished') {
@@ -639,7 +581,7 @@ export class EstimateGuardianStory {
         const creds = await getCredentials(this.env.TOKENS, workspaceId);
         if (!creds || actor?.member_id === creds.memberId) return Response.json({ ok: true });
         const session: Session = { env: this.env, kv: this.env.TOKENS, workspaceId, creds, deliveryId, recovery: this.recovery };
-        await guardStory(session, action, () => resolveActorMention(session, actor));
+        await guardStory(session, action, () => resolveActorMention(actor));
         return Response.json({ ok: true });
       } catch (error) {
         console.error('Estimate Guardian story processing failed', {
@@ -736,11 +678,9 @@ app.get('/oauth/callback', async (c) => {
 
   const code = c.req.query('code');
   if (!code) return c.text('Missing code', 400);
-  const state = c.req.query('state') ?? '';
 
   try {
-    const oauth = oauthFor(c.env, () => [code, state, c.env.CLIENT_ID, c.env.CLIENT_SECRET, c.env.REDIRECT_URI]);
-    const tokens = await bounded(() => oauth.exchangeAuthorizationCode(code));
+    const tokens = await oauthFor(c.env).exchangeAuthorizationCode(code);
     const scopes = reportedScopes(tokens);
 
     await storeCredentials(c.env.TOKENS, tokens.workspace2_id, {
@@ -759,12 +699,11 @@ app.get('/oauth/callback', async (c) => {
        <p>You can close this tab.</p>`,
     );
   } catch (err) {
-    // A rejected exchange was already reported, redacted, by the fetch wrapper.
-    // The code, state, and the provider's own text stay out of the logs.
-    console.error('Estimate Guardian OAuth failed', {
-      message: err instanceof ShortcutOAuthError ? 'Token exchange rejected'
-        : err instanceof ShortcutRequestError ? err.message : 'Could not connect workspace',
-    });
+    // The code, the state, and the provider's own text stay out of the logs:
+    // only the status and an identifier-shaped error code are reported.
+    console.error('Estimate Guardian OAuth failed', err instanceof ShortcutOAuthError
+      ? { method: 'POST', path: TOKEN_PATH, status: err.status, ...errorCode(err.error), message: 'Token exchange rejected' }
+      : { message: 'Could not connect workspace' });
     return c.text('Token exchange failed. Check worker logs.', 500);
   }
 });

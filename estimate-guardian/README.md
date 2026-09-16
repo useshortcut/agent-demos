@@ -23,7 +23,7 @@ Estimate Guardian subscribes to **observer** deliveries for the `story` entity t
 3. Re-reads the story. If it has an estimate, stops.
 4. Looks up whether the story's workflow state is of type `started`. If not, stops.
 5. Scans the story's comments for a warning it already left. If found, stops.
-6. Resolves the actor's `mention_name` and posts the warning comment.
+6. Addresses the actor by the `mention_name` the delivery carries and posts the warning comment.
 7. Takes the state the story came from out of `changes`, and moves it back.
 
 Steps 3–7 run in a Durable Object keyed by workspace and Story, serializing duplicate deliveries. The webhook waits for the coordinator to finish its first attempt; any incomplete warning/revert has durable recovery progress and an alarm before the webhook acknowledges success.
@@ -36,7 +36,7 @@ The Shortcut-facing plumbing comes from the official [`@shortcut/client`](https:
 - **`ShortcutOAuth`** does the authorization-code exchange and the token refresh against `/oauth-authorization-code-flow/token`.
 - **`ShortcutWebhookClient.verifyBody`** (`@shortcut/client/webhooks`) checks the `Payload-Signature` HMAC over the raw bytes and validates the delivery envelope, so a payload missing its id, workspace, actor, or a well-formed action is a 400 before any of it is read. The library's `ShortcutObserverPayload` / `ShortcutObserverAction` / `ShortcutChangeEntry` types describe the delivery.
 
-The demo still owns everything specific to being *this* agent: the rule and its recovery, reading the body under a 2 MB cap (413 before verification), credential storage in KV, the refresh policy (proactively within five minutes of expiry, once more on a 401, then `client.setToken`), and diagnostics. The library bounds each request with the demo's 15-second `timeoutMs` but logs nothing itself, so the demo hands it a `fetch` wrapper that reports each failure as method, endpoint path, status, and redacted error strings — never the `Response` or error object, whose body can echo request content.
+The demo still owns everything specific to being *this* agent: the rule and its recovery, reading the body under a 2 MB cap (413 before verification), credential storage in KV, and diagnostics. The client rotates the token itself through the demo's `refresh.run` (before a request within five minutes of expiry, once more on a 401, then a retry) and bounds each request with the demo's 15-second `timeoutMs`, but logs nothing, so the demo logs each failure as `summarizeShortcutV4Error(error)`: method, endpoint pathname, status, and identifier-shaped error codes — never the `Response` or error object, whose body can echo request content.
 
 ### Reading the diff
 
@@ -62,7 +62,7 @@ The rest is still re-read, because the delivery is handled asynchronously and de
 | What state is it in? | `GET /stories/{id}` → `workflow_state` (slim — no `type`) |
 | Is that state a *started* state? | `GET /workflow-states` → `type`, cached per workspace for an hour |
 | Where did it come from? | `changes` → `workflow_state` entry → `removes[0].id` |
-| Who moved it? | `GET /members/{actor.member_id}` → `mention_name` |
+| Who moved it? | `actor.mention_name` from the delivery, no request |
 
 The `workflow_state` entry is only trusted when its `adds[0].id` matches the story's current state. Otherwise the story has moved again since the delivery was queued, and reverting to that entry's `removes` would send it somewhere it never was.
 
@@ -77,7 +77,6 @@ Every v4 endpoint takes a `fields` query param, and unrequested fields are never
 ```
 GET   /stories/123?fields=estimate,workflow_state
 GET   /stories/123/comments?fields=text,author,deleted,external_id&limit=100
-GET   /members/{actor}?fields=mention_name
 POST  /stories/123/comments?fields=id
 GET   /stories/123?fields=estimate,workflow_state
 PATCH /stories/123?fields=id
@@ -191,7 +190,7 @@ curl https://<your-worker>.workers.dev/
 
 The response is a bare health check. It is unauthenticated, so it deliberately says nothing about which workspaces are connected. `npx wrangler tail` shows `Estimate Guardian OAuth connected` with the workspace and its granted `scopes` when the install completes; credentials saved by older versions report `"unknown"` scopes until OAuth or a refresh returns them. Once you see that line, Estimate Guardian is live — see [Trying it out](#trying-it-out).
 
-API and OAuth requests time out after 15 seconds. `npx wrangler tail` shows bounded, redacted error details with method, endpoint pathname, HTTP status, and provider error tag/message when available. Query strings, callback codes/state, credentials, submitted comment text, and raw errors are not logged by the application. Cloudflare's automatic invocation logs are disabled in `wrangler.toml` so callback URLs are not stored, but an interactive `wrangler tail` can still display them; redact codes and state before sharing a tail.
+API and OAuth requests time out after 15 seconds. `npx wrangler tail` shows bounded error details with method, endpoint pathname, HTTP status, and identifier-shaped provider error codes when available; free-form messages are never logged. Query strings, callback codes/state, credentials, submitted comment text, and raw errors are not logged by the application. Cloudflare's automatic invocation logs are disabled in `wrangler.toml` so callback URLs are not stored, but an interactive `wrangler tail` can still display them; redact codes and state before sharing a tail.
 
 ---
 

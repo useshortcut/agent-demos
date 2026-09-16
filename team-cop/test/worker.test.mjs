@@ -29,7 +29,7 @@ function eagerStorage(t) {
 
 const payload = {
   id: "delivery", installation_id: "install", workspace2: { id: "workspace" },
-  actor: { member_id: "creator", displayable_name: "Ada" },
+  actor: { member_id: "creator", displayable_name: "Ada", mention_name: "ada" },
   actions: [{ id: 123, action: "create", entity_type: "story" }],
 };
 const env = {
@@ -93,7 +93,6 @@ it("OAuth credentials and action receipts survive restart, and alarms post only 
       access_token: "token", refresh_token: "refresh", permission_id: "cop",
       workspace2_id: "workspace", workspace2_slug: "acme", scope: "read comment-write",
     });
-    if (url.includes("/members/")) return Response.json({ entity: { mention_name: "ada" } });
     if (url.includes("/comments?") && options.method !== "POST") {
       return Response.json({ entities: [], total_pages: 1 });
     }

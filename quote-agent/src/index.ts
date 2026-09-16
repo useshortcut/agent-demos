@@ -6,7 +6,7 @@ import {
   ShortcutV4Client,
   grantedScopes,
   isShortcutV4RequestError,
-  type ShortcutOAuthRefreshTokens,
+  summarizeShortcutV4Error,
   type ShortcutOAuthTokens,
   type ShortcutV4Page,
 } from '@shortcut/client/v4';
@@ -86,28 +86,18 @@ function oauthScopes(tokens: Pick<ShortcutOAuthTokens, 'scope'>, previous?: stri
   return previous ?? null;
 }
 
+/** A provider error code, only when it is an identifier and not free text. */
+const errorCode = (code: unknown) => typeof code === 'string' && /^[a-z][a-z0-9_]{0,79}$/.test(code) ? { code } : {};
+
 // Do not log response text/messages, request bodies, query strings, cursors, or
 // exception messages: all can contain credentials, OAuth codes, state, or user
-// content. Only bounded machine-readable identifiers from the error body are kept.
-function safeErrorCodes(body: unknown, sensitive: string[]): Record<string, string> {
-  const codes: Record<string, string> = {};
-  const record = typeof body === 'object' && body !== null ? body as Record<string, unknown> : null;
-  for (const key of ['tag', 'error', 'code']) {
-    const value = record?.[key];
-    if (typeof value === 'string' && /^[a-z][a-z0-9_]{0,79}$/.test(value) &&
-        !sensitive.some((secret) => secret && value.includes(secret))) codes[key] = value;
-  }
-  return codes;
-}
-
-type RequestDetails = { method: string; path: string };
-
-function logRejected(details: RequestDetails, status: number, body: unknown, sensitive: string[]) {
-  console.error('Shortcut request rejected', { ...details, status, ...safeErrorCodes(body, sensitive) });
-}
-
-function logFailed(details: RequestDetails) {
-  console.error('Shortcut request failed', { ...details, timeoutMs: REQUEST_TIMEOUT_MS });
+// content. `summarizeShortcutV4Error` keeps only the method, pathname, status,
+// and identifier-shaped `tag`/`error` codes of a rejected request.
+function logFailure(error: unknown): void {
+  const summary = summarizeShortcutV4Error(error);
+  if (summary) console.error('Shortcut request rejected', summary);
+  else if (error instanceof ShortcutOAuthError) console.error('Shortcut request rejected', { method: 'POST', path: TOKEN_PATH, status: error.status, ...errorCode(error.error) });
+  else console.error('Shortcut request failed', { timeoutMs: REQUEST_TIMEOUT_MS });
 }
 
 // Carries only the status out of the request wrapper so the rejected Response
@@ -137,34 +127,17 @@ async function storeCredentials(kv: KVNamespace, workspaceId: string, creds: Wor
 // ---------------------------------------------------------------------------
 
 /**
- * Returns true if the access token expires within the next 5 minutes.
- */
-function isExpiringSoon(creds: WorkspaceCredentials): boolean {
-  if (!creds.expiresAt) return false;
-  const expiresAt = new Date(creds.expiresAt).getTime();
-  const fiveMinutesFromNow = Date.now() + 5 * 60 * 1000;
-  return expiresAt < fiveMinutesFromNow;
-}
-
-/**
- * Exchanges a refresh token for a new access token and updates KV.
- * Returns the updated credentials, or null if the refresh failed.
+ * Exchanges a refresh token for a new access token and updates KV. The client
+ * calls this itself; a refused rotation rejects with the library's error.
  */
 async function refreshCredentials(
   env: Env,
   kv: KVNamespace,
   workspaceId: string,
   creds: WorkspaceCredentials,
-): Promise<WorkspaceCredentials | null> {
+): Promise<WorkspaceCredentials> {
   console.log(`Refreshing token for workspace ${workspaceId}`);
-  let tokens: ShortcutOAuthRefreshTokens;
-  try {
-    tokens = await oauthClient(env).refreshAccessToken(creds.refreshToken);
-  } catch (error) {
-    logOAuthFailure(error, [creds.token, creds.refreshToken, env.CLIENT_SECRET]);
-    return null;
-  }
-
+  const tokens = await oauthClient(env).refreshAccessToken(creds.refreshToken);
   const updated: WorkspaceCredentials = {
     token: tokens.access_token,
     slug: creds.slug,
@@ -173,16 +146,9 @@ async function refreshCredentials(
     memberId: creds.memberId, // preserved from original OAuth flow
     scopes: oauthScopes(tokens, creds.scopes),
   };
-
   await storeCredentials(kv, workspaceId, updated);
   console.log('Quote Agent OAuth refreshed', { workspaceId, scopes: updated.scopes ?? 'unknown', expiresAt: updated.expiresAt });
   return updated;
-}
-
-function logOAuthFailure(error: unknown, sensitive: string[]) {
-  const details = { method: 'POST', path: TOKEN_PATH };
-  if (error instanceof ShortcutOAuthError) logRejected(details, error.status, { error: error.error }, sensitive);
-  else logFailed(details);
 }
 
 // ---------------------------------------------------------------------------
@@ -192,18 +158,30 @@ function logOAuthFailure(error: unknown, sensitive: string[]) {
 type CommentSummary = { id?: number | null; external_id?: string | null; author?: { id: string } };
 const COMMENT_FIELDS = 'id,external_id,author';
 
-// One client per delivery: the token is refreshed proactively within 5 minutes
-// of expiry and reactively exactly once on a 401, then swapped with setToken.
+// One client per delivery. It rotates the token itself: before a request
+// within five minutes of expiry, and once more after a 401, then retries.
 class WorkspaceApi {
   private readonly client: ShortcutV4Client;
 
-  constructor(private readonly env: Env, private readonly workspaceId: string, private readonly creds: WorkspaceCredentials) {
-    this.client = new ShortcutV4Client({ token: creds.token, baseUrl: shortcutApiBase(env), timeoutMs: REQUEST_TIMEOUT_MS });
+  constructor(env: Env, workspaceId: string, private readonly creds: WorkspaceCredentials) {
+    this.client = new ShortcutV4Client({
+      token: creds.token,
+      baseUrl: shortcutApiBase(env),
+      timeoutMs: REQUEST_TIMEOUT_MS,
+      refresh: {
+        expiresAt: creds.expiresAt,
+        run: async () => {
+          const refreshed = await refreshCredentials(env, env.TOKENS, workspaceId, creds);
+          Object.assign(creds, refreshed);
+          return { token: refreshed.token, expiresAt: refreshed.expiresAt };
+        },
+      },
+    });
   }
 
   async alreadyPosted(entityType: string, entityId: number, marker: string): Promise<boolean> {
     if (!this.creds.memberId) throw new Error('Missing agent member ID for duplicate check');
-    return this.request({ method: 'GET', path: this.commentsPath(entityType, entityId) }, async () => {
+    return this.request(async () => {
       const api = this.client.workspace(this.creds.slug);
       const query = { fields: COMMENT_FIELDS, limit: 100 };
       const first: Promise<ShortcutV4Page<CommentSummary>> = entityType === 'epic'
@@ -219,7 +197,7 @@ class WorkspaceApi {
 
   async postComment(entityType: string, entityId: number, text: string, marker: string, parentId?: string): Promise<void> {
     const body = { text, external_id: marker, ...(parentId ? { parent_comment_id: Number(parentId) } : {}) };
-    await this.request({ method: 'POST', path: this.commentsPath(entityType, entityId) }, (): Promise<unknown> => {
+    await this.request((): Promise<unknown> => {
       const api = this.client.workspace(this.creds.slug);
       return entityType === 'epic'
         ? api.createEpicComment(entityId, body, { fields: 'id' })
@@ -227,41 +205,16 @@ class WorkspaceApi {
     });
   }
 
-  private commentsPath(entityType: string, entityId: number) {
-    return `/api/v4/${encodeURIComponent(this.creds.slug)}/${entityType === 'epic' ? 'epics' : 'stories'}/${entityId}/comments`;
-  }
-
-  private async request<T>(details: RequestDetails, run: () => Promise<T>): Promise<T> {
-    if (isExpiringSoon(this.creds)) await this.refresh();
-    try {
-      return await this.attempt(details, run);
-    } catch (error) {
-      if (!(error instanceof ShortcutRequestRejected && error.status === 401)) throw error;
-      await this.refresh();
-      return this.attempt(details, run);
-    }
-  }
-
-  private async attempt<T>(details: RequestDetails, run: () => Promise<T>): Promise<T> {
+  // The rejected Response (and its body) never reaches callers or logs; only
+  // its status does.
+  private async request<T>(run: () => Promise<T>): Promise<T> {
     try {
       return await run();
     } catch (error) {
-      if (isShortcutV4RequestError(error)) {
-        logRejected(details, error.status, error.error, [this.creds.token, this.creds.refreshToken, this.env.CLIENT_SECRET]);
-        throw new ShortcutRequestRejected(error.status);
-      }
-      // Transport failure, timeout, or a pagination safety stop; the message
-      // is not logged because it can echo the request or its cursor.
-      logFailed(details);
+      logFailure(error);
+      if (isShortcutV4RequestError(error)) throw new ShortcutRequestRejected(error.status);
       throw new Error('Shortcut request failed or timed out');
     }
-  }
-
-  private async refresh(): Promise<void> {
-    const refreshed = await refreshCredentials(this.env, this.env.TOKENS, this.workspaceId, this.creds);
-    if (!refreshed) throw new Error('Token refresh failed');
-    Object.assign(this.creds, refreshed);
-    this.client.setToken(refreshed.token);
   }
 }
 
@@ -382,7 +335,7 @@ app.get('/oauth/callback', async (c) => {
   try {
     tokens = await oauthClient(c.env).exchangeAuthorizationCode(code);
   } catch (error) {
-    logOAuthFailure(error, [code, c.req.query('state') ?? '', c.env.CLIENT_SECRET]);
+    logFailure(error);
     return c.text('Token exchange failed. Check worker logs.', 500);
   }
 

@@ -18,7 +18,7 @@ const credentials = {
   slug: "acme",
 };
 
-function observerPayload(action, actor = { member_id: "member-1", displayable_name: "Kurt Schrader" }) {
+function observerPayload(action, actor = { member_id: "member-1", displayable_name: "Kurt Schrader", mention_name: "kurt" }) {
   return {
     id: "delivery-1",
     version: "v2",
@@ -29,7 +29,7 @@ function observerPayload(action, actor = { member_id: "member-1", displayable_na
   };
 }
 
-function harness({ story = { id: 123, team: null }, member = { mention_name: "kurt" } } = {}) {
+function harness({ story = { id: 123, team: null } } = {}) {
   const processed = new Set();
   const calls = [];
   const logs = [];
@@ -49,10 +49,6 @@ function harness({ story = { id: 123, team: null }, member = { mention_name: "ku
     async getStory(id, creds, storyId) {
       calls.push(["getStory", id, creds, storyId]);
       return story;
-    },
-    async getMember(id, creds, memberId) {
-      calls.push(["getMember", id, creds, memberId]);
-      return member;
     },
     async postStoryComment(id, creds, storyId, comment) {
       calls.push(["postStoryComment", id, creds, storyId, comment]);
@@ -162,12 +158,12 @@ describe("Team Cop processor", () => {
 
     await process(observerPayload({ action: "create", entity_type: "story", id: 123 }));
 
-    assert.deepEqual(calls.map(([name]) => name), ["getStory", "getMember", "postStoryComment"]);
-    assert.deepEqual(calls[2][4], { text: "@kurt Stories need to be in a Team! Please add one!" });
+    assert.deepEqual(calls.map(([name]) => name), ["getStory", "postStoryComment"]);
+    assert.deepEqual(calls[1][4], { text: "@kurt Stories need to be in a Team! Please add one!" });
   });
 
   it("comments to the starter on a started transition without a Team", async () => {
-    const { calls, process } = harness({ member: { mention_name: "starter-person" } });
+    const { calls, process } = harness();
     const action = {
       action: "update",
       entity_type: "story",
@@ -175,10 +171,10 @@ describe("Team Cop processor", () => {
       changes: [{ attribute: "started", adds: [true], removes: [false] }],
     };
 
-    await process(observerPayload(action));
+    await process(observerPayload(action, { member_id: "member-2", displayable_name: "Starter", mention_name: "starter-person" }));
 
     assert.equal(
-      calls[2][4].text,
+      calls[1][4].text,
       "@starter-person Stories need to be in a Team! Please add one!",
     );
   });
@@ -212,10 +208,10 @@ describe("Team Cop processor", () => {
   });
 
   it("reduces an unresolvable display name to plain words before mentioning it", async () => {
-    const { calls, process } = harness({ member: {} });
+    const { calls, process } = harness();
     await process(observerPayload({ action: "create", entity_type: "story", id: 123 },
       { member_id: "member-1", displayable_name: "[@admin](https://evil.example)  O'Brien\n<b>" }));
-    assert.equal(calls[2][4].text, "admin https evil.example O'Brien b Stories need to be in a Team! Please add one!");
+    assert.equal(calls[1][4].text, "admin https evil.example O'Brien b Stories need to be in a Team! Please add one!");
   });
 
   it("does not react to its own actions", async () => {

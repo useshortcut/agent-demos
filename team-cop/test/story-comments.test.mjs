@@ -28,7 +28,6 @@ it("uses live Story comments across new deliveries, actors, and processor restar
           listRequests += 1;
           return Response.json({ current_page: 1, total_pages: comments.length ? 1 : 0, entities: comments });
         }
-        if (url.includes("/members/")) return Response.json({ entity: { mention_name: "person" } });
         return Response.json({ entity: { team: null } });
       } });
     return createTeamCopProcessor({ client, state, logger });
