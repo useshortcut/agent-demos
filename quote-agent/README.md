@@ -135,8 +135,8 @@ completes; once you see that line, the agent is live.
 Scopes are logged on connection and refresh. Older stored credentials report
 `unknown` until a token response supplies scopes; a refresh without a scope
 field preserves previously known scopes. All Shortcut requests go through
-`@shortcut/client` with a `fetch` wrapper that adds a 15-second timeout; the
-library itself sets none. A failed request rejects with the `Response`, which
+`@shortcut/client` with a 15-second `timeoutMs`, which the library applies to
+each request including reading its body. A failed request rejects with the `Response`, which
 is never logged whole: request error logs include method, pathname, status, and
 bounded API error codes (`tag`, `error`, `code`). Free-form error
 messages/descriptions and response bodies are intentionally omitted because

@@ -386,13 +386,32 @@ it('keeps unknown scopes unknown on refresh for legacy credentials', async (t) =
   assert.equal(JSON.parse(await s.kv.get('creds:workspace')).scopes, undefined);
 });
 
-it('uses a 15 second timeout and never logs thrown network error contents', async (t) => {
+it('never logs thrown network error contents', async (t) => {
   const logs = [];
   t.mock.method(console, 'error', (...args) => logs.push(args));
-  t.mock.method(AbortSignal, 'timeout', (duration) => { assert.equal(duration, 15_000); return new AbortController().signal; });
   t.mock.method(globalThis, 'fetch', async () => { throw new Error('private-access https://example.com/?code=private-code'); });
   await assert.rejects(withRefresh(session(), (ws) => ws.getStory(123, { fields: 'estimate' })), /Network request failed or timed out/);
   assert.doesNotMatch(JSON.stringify(logs), /private-access|private-code|https:/);
+});
+
+it('aborts a stalled request through the library after 15 seconds', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const logs = [];
+  t.mock.method(console, 'error', (...args) => logs.push(args));
+  // Never settles on its own; rejects only once the library aborts the signal it passed.
+  t.mock.method(globalThis, 'fetch', (_url, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  }));
+  let settled = false;
+  const pending = withRefresh(session(), (ws) => ws.getStory(123, { fields: 'estimate' }));
+  const outcome = pending.then(() => { throw new Error('expected a timeout'); }, (error) => error).finally(() => { settled = true; });
+  t.mock.timers.tick(14_999);
+  await Promise.resolve();
+  assert.equal(settled, false, 'still waiting just before the timeout');
+  t.mock.timers.tick(1);
+  const error = await outcome;
+  assert.equal(error.name, 'TimeoutError');
+  assert.match(JSON.stringify(logs), /Network request failed or timed out/);
 });
 
 it('safely logs OAuth rejection without code, state, secrets or raw callback content', async (t) => {

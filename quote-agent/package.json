@@ -9,7 +9,7 @@
     "test:runtime": "node --test ../runtime-tests/smoke.mjs"
   },
   "dependencies": {
-    "@shortcut/client": "^3.3.0",
+    "@shortcut/client": "^3.3.1",
     "hono": "^4.13.7"
   },
   "devDependencies": {

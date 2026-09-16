@@ -237,3 +237,31 @@ describe("ShortcutClient", () => {
     assert.equal(header(calls[2][1], "authorization"), "Bearer new-access-token");
   });
 });
+
+it("aborts a stalled request through the library after 15 seconds", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const logs = [];
+  const client = new ShortcutClient({
+    apiBase: "https://api.example.com",
+    clientId: "client-id",
+    clientSecret: "client-secret",
+    redirectUri: "https://agent.example.com/oauth/callback",
+    logger: { error(...args) { logs.push(args); } },
+    state: { async setWorkspace() {} },
+    // Never settles on its own; rejects only once the library aborts the signal it passed.
+    fetchImpl: (_url, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }),
+  });
+  const credentials = { accessToken: "access-token", expiresAt: "2099-01-01T00:00:00Z", refreshToken: "refresh-token", slug: "acme" };
+  let settled = false;
+  const pending = client.getStory("workspace-1", credentials, 123);
+  const outcome = pending.then(() => { throw new Error("expected a timeout"); }, (error) => error).finally(() => { settled = true; });
+  t.mock.timers.tick(14_999);
+  await Promise.resolve();
+  assert.equal(settled, false, "still waiting just before the timeout");
+  t.mock.timers.tick(1);
+  const error = await outcome;
+  assert.equal(error.name, "TimeoutError");
+  assert.equal(logs.length, 0, "a transport failure is not an API rejection and is not logged here");
+});

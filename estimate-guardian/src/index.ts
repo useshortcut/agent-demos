@@ -6,6 +6,7 @@ import {
   ShortcutV4Client,
   grantedScopes,
   isShortcutV4RequestError,
+  type ShortcutOAuthRefreshTokens,
   type ShortcutOAuthTokens,
   type ShortcutV4Page,
   type ShortcutWorkspaceApi,
@@ -261,11 +262,12 @@ function bodyStrings(body: BodyInit | null | undefined): string[] {
 }
 
 /**
- * The `fetch` handed to the library. The library sets no timeout of its own,
- * so every request gets one here; it also reports each failure as method,
- * endpoint path and status only. `sensitive()` lists the strings that must
- * never reach a log — credentials and OAuth material — and the request's own
- * body and query values (cursors included) are redacted alongside them.
+ * The `fetch` handed to the library. The library bounds each request with
+ * `timeoutMs` and reads every body exactly once; this wrapper only reports
+ * each failure as method, endpoint path and status. `sensitive()` lists the
+ * strings that must never reach a log — credentials and OAuth material — and
+ * the request's own body and query values (cursors included) are redacted
+ * alongside them.
  */
 function shortcutFetch(sensitive: () => string[]): typeof fetch {
   return async (input, init) => {
@@ -273,19 +275,13 @@ function shortcutFetch(sensitive: () => string[]): typeof fetch {
     const diagnostics = { method: init?.method ?? 'GET', path: endpoint.pathname };
     let res: Response;
     try {
-      // The library passes `signal: null`; spreading `init` first lets the timeout win.
-      const upstream = await fetch(input, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-      // The library parses a clone and never reads the original body, which
-      // would hold the connection open until the timeout fires. Buffer it here
-      // so the response handed to the library is fully in memory.
-      const bytes = await upstream.arrayBuffer();
-      res = new Response(bytes.byteLength ? bytes : null,
-        { status: upstream.status, statusText: upstream.statusText, headers: upstream.headers });
+      res = await fetch(input, init);
     } catch {
       console.error('Shortcut request failed', { ...diagnostics, message: 'Network request failed or timed out' });
       throw new ShortcutRequestError('Network request failed or timed out');
     }
     if (!res.ok) {
+      // The library reads the original body, so the log reads a clone.
       let body: unknown;
       try { body = await res.clone().json(); } catch { /* No raw HTML/text logging. */ }
       const query = [...endpoint.searchParams].filter(([key]) => key !== 'fields' && key !== 'limit').map(([, value]) => value);
@@ -302,14 +298,15 @@ const sessionSecrets = (s: Session) => [s.env.CLIENT_SECRET, s.env.CLIENT_ID, s.
 
 function clientFor(s: Session): ShortcutV4Client {
   return (s.client ??= new ShortcutV4Client({
-    token: s.creds.token, baseUrl: apiBase(s.env), fetch: shortcutFetch(() => sessionSecrets(s)),
+    token: s.creds.token, baseUrl: apiBase(s.env), timeoutMs: REQUEST_TIMEOUT_MS,
+    fetch: shortcutFetch(() => sessionSecrets(s)),
   }));
 }
 
 function oauthFor(env: Env, sensitive: () => string[]): ShortcutOAuth {
   return new ShortcutOAuth({
     clientId: env.CLIENT_ID, clientSecret: env.CLIENT_SECRET, redirectUri: env.REDIRECT_URI,
-    baseUrl: apiBase(env), fetch: shortcutFetch(sensitive),
+    baseUrl: apiBase(env), timeoutMs: REQUEST_TIMEOUT_MS, fetch: shortcutFetch(sensitive),
   });
 }
 
@@ -337,7 +334,7 @@ async function storeCredentials(kv: KVNamespace, workspaceId: string, creds: Wor
 
 async function refreshCredentials(s: Session): Promise<WorkspaceCredentials | null> {
   console.log(`Refreshing token for workspace ${s.workspaceId}`);
-  let tokens: ShortcutOAuthTokens;
+  let tokens: ShortcutOAuthRefreshTokens;
   try {
     tokens = await oauthFor(s.env, () => sessionSecrets(s)).refreshAccessToken(s.creds.refreshToken);
   } catch (error) {
@@ -523,10 +520,9 @@ function safeDisplayName(name: unknown): string {
 }
 
 async function resolveActorMention(s: Session, actor: ShortcutWebhookActor): Promise<string> {
-  if (!actor.member_id) return safeDisplayName(actor.displayable_name);
-  // Generated operations splice path parameters in as given, and this one
-  // comes from the delivery, so it is encoded here.
-  const memberId = encodeURIComponent(actor.member_id);
+  const memberId = actor.member_id;
+  if (!memberId) return safeDisplayName(actor.displayable_name);
+  // The generated operation URL-encodes the id, which comes from the delivery.
   const member = await apiEntity<Member>(s, (ws) => ws.getMember(memberId, { fields: MEMBER_FIELDS }));
   // Falling back to the display name keeps the comment readable even though it
   // won't render as a real mention.
