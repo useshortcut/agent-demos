@@ -399,18 +399,21 @@ it('aborts a stalled request through the library after 15 seconds', async (t) =>
   const logs = [];
   t.mock.method(console, 'error', (...args) => logs.push(args));
   // Never settles on its own; rejects only once the library aborts the signal it passed.
-  t.mock.method(globalThis, 'fetch', (_url, { signal }) => new Promise((_resolve, reject) => {
-    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
-  }));
-  let settled = false;
+  let signal;
+  const fetched = new Promise((resolve) => {
+    t.mock.method(globalThis, 'fetch', (_url, init) => new Promise((_resolve, reject) => {
+      ({ signal } = init);
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      resolve();
+    }));
+  });
   const pending = withRefresh(session(), (ws) => ws.getStory(123, { fields: 'estimate' }));
-  const outcome = pending.then(() => { throw new Error('expected a timeout'); }, (error) => error).finally(() => { settled = true; });
+  await fetched;
   t.mock.timers.tick(14_999);
-  await Promise.resolve();
-  assert.equal(settled, false, 'still waiting just before the timeout');
+  assert.equal(signal.aborted, false);
   t.mock.timers.tick(1);
-  const error = await outcome;
-  assert.equal(error.name, 'TimeoutError');
+  assert.equal(signal.aborted, true);
+  await assert.rejects(pending, /Network request failed or timed out/);
   assert.match(JSON.stringify(logs), /Network request failed or timed out/);
 });
 

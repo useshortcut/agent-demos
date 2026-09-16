@@ -229,6 +229,21 @@ const REQUEST_TIMEOUT_MS = 15_000;
 // URLs, or user text.
 class ShortcutRequestError extends Error {}
 
+/**
+ * The library aborts a stalled request, or a stalled body read, with a
+ * `TimeoutError`; surface it like any other network failure.
+ */
+async function bounded<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if ((error as { name?: unknown } | null)?.name === 'TimeoutError') {
+      throw new ShortcutRequestError('Network request failed or timed out');
+    }
+    throw error;
+  }
+}
+
 function sensitiveStrings(value: unknown): string[] {
   if (typeof value === 'string') return [value];
   if (value && typeof value === 'object') return Object.values(value).flatMap(sensitiveStrings);
@@ -336,7 +351,7 @@ async function refreshCredentials(s: Session): Promise<WorkspaceCredentials | nu
   console.log(`Refreshing token for workspace ${s.workspaceId}`);
   let tokens: ShortcutOAuthRefreshTokens;
   try {
-    tokens = await oauthFor(s.env, () => sessionSecrets(s)).refreshAccessToken(s.creds.refreshToken);
+    tokens = await bounded(() => oauthFor(s.env, () => sessionSecrets(s)).refreshAccessToken(s.creds.refreshToken));
   } catch (error) {
     // A rejected token request was already reported, redacted, by the fetch
     // wrapper. Its message carries provider text, so it is not repeated here.
@@ -373,8 +388,8 @@ function isExpiringSoon(creds: WorkspaceCredentials): boolean {
  * Runs one call against the workspace-bound API. The token is refreshed
  * proactively near expiry, and once more if the call still comes back 401 —
  * it can expire between the check and the request. Any other rejection is
- * the library's: the `Response` for an HTTP failure, or the wrapper's
- * `ShortcutRequestError` for a network failure.
+ * the library's `Response` for an HTTP failure, or a `ShortcutRequestError`
+ * for a network failure or timeout.
  */
 async function withRefresh<T>(s: Session, call: (ws: ShortcutWorkspaceApi) => Promise<T>): Promise<T> {
   if (isExpiringSoon(s.creds) && !(await refreshCredentials(s))) {
@@ -382,10 +397,10 @@ async function withRefresh<T>(s: Session, call: (ws: ShortcutWorkspaceApi) => Pr
   }
   const client = clientFor(s);
   try {
-    return await call(client.workspace(s.creds.slug));
+    return await bounded(() => call(client.workspace(s.creds.slug)));
   } catch (error) {
     if (!isShortcutV4RequestError(error) || error.status !== 401 || !(await refreshCredentials(s))) throw error;
-    return call(client.workspace(s.creds.slug));
+    return bounded(() => call(client.workspace(s.creds.slug)));
   }
 }
 
@@ -725,7 +740,7 @@ app.get('/oauth/callback', async (c) => {
 
   try {
     const oauth = oauthFor(c.env, () => [code, state, c.env.CLIENT_ID, c.env.CLIENT_SECRET, c.env.REDIRECT_URI]);
-    const tokens = await oauth.exchangeAuthorizationCode(code);
+    const tokens = await bounded(() => oauth.exchangeAuthorizationCode(code));
     const scopes = reportedScopes(tokens);
 
     await storeCredentials(c.env.TOKENS, tokens.workspace2_id, {

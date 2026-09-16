@@ -163,11 +163,9 @@ export class ShortcutClient {
       ...requestBodyStrings(body)];
     if (isExpiringSoon(credentials)) await this.#refresh(workspaceId, credentials);
 
-    // Requests within one operation are sequential, so the failed request is the last one issued.
-    let requested;
     const client = new ShortcutV4Client({
       baseUrl: this.apiBase,
-      fetch: (url, init) => { requested = String(url); return this.fetch(url, init); },
+      fetch: this.fetch,
       timeoutMs: REQUEST_TIMEOUT_MS,
       token: credentials.accessToken,
     });
@@ -190,13 +188,13 @@ export class ShortcutClient {
     }
     if (!isShortcutV4RequestError(error)) throw error;
 
-    // A failed v4 request rejects with the Response; `error` holds the parsed
-    // JSON body, the raw text of a non-JSON body, or null when it was empty.
+    // `error.error` is the parsed JSON body, the raw text, or null.
     const responseBody = error.error;
     let pathname = `/api/v4/${encodeURIComponent(credentials.slug)}${path}`;
     try {
-      // Cursor pages request the URL the API supplied; log its path, never its query.
-      const url = new URL(requested ?? error.url);
+      // The rejected Response carries the URL the library requested, cursor
+      // pages included; log its path, never its query.
+      const url = new URL(error.url);
       pathname = url.pathname;
       sensitiveValues.push(...url.searchParams.getAll("cursor"));
     } catch {
@@ -222,9 +220,8 @@ export class ShortcutClient {
   }
 
   async getMember(workspaceId, credentials, memberId) {
-    // The generated operation URL-encodes the id; the logged path mirrors it.
     const { entity } = await this.#authorized(workspaceId, credentials,
-      { method: "GET", path: `/members/${encodeURIComponent(memberId)}` },
+      { method: "GET", path: `/members/${memberId}` },
       (ws) => ws.getMember(memberId, { fields: "mention_name" }));
     return entity;
   }

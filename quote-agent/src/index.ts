@@ -247,8 +247,6 @@ class WorkspaceApi {
       return await run();
     } catch (error) {
       if (isShortcutV4RequestError(error)) {
-        // Log the requested path from `details`, never `error.url`: cursor
-        // pages carry their cursor in the query string.
         logRejected(details, error.status, error.error, [this.creds.token, this.creds.refreshToken, this.env.CLIENT_SECRET]);
         throw new ShortcutRequestRejected(error.status);
       }

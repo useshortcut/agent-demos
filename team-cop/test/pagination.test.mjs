@@ -72,9 +72,16 @@ it("does not count deleted-comment tombstones as existing comments", async () =>
   }
 });
 
+// A real Response carries the requested URL, which the client logs by path and
+// redacts by cursor; a constructed one does not, so attach it here.
 function client(fetchImpl, logger = {}) {
+  const withUrl = async (url, init) => {
+    const response = await fetchImpl(url, init);
+    Object.defineProperty(response, "url", { value: String(url) });
+    return response;
+  };
   return new ShortcutClient({ apiBase: base, clientId: "client", clientSecret: "secret-client", redirectUri: "https://agent.example/callback",
-    state: { async setWorkspace() {} }, fetchImpl, logger });
+    state: { async setWorkspace() {} }, fetchImpl: withUrl, logger });
 }
 
 for (const match of [true, false]) {
