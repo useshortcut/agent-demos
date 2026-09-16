@@ -8,7 +8,7 @@ Shortcut Custom Agents is a platform that lets developers create, publish, and i
 
 **Installation** — A per-workspace record linking an agent app to a workspace. On install, the agent gets its own member identity, so it can be @-mentioned, assigned stories, and post comments.
 
-**Observer Delivery** — Every change in a workspace fans out a v2 webhook payload to all active agent installations in that workspace, filtered to the entity types each agent subscribed to.
+**Observer Delivery** — Every change in a workspace fans out a v2 webhook payload to all active agent installations in that workspace, filtered to the entity types each agent subscribed to: `story`, `epic`, `iteration`, `label`, `project`, or `group`.
 
 **Interaction-Triggered Delivery** — Fires when a user explicitly addresses an agent: assigns it, @-mentions it, or replies to one of its comments.
 
@@ -103,6 +103,7 @@ Per-trigger fields:
 | `draft` | Created, not yet submitted for review |
 | `submitted` | Developer submitted for Shortcut staff approval |
 | `approved` | Visible in the global catalog for all workspaces |
+| `rejected` | Reviewed and not approved |
 | `withdrawn` | Developer withdrew submission (can resubmit) |
 
 Builders can always install their own apps regardless of review status. Disabled apps are excluded from all deliveries.
@@ -130,9 +131,11 @@ Actions for other entity types, and story updates whose `changes` key is absent,
 - **Previous values** — ask story history, e.g. `GET /api/v4/{slug}/stories/{id}/history?fields=workflow_state&limit=1`. History entries have the same `attribute` / `adds` / `removes` shape as `changes`, so one code path can read both — with the same rule about matching `adds` first.
 - **Nested references are slim** — a `workflow_state` in either source has an id and a name but no `type`. Fetching `GET /api/v4/{slug}/workflow-states` gives the `type` (`unstarted`, `started`, `done`) for each state; it changes rarely and caches well.
 
-### Avoiding feedback loops
+### Addressing the actor
 
-`actor.mention_name` is the acting member's @-handle, present whenever the actor is a member with one and absent (not null) for automation, webhook, and integration actors; use it to address the person without fetching the member.
+`actor.mention_name` is the acting member's @-handle, present whenever the actor is a member with one and absent (not null) for automation, webhook, and integration actors. Use it to address the person in a comment without fetching the member, and fall back to a sanitized `displayable_name` when it is absent.
+
+### Avoiding feedback loops
 
 An agent subscribed to observer deliveries will also see the changes it makes itself. Filter on `actor.member_id` against the agent's own member id (returned as `permission_id` in the OAuth token response) before acting on a delivery — otherwise a comment the agent posts triggers a delivery that prompts another comment.
 
