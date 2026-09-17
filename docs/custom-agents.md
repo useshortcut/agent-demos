@@ -10,6 +10,8 @@ Shortcut Custom Agents is a platform that lets developers create, publish, and i
 
 **Capabilities** — Two opt-in settings on the agent app, both off for a new agent. **Assignable** lets people set the agent as an owner on stories and epics; without it the agent is left out of owner pickers and the API rejects it as an owner. **Mentionable** lets people @-mention the agent; without it the agent is left out of @ autocomplete and its handle is not resolved in comments or descriptions. Neither is needed to post comments or to receive observer deliveries, so an observer-only agent such as Team Cop or Estimate Guardian sets neither. The `assigned` trigger requires Assignable and the `mentioned` trigger requires Mentionable; `comment-reply` needs neither.
 
+An agent can read its own capabilities: the OAuth token response for an agent token carries `capabilities: { assignable, mentionable }` next to `permission_id`, and every v4 member (including the `member` of `GET /api/v4/whoami`) carries `is_agent`, `is_assignable`, and `is_mentionable`. The member fields are the source of truth, since a builder can change the capabilities in Settings without a new token.
+
 **Observer Delivery** — Every change in a workspace fans out a v2 webhook payload to all active agent installations in that workspace, filtered to the entity types each agent subscribed to: `story`, `epic`, `iteration`, `label`, `project`, or `group`.
 
 **Interaction-Triggered Delivery** — Fires when a user explicitly addresses an agent: assigns it, @-mentions it, or replies to one of its comments.
