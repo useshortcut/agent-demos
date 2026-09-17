@@ -52,13 +52,12 @@ You will move between a terminal in this directory and Shortcut's **Agents** pag
 
    - **Name** and **Mention Handle**: your choice, for example "Wise Bot".
    - **OAuth Scopes**: Read and Write. The agent comments on epics as well as stories, and the narrower Create Comments scope covers only story comments.
-   - **Capabilities**: Assignable and Mentionable. The assigned and mentioned triggers below need them.
+   - **Capabilities**: Assignable and Mentionable, so the agent is told when it is assigned or mentioned. Replies to its comments are always delivered.
    - **Redirect URIs**: `https://<your-worker>.workers.dev/oauth/callback`
 
    After creating it, set the delivery settings:
 
    - **Webhook URL**: `https://<your-worker>.workers.dev/webhook`
-   - **Interaction triggers**: assigned, comment-reply, and mentioned
    - **Subscribed entity types**: none
 
    Keep the client id, client secret, and webhook secret for the next step.

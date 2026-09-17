@@ -107,7 +107,6 @@ You will move between a terminal in this directory and Shortcut's **Agents** pag
 
    - **Webhook URL**: `https://<your-worker>.workers.dev/webhook`
    - **Subscribed entity types**: story
-   - **Interaction triggers**: none
 
    Keep the client id, client secret, and webhook secret for the next step.
 

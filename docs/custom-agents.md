@@ -8,7 +8,7 @@ Shortcut Custom Agents is a platform that lets developers create, publish, and i
 
 **Installation** — A per-workspace record linking an agent app to a workspace. On install, the agent gets its own member identity, so it can post comments and, when its capabilities allow, be assigned stories and @-mentioned.
 
-**Capabilities** — Two opt-in settings on the agent app, both off for a new agent. **Assignable** lets people set the agent as an owner on stories and epics; without it the agent is left out of owner pickers and the API rejects it as an owner. **Mentionable** lets people @-mention the agent; without it the agent is left out of @ autocomplete and its handle is not resolved in comments or descriptions. Neither is needed to post comments or to receive observer deliveries, so an observer-only agent such as Team Cop or Estimate Guardian sets neither. The `assigned` trigger requires Assignable and the `mentioned` trigger requires Mentionable; `comment-reply` needs neither.
+**Capabilities** — Two opt-in settings on the agent app, both off for a new agent. **Assignable** lets people set the agent as an owner on stories and epics; without it the agent is left out of owner pickers and the API rejects it as an owner. **Mentionable** lets people @-mention the agent; without it the agent is left out of @ autocomplete and its handle is not resolved in comments or descriptions. Neither is needed to post comments or to receive observer deliveries, so an observer-only agent such as Team Cop or Estimate Guardian sets neither. The capabilities also decide what your webhook is told: an assignable agent receives `assigned` deliveries, a mentionable agent receives `mentioned` deliveries, and every agent with a webhook URL receives `comment-reply` deliveries. There is no separate trigger setting.
 
 An agent can read its own capabilities: the OAuth token response for an agent token carries `capabilities: { assignable, mentionable }` next to `permission_id`, and every v4 member (including the `member` of `GET /api/v4/whoami`) carries `is_agent`, `is_assignable`, and `is_mentionable`. The member fields are the source of truth, since a builder can change the capabilities in Settings without a new token.
 
@@ -94,13 +94,13 @@ Per-trigger fields:
 
 ## Interaction Triggers
 
-| Trigger | When | Requires capability |
+| Trigger | When | Delivered when |
 |---|---|---|
-| `assigned` | Agent added as owner of a story or epic | Assignable |
-| `comment-reply` | User replies to a comment authored by the agent | none |
-| `mentioned` | Agent @-mentioned in a comment or story/epic description | Mentionable |
+| `assigned` | Agent added as owner of a story or epic | the agent is Assignable |
+| `comment-reply` | User replies to a comment authored by the agent | always |
+| `mentioned` | Agent @-mentioned in a comment or story/epic description | the agent is Mentionable |
 
-A trigger can only be enabled when the agent has its capability, so an agent is never told about an interaction it cannot be the target of.
+Triggers are not configured separately: turning on a capability is what makes its deliveries arrive, and the webhook URL is what makes any delivery arrive at all. `agent_interaction_triggers` on the application is read-only and lists what the agent currently receives.
 
 ## Review Lifecycle
 
