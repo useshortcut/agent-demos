@@ -52,6 +52,7 @@ You will move between a terminal in this directory and Shortcut's **Agents** pag
 
    - **Name** and **Mention Handle**: your choice, for example "Wise Bot".
    - **OAuth Scopes**: Read and Write. The agent comments on epics as well as stories, and the narrower Create Comments scope covers only story comments.
+   - **Capabilities**: Assignable and Mentionable. The assigned and mentioned triggers below need them.
    - **Redirect URIs**: `https://<your-worker>.workers.dev/oauth/callback`
 
    After creating it, set the delivery settings:

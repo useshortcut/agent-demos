@@ -100,6 +100,7 @@ You will move between a terminal in this directory and Shortcut's **Agents** pag
 
    - **Name**: Estimate Guardian. **Mention Handle**: `estimate-guardian`.
    - **OAuth Scopes**: Read, Create Stories (to move stories back), and Create Comments.
+   - **Capabilities**: none. The agent only watches stories; nobody needs to assign or mention it.
    - **Redirect URIs**: `https://<your-worker>.workers.dev/oauth/callback`
 
    After creating it, set the delivery settings:
