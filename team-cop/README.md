@@ -35,13 +35,13 @@ Requires Node 22.13 or newer and a Cloudflare account. From this directory:
 
    - **Name**: Team Cop.
    - **OAuth Scopes**: Read and Create Comments.
+   - **Capabilities**: none. The agent only watches stories; nobody needs to assign or mention it.
    - **Redirect URIs**: `https://<your-worker>.workers.dev/oauth/callback`
 
    After creating it, set the delivery settings:
 
    - **Webhook URL**: `https://<your-worker>.workers.dev/webhook`
    - **Subscribed entity types**: story
-   - **Interaction triggers**: none
 
    Keep the client id, client secret, and webhook secret for the next step.
 
