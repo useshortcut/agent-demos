@@ -24,7 +24,7 @@ An agent is a web service you own. Shortcut sends it signed webhooks when someth
 
 1. Create an agent app in Shortcut from the **Agents** page (**Add an agent** under **Agents Built By Your Organization**). You get a client id, a client secret, and a webhook secret.
 2. Stand up a service with two public endpoints, an OAuth redirect target and a webhook receiver, and register their URLs on the app.
-3. Install the app in a workspace and complete the OAuth flow.
+3. Activate the app in your workspace from the **Activation** section of its page and complete the OAuth flow.
 4. Verify the `Payload-Signature` header on every delivery before acting on it.
 
 `@shortcut/client` does the mechanical parts of steps 2 to 4: `ShortcutOAuth` completes the install and refreshes tokens, `ShortcutV4Client` calls the API and walks cursor-paged lists, and `ShortcutWebhookClient` verifies and parses each delivery. What is left for your service is storing credentials and the rule itself.

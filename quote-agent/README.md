@@ -50,7 +50,7 @@ You will move between a terminal in this directory and Shortcut's **Agents** pag
 
 4. In Shortcut, open **Agents** in the sidebar and click **Add an agent** under **Agents Built By Your Organization**:
 
-   - **Name** and **Mention Handle**: your choice, for example "Wise Bot".
+   - **Name**: your choice, for example "Wise Bot". **Handle**: `wise-bot`, the agent's username in the workspace and, because it is Mentionable, its @-mention name.
    - **OAuth Scopes**: Read and Write. The agent comments on epics as well as stories, and the narrower Create Comments scope covers only story comments.
    - **Capabilities**: Assignable and Mentionable, so the agent is told when it is assigned or mentioned. Replies to its comments are always delivered.
    - **Redirect URIs**: `https://<your-worker>.workers.dev/oauth/callback`
@@ -74,7 +74,7 @@ You will move between a terminal in this directory and Shortcut's **Agents** pag
 
    Until all four are set, `/webhook` and `/oauth/callback` return 503. Leave `SHORTCUT_API_BASE` unset in production.
 
-6. Install the app in a workspace and click **Allow** on the consent page. Shortcut lands on the worker's `/oauth/callback`, which stores the credentials.
+6. Back on the agent app page, click **Activate** under **Activation**, then **Allow** on the consent page. Shortcut lands on the worker's `/oauth/callback`, which stores the credentials.
 
 7. Run `npx wrangler tail` and look for `Quote Agent connected`. `GET /` is a bare health check and says nothing about connected workspaces.
 
