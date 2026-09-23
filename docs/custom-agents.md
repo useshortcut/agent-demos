@@ -4,9 +4,13 @@ Shortcut Custom Agents is a platform that lets developers create, publish, and i
 
 ## Key Concepts
 
-**Agent Application** — A globally-registered agent. Stores credentials, webhook URL, icon, mention handle, subscribed entity types, and interaction triggers. Created from the **Agents** page in the sidebar (**Add an agent** under **Agents Built By Your Organization**).
+**Agent Application** — A globally-registered agent. Stores credentials, webhook URL, icon, mention handle, capabilities, subscribed entity types, and interaction triggers. Created from the **Agents** page in the sidebar (**Add an agent** under **Agents Built By Your Organization**).
 
-**Installation** — A per-workspace record linking an agent app to a workspace. On install, the agent gets its own member identity, so it can be @-mentioned, assigned stories, and post comments.
+**Installation** — A per-workspace record linking an agent app to a workspace. On install, the agent gets its own member identity, so it can post comments and, when its capabilities allow, be assigned stories and @-mentioned.
+
+**Capabilities** — Two opt-in settings on the agent app, both off for a new agent. **Assignable** lets people set the agent as an owner on stories and epics; without it the agent is left out of owner pickers and the API rejects it as an owner. **Mentionable** lets people @-mention the agent; without it the agent is left out of @ autocomplete and its handle is not resolved in comments or descriptions. Neither is needed to post comments or to receive observer deliveries, so an observer-only agent such as Team Cop or Estimate Guardian sets neither. The capabilities also decide what your webhook is told: an assignable agent receives `assigned` deliveries, a mentionable agent receives `mentioned` deliveries, and every agent with a webhook URL receives `comment-reply` deliveries. There is no separate trigger setting.
+
+An agent can read its own capabilities: the OAuth token response for an agent token carries `capabilities: { assignable, mentionable }` next to `permission_id`, and every v4 member (including the `member` of `GET /api/v4/whoami`) carries `agent: { assignable, mentionable }`, which is `null` for a person. The member field is the source of truth, since a builder can change the capabilities in Settings without a new token. `@shortcut/client` types both fields, so TypeScript agents read them without a cast.
 
 **Observer Delivery** — Every change in a workspace fans out a v2 webhook payload to all active agent installations in that workspace, filtered to the entity types each agent subscribed to: `story`, `epic`, `iteration`, `label`, `project`, or `group`.
 
@@ -14,7 +18,7 @@ Shortcut Custom Agents is a platform that lets developers create, publish, and i
 
 **Webhook Signing** — All deliveries are signed with HMAC-SHA256 using a per-app secret. The hex digest is sent in the `Payload-Signature` request header.
 
-**JavaScript client** — [`@shortcut/client`](https://github.com/useshortcut/shortcut-client-js) 3.4.0 ships two entrypoints for agents: `@shortcut/client/v4` (`ShortcutV4Client` for the workspace-scoped v4 API with cursor pagination, `ShortcutOAuth` for the install's code exchange and token refresh) and `@shortcut/client/webhooks` (`ShortcutWebhookClient` for signature verification and typed observer and interaction payloads). Both are Fetch-based and run on Node.js 20+, Cloudflare Workers, Deno, and Bun. The demos in this repo use them.
+**JavaScript client** — [`@shortcut/client`](https://github.com/useshortcut/shortcut-client-js) 3.4.1 ships two entrypoints for agents: `@shortcut/client/v4` (`ShortcutV4Client` for the workspace-scoped v4 API with cursor pagination, `ShortcutOAuth` for the install's code exchange and token refresh) and `@shortcut/client/webhooks` (`ShortcutWebhookClient` for signature verification and typed observer and interaction payloads). Both are Fetch-based and run on Node.js 20+, Cloudflare Workers, Deno, and Bun. The demos in this repo use them.
 
 ## Payload Shapes
 
@@ -90,11 +94,13 @@ Per-trigger fields:
 
 ## Interaction Triggers
 
-| Trigger | When |
-|---|---|
-| `assigned` | Agent added as owner of a story or epic |
-| `comment-reply` | User replies to a comment authored by the agent |
-| `mentioned` | Agent @-mentioned in a comment or story/epic description |
+| Trigger | When | Delivered when |
+|---|---|---|
+| `assigned` | Agent added as owner of a story or epic | the agent is Assignable |
+| `comment-reply` | User replies to a comment authored by the agent | always |
+| `mentioned` | Agent @-mentioned in a comment or story/epic description | the agent is Mentionable |
+
+Triggers are not configured separately: turning on a capability is what makes its deliveries arrive, and the webhook URL is what makes any delivery arrive at all. `agent_interaction_triggers` on the application is read-only and lists what the agent currently receives.
 
 ## Review Lifecycle
 
