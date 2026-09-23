@@ -101,8 +101,8 @@ export class TeamCop {
       const code = url.searchParams.get("code");
       if (!code) return json({ error: "missing authorization code" }, 400);
       try {
-        const { workspaceId, credentials } = await this.client.exchangeAuthorizationCode(code);
-        console.log("Team Cop connected", { workspaceId, slug: credentials.slug, scopes: credentials.scopes });
+        const { capabilities, workspaceId, credentials } = await this.client.exchangeAuthorizationCode(code);
+        console.log("Team Cop connected", { workspaceId, slug: credentials.slug, scopes: credentials.scopes, capabilities: capabilities ?? "unknown" });
         return new Response("Team Cop connected. You can close this tab.", {
           headers: { "content-type": "text/plain; charset=utf-8" },
         });

@@ -76,7 +76,7 @@ You will move between a terminal in this directory and Shortcut's **Agents** pag
 
 6. Back on the agent app page, click **Activate** under **Activation**, then **Allow** on the consent page. Shortcut lands on the worker's `/oauth/callback`, which stores the credentials.
 
-7. Run `npx wrangler tail` and look for `Quote Agent connected`. `GET /` is a bare health check and says nothing about connected workspaces.
+7. Run `npx wrangler tail` and look for `Quote Agent connected`. The line reports the granted scopes and the agent's `capabilities`, and a `Quote Agent capabilities are off` warning follows if Assignable or Mentionable was left off, since this demo answers both. `GET /` is a bare health check and says nothing about connected workspaces.
 
 ## Try it
 
