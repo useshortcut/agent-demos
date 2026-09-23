@@ -10,13 +10,13 @@
   },
   "dependencies": {
     "@shortcut/client": "^3.4.1",
-    "hono": "^4.13.7"
+    "hono": "^4.13.8"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260907.1",
-    "esbuild": "^0.28.1",
-    "miniflare": "5.20260916.0-alpha",
+    "@cloudflare/workers-types": "^5.20260923.1",
+    "esbuild": "^0.28.2",
+    "miniflare": "5.20260921.0-alpha",
     "typescript": "^7.0.2",
-    "wrangler": "^4.133.0"
+    "wrangler": "^4.137.0"
   }
 }

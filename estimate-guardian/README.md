@@ -98,14 +98,14 @@ You will move between a terminal in this directory and Shortcut's **Agents** pag
 
 4. In Shortcut, open **Agents** in the sidebar and click **Add an agent** under **Agents Built By Your Organization**:
 
-   - **Name**: Estimate Guardian. **Mention Handle**: `estimate-guardian`.
+   - **Name**: Estimate Guardian. **Handle**: `estimate-guardian`.
    - **OAuth Scopes**: Read, Create Stories (to move stories back), and Create Comments.
    - **Capabilities**: none. The agent only watches stories; nobody needs to assign or mention it.
    - **Redirect URIs**: `https://<your-worker>.workers.dev/oauth/callback`
 
    After creating it, set the delivery settings:
 
-   - **Webhook URL**: `https://<your-worker>.workers.dev/webhook`
+   - **Webhook URL**: `https://<your-worker>.workers.dev/webhook`, then click **Validate**. Entity type subscriptions stay disabled until the URL answers Shortcut's validation ping with a 2xx, which the worker does out of the box.
    - **Subscribed entity types**: story
 
    Keep the client id, client secret, and webhook secret for the next step.
@@ -122,7 +122,7 @@ You will move between a terminal in this directory and Shortcut's **Agents** pag
 
    Until all four are set, `/webhook` and `/oauth/callback` return 503. Leave `SHORTCUT_API_BASE` unset in production.
 
-6. Install the app in your workspace. Shortcut runs the OAuth flow and lands on the worker's `/oauth/callback`, which stores the credentials.
+6. Click **Activate** under **Activation** on the agent app page. Shortcut runs the OAuth flow and lands on the worker's `/oauth/callback`, which stores the credentials.
 
 7. Run `npx wrangler tail` and look for `Estimate Guardian OAuth connected`. `GET /` is a bare health check and says nothing about connected workspaces.
 

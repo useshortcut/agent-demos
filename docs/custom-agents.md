@@ -4,9 +4,9 @@ Shortcut Custom Agents is a platform that lets developers create, publish, and i
 
 ## Key Concepts
 
-**Agent Application** — A globally-registered agent. Stores credentials, webhook URL, icon, mention handle, capabilities, subscribed entity types, and interaction triggers. Created from the **Agents** page in the sidebar (**Add an agent** under **Agents Built By Your Organization**).
+**Agent Application** — A globally-registered agent. Stores credentials, webhook URL, icon, handle, capabilities, and subscribed entity types. Created from the **Agents** page in the sidebar (**Add an agent** under **Agents Built By Your Organization**).
 
-**Installation** — A per-workspace record linking an agent app to a workspace. On install, the agent gets its own member identity, so it can post comments and, when its capabilities allow, be assigned stories and @-mentioned.
+**Installation** — A per-workspace record linking an agent app to a workspace. On install, the agent gets its own member identity, so it can post comments and, when its capabilities allow, be assigned stories and @-mentioned. The agent app page calls this **Activation** (**Activate** / **Deactivate**); "install" is the word for taking an approved agent from the catalog. Deactivating stops every delivery and keeps the configuration and credentials.
 
 **Capabilities** — Two opt-in settings on the agent app, both off for a new agent. **Assignable** lets people set the agent as an owner on stories and epics; without it the agent is left out of owner pickers and the API rejects it as an owner. **Mentionable** lets people @-mention the agent; without it the agent is left out of @ autocomplete and its handle is not resolved in comments or descriptions. Neither is needed to post comments or to receive observer deliveries, so an observer-only agent such as Team Cop or Estimate Guardian sets neither. The capabilities also decide what your webhook is told: an assignable agent receives `assigned` deliveries, a mentionable agent receives `mentioned` deliveries, and every agent with a webhook URL receives `comment-reply` deliveries. There is no separate trigger setting.
 

@@ -33,14 +33,14 @@ Requires Node 22.13 or newer and a Cloudflare account. From this directory:
 
 2. In Shortcut, open **Agents** in the sidebar and click **Add an agent** under **Agents Built By Your Organization**:
 
-   - **Name**: Team Cop.
+   - **Name**: Team Cop. **Handle**: `team-cop`.
    - **OAuth Scopes**: Read and Create Comments.
    - **Capabilities**: none. The agent only watches stories; nobody needs to assign or mention it.
    - **Redirect URIs**: `https://<your-worker>.workers.dev/oauth/callback`
 
    After creating it, set the delivery settings:
 
-   - **Webhook URL**: `https://<your-worker>.workers.dev/webhook`
+   - **Webhook URL**: `https://<your-worker>.workers.dev/webhook`, then click **Validate**. Entity type subscriptions stay disabled until the URL answers Shortcut's validation ping with a 2xx, which the worker does out of the box.
    - **Subscribed entity types**: story
 
    Keep the client id, client secret, and webhook secret for the next step.
@@ -56,7 +56,7 @@ Requires Node 22.13 or newer and a Cloudflare account. From this directory:
 
    `REDIRECT_URI` must match the redirect URI saved in Shortcut. Until all four are set, `/webhook` and `/oauth/callback` return 503.
 
-4. Install the app in your workspace. On the consent screen, allow Read and **Create and update story comments**.
+4. Click **Activate** under **Activation** on the agent app page. On the consent screen, allow Read and **Create and update story comments**.
 
 5. Run `npm run tail` and look for `Team Cop connected` with `scopes: ['read', 'comment-write']`. `GET /` is a bare health check; workspace and queue details are in the logs.
 
