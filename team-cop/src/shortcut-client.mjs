@@ -109,7 +109,7 @@ export class ShortcutClient {
     };
 
     await this.state.setWorkspace(token.workspace2_id, credentials);
-    return { credentials, workspaceId: token.workspace2_id };
+    return { capabilities: token.capabilities ?? null, credentials, workspaceId: token.workspace2_id };
   }
 
   async #refresh(workspaceId, credentials) {

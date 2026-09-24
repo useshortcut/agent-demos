@@ -7,6 +7,7 @@ import {
   grantedScopes,
   isShortcutV4RequestError,
   summarizeShortcutV4Error,
+  type ShortcutAgentCapabilities,
   type ShortcutOAuthTokens,
   type ShortcutV4Page,
 } from '@shortcut/client/v4';
@@ -47,6 +48,7 @@ type WorkspaceCredentials = {
   expiresAt: string; // ISO8601 — access_token_expires_at from token response
   memberId: string;  // agent's permission_id — used to filter self-actions
   scopes?: string[] | null; // missing on older installations, unknown until OAuth/refresh
+  capabilities?: ShortcutAgentCapabilities | null; // missing on records saved before it was reported
 };
 
 // Webhook payload types (observer, interaction, validation) come from
@@ -84,6 +86,25 @@ function oauthClient(env: Env) {
 function oauthScopes(tokens: Pick<ShortcutOAuthTokens, 'scope'>, previous?: string[] | null): string[] | null {
   if (typeof tokens.scope === 'string') return grantedScopes(tokens);
   return previous ?? null;
+}
+
+// Agent tokens report whether the app is assignable and mentionable, on the
+// code exchange and on refresh. A response without them keeps what is known;
+// a record saved before they were reported stays unknown (null), never off.
+function oauthCapabilities(tokens: Pick<ShortcutOAuthTokens, 'capabilities'>, previous?: ShortcutAgentCapabilities | null): ShortcutAgentCapabilities | null {
+  const { capabilities } = tokens;
+  if (capabilities && typeof capabilities.assignable === 'boolean' && typeof capabilities.mentionable === 'boolean') {
+    return { assignable: capabilities.assignable, mentionable: capabilities.mentionable };
+  }
+  return previous ?? null;
+}
+
+// This demo answers assignments and mentions, so it needs both. The builder
+// can turn either off in Settings without a new token, so this is a snapshot.
+function reportCapabilities(workspaceId: string, capabilities: ShortcutAgentCapabilities | null): void {
+  if (capabilities && !(capabilities.assignable && capabilities.mentionable)) {
+    console.warn('Quote Agent capabilities are off', { workspaceId, ...capabilities });
+  }
 }
 
 /** A provider error code, only when it is an identifier and not free text. */
@@ -145,9 +166,11 @@ async function refreshCredentials(
     expiresAt: tokens.access_token_expires_at,
     memberId: creds.memberId, // preserved from original OAuth flow
     scopes: oauthScopes(tokens, creds.scopes),
+    capabilities: oauthCapabilities(tokens, creds.capabilities),
   };
   await storeCredentials(kv, workspaceId, updated);
-  console.log('Quote Agent OAuth refreshed', { workspaceId, scopes: updated.scopes ?? 'unknown', expiresAt: updated.expiresAt });
+  console.log('Quote Agent OAuth refreshed', { workspaceId, scopes: updated.scopes ?? 'unknown', capabilities: updated.capabilities ?? 'unknown', expiresAt: updated.expiresAt });
+  reportCapabilities(workspaceId, updated.capabilities ?? null);
   return updated;
 }
 
@@ -339,6 +362,7 @@ app.get('/oauth/callback', async (c) => {
     return c.text('Token exchange failed. Check worker logs.', 500);
   }
 
+  const capabilities = oauthCapabilities(tokens);
   await storeCredentials(c.env.TOKENS, tokens.workspace2_id, {
     token: tokens.access_token,
     slug: tokens.workspace2_slug,
@@ -346,9 +370,11 @@ app.get('/oauth/callback', async (c) => {
     expiresAt: tokens.access_token_expires_at,
     memberId: tokens.permission_id ?? '',
     scopes: oauthScopes(tokens),
+    ...(capabilities ? { capabilities } : {}),
   });
 
-  console.log('Quote Agent connected', { workspaceId: tokens.workspace2_id, scopes: oauthScopes(tokens) ?? 'unknown', expiresAt: tokens.access_token_expires_at });
+  console.log('Quote Agent connected', { workspaceId: tokens.workspace2_id, scopes: oauthScopes(tokens) ?? 'unknown', capabilities: capabilities ?? 'unknown', expiresAt: tokens.access_token_expires_at });
+  reportCapabilities(tokens.workspace2_id, capabilities);
   return c.html(
     `<h2>✅ Connected!</h2>
      <p>Your workspace is now connected.</p>

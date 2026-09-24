@@ -99,6 +99,71 @@ it('persists OAuth scopes without logging the returned state', async (t) => {
   assert.doesNotMatch(JSON.stringify(logs), /private-state/);
 });
 
+const tokenResponse = (extra = {}) => Response.json({ access_token: 'token', refresh_token: 'refresh', permission_id: 'quote', workspace2_id: 'workspace', workspace2_slug: 'acme',
+  scope: 'read comment-write', access_token_expires_at: '2099-01-01T00:00:00Z', ...extra });
+
+it('persists and logs capabilities at connect, warning only when one the demo relies on is off', async (t) => {
+  const logs = [];
+  const warnings = [];
+  t.mock.method(console, 'log', (...args) => logs.push(args));
+  t.mock.method(console, 'warn', (...args) => warnings.push(args));
+  t.mock.method(globalThis, 'fetch', async () => tokenResponse({ capabilities: { assignable: true, mentionable: true } }));
+  const h = harness();
+  assert.equal((await mod.default.request('/oauth/callback?code=test', undefined, h.env)).status, 200);
+  assert.deepEqual(JSON.parse(await h.env.TOKENS.get('creds:workspace')).capabilities, { assignable: true, mentionable: true });
+  const connected = logs.find(([message]) => message === 'Quote Agent connected');
+  assert.deepEqual(connected[1].capabilities, { assignable: true, mentionable: true });
+  assert.equal(warnings.length, 0);
+
+  t.mock.method(globalThis, 'fetch', async () => tokenResponse({ capabilities: { assignable: true, mentionable: false } }));
+  assert.equal((await mod.default.request('/oauth/callback?code=test', undefined, h.env)).status, 200);
+  assert.deepEqual(JSON.parse(await h.env.TOKENS.get('creds:workspace')).capabilities, { assignable: true, mentionable: false });
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0][0], 'Quote Agent capabilities are off');
+  assert.deepEqual(warnings[0][1], { workspaceId: 'workspace', assignable: true, mentionable: false });
+});
+
+it('reports unknown capabilities, without a warning, when the token response omits them', async (t) => {
+  const logs = [];
+  const warnings = [];
+  t.mock.method(console, 'log', (...args) => logs.push(args));
+  t.mock.method(console, 'warn', (...args) => warnings.push(args));
+  t.mock.method(globalThis, 'fetch', async () => tokenResponse());
+  const h = harness();
+  assert.equal((await mod.default.request('/oauth/callback?code=test', undefined, h.env)).status, 200);
+  const stored = JSON.parse(await h.env.TOKENS.get('creds:workspace'));
+  assert.equal('capabilities' in stored, false);
+  assert.equal(logs.find(([message]) => message === 'Quote Agent connected')[1].capabilities, 'unknown');
+  assert.equal(warnings.length, 0);
+});
+
+it('carries capabilities through a refresh and keeps the known ones when the refresh omits them', async (t) => {
+  let capabilities = { assignable: false, mentionable: true };
+  let gets = 0;
+  const logs = [];
+  const warnings = [];
+  t.mock.method(console, 'log', (...args) => logs.push(args));
+  t.mock.method(console, 'warn', (...args) => warnings.push(args));
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    if (new URL(url).pathname.includes('oauth-authorization')) return tokenResponse({ access_token: 'renewed', ...(capabilities ? { capabilities } : {}) });
+    if (options.method === 'POST') return Response.json({ entity: { id: 1 } });
+    gets++;
+    return gets % 2 === 1 ? Response.json({ error: 'expired' }, { status: 401 }) : Response.json({ entities: [], current_page: 1, total_pages: 0 });
+  });
+  const h = harness();
+  // A record saved before capabilities were reported: unknown, not off.
+  assert.equal((await h.deliver('first')).status, 200);
+  const refreshed = () => logs.filter(([message]) => message === 'Quote Agent OAuth refreshed').at(-1)[1];
+  assert.deepEqual(refreshed().capabilities, { assignable: false, mentionable: true });
+  assert.deepEqual(JSON.parse(h.data.get('creds:workspace')).capabilities, { assignable: false, mentionable: true });
+  assert.deepEqual(warnings.at(-1), ['Quote Agent capabilities are off', { workspaceId: 'workspace', assignable: false, mentionable: true }]);
+
+  capabilities = null;
+  assert.equal((await h.deliver('second')).status, 200);
+  assert.deepEqual(JSON.parse(h.data.get('creds:workspace')).capabilities, { assignable: false, mentionable: true });
+  assert.deepEqual(refreshed().capabilities, { assignable: false, mentionable: true });
+});
+
 it('recovers a post-before-receipt interruption from current comments across cursor pages', async (t) => {
   let marker;
   let posts = 0;

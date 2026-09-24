@@ -692,7 +692,7 @@ app.get('/oauth/callback', async (c) => {
       scopes,
     });
 
-    console.log('Estimate Guardian OAuth connected', { workspaceId: tokens.workspace2_id, slug: tokens.workspace2_slug, scopes: scopes ?? 'unknown' });
+    console.log('Estimate Guardian OAuth connected', { workspaceId: tokens.workspace2_id, slug: tokens.workspace2_slug, scopes: scopes ?? 'unknown', capabilities: tokens.capabilities ?? 'unknown' });
     return c.html(
       `<h2>✅ Connected!</h2>
        <p>Your workspace is now guarded.</p>
