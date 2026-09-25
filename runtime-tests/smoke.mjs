@@ -40,7 +40,7 @@ test(`${demo}: actual Cloudflare runtime, mock Shortcut only`, { timeout: 45_000
       fetch(request) {
         if (request.url === 'https://smoke.internal/deliveries') {
           return Response.json(this.ctx.storage.sql.exec(
-            "SELECT key, value FROM records WHERE kind = 'delivery'"
+            "SELECT key, status FROM deliveries"
           ).toArray());
         }
         return super.fetch(request);
@@ -159,7 +159,7 @@ test(`${demo}: actual Cloudflare runtime, mock Shortcut only`, { timeout: 45_000
       const records = async () => (await coordinator.fetch('https://smoke.internal/deliveries')).json();
       const completion = async (id) => eventually(
         records,
-        (rows) => rows.some((row) => row.key === `installation:${id}` && JSON.parse(row.value).status === 'complete'),
+        (rows) => rows.some((row) => row.key === `installation:${id}` && row.status === 'complete'),
         `Team Cop alarm completion for ${id}`,
       );
       const created = { actions: [{ action: 'create', entity_type: 'story', id: 123, global_id: 'v2:s:workspace:123' }] };
@@ -178,7 +178,7 @@ test(`${demo}: actual Cloudflare runtime, mock Shortcut only`, { timeout: 45_000
       const state = await results();
       assert.equal(state.posts.length, 1);
       assert.equal(state.requests.filter((item) => item.query.includes('cursor=')).length, 2);
-      assert.ok((await records()).every((row) => JSON.parse(row.value).status === 'complete'));
+      assert.ok((await records()).every((row) => row.status === 'complete'));
     }
     assert.deepEqual((await results()).unexpected, [], 'Every Shortcut request must satisfy the mock contract');
   } finally {

@@ -145,9 +145,65 @@ it("prunes stale completion and action receipts but keeps exhausted deliveries",
   for (let i = 0; i < 6; i++) { await state.beginAttempt(failed); await state.failDelivery(failed, new Error("nope")); }
   await state.prune(Date.now() + 8 * 24 * 60 * 60 * 1_000);
   assert.equal(await state.hasProcessed("install:delivery:story:123:created"), false);
-  assert.equal(state.get("delivery", done), null);
+  assert.equal(await state.getDelivery(done), null);
   assert.equal(await state.countFailedDeliveries(), 1);
   // A redelivery after pruning is a fresh job rather than a silently ignored one.
   await state.enqueueDelivery(payload);
+  assert.equal(await state.countDeliveries(), 1);
+});
+
+// Durable Objects bill every row SQLite visits, and the free tier allows five
+// million a day. With a week of receipts retained, any query that scans the
+// table costs the whole week's deliveries on every webhook and alarm.
+it("queue, receipt, and prune queries use an index instead of scanning the tables", (t) => {
+  const storage = eagerStorage(t);
+  new DurableState(storage);
+  const plan = (query, ...args) => storage.sql.exec(`EXPLAIN QUERY PLAN ${query}`, ...args).toArray().map((row) => row.detail).join("\n");
+  for (const [query, args] of [
+    ["SELECT key FROM deliveries WHERE status = 'pending' AND next_attempt_at <= ? ORDER BY next_attempt_at LIMIT 10", [0]],
+    ["SELECT MIN(next_attempt_at) AS at FROM deliveries WHERE status = 'pending'", []],
+    ["SELECT COUNT(*) AS n FROM deliveries WHERE status = ?", ["exhausted"]],
+    ["DELETE FROM deliveries WHERE status = 'complete' AND completed_at < ?", [0]],
+    ["DELETE FROM processed WHERE at < ?", [0]],
+    ["SELECT at FROM processed WHERE key = ?", ["k"]],
+  ]) {
+    const detail = plan(query, ...args);
+    assert.match(detail, /SEARCH/, query);
+    assert.doesNotMatch(detail, /\bSCAN\b/, `${query}\n${detail}`);
+  }
+});
+
+it("prunes at most once an hour, not on every alarm", async (t) => {
+  const storage = eagerStorage(t);
+  const state = new DurableState(storage);
+  const deletes = [];
+  const exec = storage.sql.exec;
+  storage.sql.exec = (query, ...args) => { if (/^DELETE/.test(query)) deletes.push(query); return exec(query, ...args); };
+  const now = Date.now();
+  await state.prune(now);
+  await state.prune(now + 30 * 60 * 1_000);
+  assert.equal(deletes.length, 2);
+  await state.prune(now + 61 * 60 * 1_000);
+  assert.equal(deletes.length, 4);
+});
+
+it("moves a pre-existing records table into the indexed tables once", async (t) => {
+  const storage = eagerStorage(t);
+  storage.sql.exec("CREATE TABLE records (kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (kind, key))");
+  const put = (kind, key, value) => storage.sql.exec("INSERT INTO records VALUES (?, ?, ?)", kind, key, JSON.stringify(value));
+  put("workspace", "workspace", { accessToken: "token", slug: "acme", memberId: "cop", scopes: ["read"] });
+  put("processed", "install:old:story:1:created", { at: 5 });
+  put("delivery", "install:pending", { payload, attempts: 2, status: "pending", nextAttemptAt: 7, lastError: "boom" });
+  put("delivery", "install:done", { status: "complete", completedAt: 9 });
+  put("delivery", "install:dead", { payload, attempts: 6, status: "exhausted", nextAttemptAt: null, lastError: "nope" });
+  const state = new DurableState(storage);
+  assert.deepEqual(await state.listWorkspaces(), [{ id: "workspace", slug: "acme", scopes: ["read"] }]);
+  assert.equal(await state.hasProcessed("install:old:story:1:created"), true);
+  assert.deepEqual(await state.dueDeliveries(8), [{ key: "install:pending", payload, attempts: 2, status: "pending", nextAttemptAt: 7, lastError: "boom" }]);
+  assert.equal(await state.countFailedDeliveries(), 1);
+  assert.deepEqual(await state.getDelivery("install:done"), { key: "install:done", payload: null, attempts: 0, status: "complete", nextAttemptAt: null, lastError: null });
+  assert.equal(storage.sql.exec("SELECT name FROM sqlite_master WHERE name = 'records'").toArray().length, 0);
+  // Reopening must not fail on the missing table or duplicate anything.
+  new DurableState(storage);
   assert.equal(await state.countDeliveries(), 1);
 });
