@@ -12,7 +12,7 @@ It addresses whoever created or started the story, comments at most once per sto
 - Acts on story `create` actions and on `update` actions whose `changes` mark the story as started. When the diff is unavailable, it cannot tell and skips the update.
 - Reads only `team` from the story, and takes the actor's `mention_name` from the delivery.
 - Before posting, scans the story's comments for one it already wrote. The comments are the record: if they are all deleted, a later qualifying event posts again. The scan uses `client.paginate` and fails closed rather than risk a duplicate.
-- Ignores its own writes and keeps a receipt for each processed action and delivery. Receipts are pruned after seven days.
+- Ignores its own writes and keeps a receipt for each processed action and delivery. Receipts are pruned after seven days, and every queue and receipt lookup is indexed, so a busy workspace stays inside the Durable Objects free tier's daily `rows_read` allowance.
 - Retries a failed delivery up to five times with exponential backoff, then leaves it in SQLite without further alarms. Redelivery does not reset the cap.
 - Uses `@shortcut/client` for API calls, token refresh through its `refresh.run` callback, and pagination. Team Cop itself is plain JavaScript on a SQLite Durable Object; no Hono, no KV.
 

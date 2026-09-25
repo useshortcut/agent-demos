@@ -116,8 +116,8 @@ export class TeamCop {
   async alarm() {
     return this.exclusive(async () => {
       try {
-        // Bound work per alarm; additional deliveries remain scheduled.
-        for (const item of (await this.state.dueDeliveries()).slice(0, 10)) {
+        // Work per alarm is bounded to ten; the rest remain scheduled.
+        for (const item of await this.state.dueDeliveries()) {
           const delivery = await this.state.beginAttempt(item.key);
           if (!delivery) continue;
           try {
