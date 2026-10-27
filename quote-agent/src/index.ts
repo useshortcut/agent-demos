@@ -396,7 +396,7 @@ app.post('/webhook', async (c) => {
   // used: it also insists on a JSON content-type header.
   let payload;
   try {
-    ({ payload } = await new ShortcutWebhookClient(c.env.WEBHOOK_SECRET).verifyBody(rawBody, c.req.header('Payload-Signature')));
+    ({ payload } = await new ShortcutWebhookClient(c.env.WEBHOOK_SECRET, { allowLegacySignature: false }).verifyBody(rawBody, c.req.raw.headers));
   } catch (error) {
     if (!(error instanceof ShortcutWebhookError)) throw error;
     if (error.status === 401) {

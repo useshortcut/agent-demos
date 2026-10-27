@@ -49,7 +49,7 @@ export default {
 
     const raw = await readBody(request);
     if (raw === null) return json({ error: "payload too large" }, 413);
-    if (!await verifyWebhookSignature(raw, request.headers.get("Payload-Signature") ?? "", env.WEBHOOK_SECRET)) {
+    if (!await verifyWebhookSignature(raw, request.headers, env.WEBHOOK_SECRET)) {
       return json({ error: "invalid signature" }, 401);
     }
     let payload;

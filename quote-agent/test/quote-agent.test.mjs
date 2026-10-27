@@ -330,7 +330,7 @@ function shortcutHeaders(body, secret = 'signing', timestamp = String(Math.floor
   return { 'Shortcut-Signature': signature, 'Shortcut-Timestamp': timestamp, 'Shortcut-Delivery': delivery };
 }
 
-it('rejects unsigned, mis-signed, and stale webhooks, with no bypass flag', async (t) => {
+it('rejects unsigned, mis-signed, stale, and Payload-Signature-only webhooks, with no bypass flag', async (t) => {
   t.mock.method(console, 'error', () => {});
   const { env } = harness();
   const body = '{"type":"validation"}';
@@ -338,6 +338,7 @@ it('rejects unsigned, mis-signed, and stale webhooks, with no bypass flag', asyn
   assert.equal((await mod.default.request('/webhook', signed(body, 'wrong'), env)).status, 401);
   assert.equal((await mod.default.request('/webhook', signed(body, 'wrong'), { ...env, DEV: 'true' })).status, 401);
   assert.equal((await mod.default.request('/webhook', { method: 'POST', body, headers: shortcutHeaders(body, 'signing', '1700000000') }, env)).status, 401);
+  assert.equal((await mod.default.request('/webhook', { method: 'POST', body, headers: { 'Payload-Signature': createHmac('sha256', 'signing').update(body).digest('hex') } }, env)).status, 401);
   assert.equal((await mod.default.request('/webhook', signed(body), env)).status, 200);
 });
 

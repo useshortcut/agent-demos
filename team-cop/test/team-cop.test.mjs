@@ -249,5 +249,7 @@ describe("verifyWebhookSignature", () => {
     assert.equal(await verifyWebhookSignature(rawBody, headers("00"), "secret"), false);
     assert.equal(await verifyWebhookSignature(rawBody, headers(sign(timestamp)), "other-secret"), false);
     assert.equal(await verifyWebhookSignature(rawBody, headers(sign("1700000000"), "1700000000"), "secret"), false);
+    const legacy = createHmac("sha256", "secret").update(rawBody).digest("hex");
+    assert.equal(await verifyWebhookSignature(rawBody, new Headers({ "Payload-Signature": legacy }), "secret"), false);
   });
 });

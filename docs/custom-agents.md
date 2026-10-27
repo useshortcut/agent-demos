@@ -16,9 +16,9 @@ An agent can read its own capabilities: the OAuth token response for an agent to
 
 **Interaction-Triggered Delivery** — Fires when a user explicitly addresses an agent: assigns it, @-mentions it, or replies to one of its comments.
 
-**Webhook Signing** — All deliveries are signed with HMAC-SHA256 using a per-app secret. The hex digest is sent in the `Payload-Signature` request header.
+**Webhook Signing** — All deliveries are signed with HMAC-SHA256 using a per-app secret. The signature covers the `Shortcut-Timestamp` and `Shortcut-Delivery` header values and the body, and is sent in the `Shortcut-Signature` header. Receivers reject a timestamp more than 300 seconds off. The older `Payload-Signature` header signs the body alone, is deprecated, and stops being sent in a future release.
 
-**JavaScript client** — [`@shortcut/client`](https://github.com/useshortcut/shortcut-client-js) 3.4.1 ships two entrypoints for agents: `@shortcut/client/v4` (`ShortcutV4Client` for the workspace-scoped v4 API with cursor pagination, `ShortcutOAuth` for the install's code exchange and token refresh) and `@shortcut/client/webhooks` (`ShortcutWebhookClient` for signature verification and typed observer and interaction payloads). Both are Fetch-based and run on Node.js 20+, Cloudflare Workers, Deno, and Bun. The demos in this repo use them.
+**JavaScript client** — [`@shortcut/client`](https://github.com/useshortcut/shortcut-client-js) 3.5.0 ships two entrypoints for agents: `@shortcut/client/v4` (`ShortcutV4Client` for the workspace-scoped v4 API with cursor pagination, `ShortcutOAuth` for the install's code exchange and token refresh) and `@shortcut/client/webhooks` (`ShortcutWebhookClient` for signature verification and typed observer and interaction payloads). Both are Fetch-based and run on Node.js 20+, Cloudflare Workers, Deno, and Bun. The demos in this repo use them.
 
 ## Payload Shapes
 
