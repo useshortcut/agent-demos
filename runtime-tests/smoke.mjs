@@ -9,25 +9,27 @@ import { test } from 'node:test';
 // npm executes this shared harness from the selected demo. All imported test
 // tools are its direct, locked dev dependencies, not another demo's installs.
 const demo = basename(process.cwd());
-assert.ok(['estimate-guardian', 'quote-agent', 'team-cop'].includes(demo), 'Run npm run test:runtime inside a demo');
+assert.ok(['devin-bridge', 'estimate-guardian', 'quote-agent', 'team-cop'].includes(demo), 'Run npm run test:runtime inside a demo');
 const require = createRequire(resolve('package.json'));
 const { build } = require('esbuild');
 const { Miniflare, convertV4MiniflareOptions } = require('miniflare');
 const { unstable_readConfig } = require('wrangler');
 const config = unstable_readConfig({ config: resolve('wrangler.toml') });
 
+const EVENTUALLY_MS = demo === 'devin-bridge' ? 20_000 : 10_000;
+
 async function eventually(read, predicate, description) {
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + EVENTUALLY_MS;
   let value;
   do {
     value = await read();
     if (predicate(value)) return value;
     await setTimeout(25);
   } while (Date.now() < deadline);
-  assert.fail(`${description} did not complete within 10 seconds: ${JSON.stringify(value)}`);
+  assert.fail(`${description} did not complete within ${EVENTUALLY_MS / 1_000} seconds: ${JSON.stringify(value)}`);
 }
 
-test(`${demo}: actual Cloudflare runtime, mock Shortcut only`, { timeout: 45_000 }, async (t) => {
+test(`${demo}: actual Cloudflare runtime, mocked upstreams`, { timeout: 45_000 }, async (t) => {
   // A test-only entrypoint also awaits registered waitUntil work. Guardian keeps
   // its real execution context, so failures cannot disappear after HTTP 200.
   const entry = JSON.stringify(config.main);
@@ -79,7 +81,8 @@ test(`${demo}: actual Cloudflare runtime, mock Shortcut only`, { timeout: 45_000
         kvNamespaces: config.kv_namespaces.map((binding) => binding.binding), durableObjects,
         bindings: { CLIENT_ID: 'synthetic-client', CLIENT_SECRET: 'synthetic-secret',
           REDIRECT_URI: 'https://agent.test/oauth/callback', WEBHOOK_SECRET: 'synthetic-signing',
-          SHORTCUT_API_BASE: 'https://shortcut.mock' },
+          SHORTCUT_API_BASE: 'https://shortcut.mock',
+          ...(demo === 'devin-bridge' ? { DEVIN_API_KEY: 'synthetic-devin-key', DEVIN_ORG_ID: 'synthetic-org', DEVIN_API_BASE: 'https://devin.mock', ALLOWED_WORKSPACE_IDS: 'workspace' } : {}) },
         outboundService: 'shortcut-mock' },
       { name: 'shortcut-mock', modules: true, script: await readFile(new URL('upstream.mjs', import.meta.url), 'utf8'),
         compatibilityDate: config.compatibility_date,
@@ -117,7 +120,31 @@ test(`${demo}: actual Cloudflare runtime, mock Shortcut only`, { timeout: 45_000
       const response = await send({ ...envelope(id), ...properties });
       assert.equal(response.status, demo === 'team-cop' ? 202 : 200, await response.text());
     };
-    if (demo === 'estimate-guardian') {
+    if (demo === 'devin-bridge') {
+      assert.deepEqual((await results()).subscription, { enabled: true }, 'OAuth enables agent sessions');
+      const snapshot = (turn) => ({ id: 'sess-1', workspace_id: 'workspace', installation_id: 'installation', agent_member_id: 'agent-member',
+        created_by: 'user', entity_type: 'story', entity_id: 123, thread_comment_id: null, status: 'active', turn, version: 1, plan: [], external_urls: [] });
+      const prompt = (turn, body) => ({ id: `prompt-${turn}`, workspace_id: 'workspace', session_id: 'sess-1', sequence: turn, turn, author_id: 'user',
+        in_reply_to: null, content: { type: 'prompt', body }, signal: null, signal_metadata: null, ephemeral: false, superseded: false, created_at: new Date().toISOString() });
+      const event = (id, type, turn, body) => ({ id, version: 'v1', type, workspace_id: 'workspace', installation_id: 'installation',
+        session: snapshot(turn), ...(type === 'session.created' ? { prompt_context: { text: 'Story 123: Fix login', truncated: false } } : {}), activity: prompt(turn, body) });
+      const answered = (turn) => (state) => state.activities.some((item) => item.turn === turn && item.content.type === 'response');
+      const created = event('event-created', 'session.created', 1, 'Please fix the login bug');
+      assert.equal((await send(created)).status, 200);
+      let state = await eventually(results, answered(1), 'Devin Bridge turn 1 response');
+      assert.equal(state.activities[0].key, 'devin-bridge:1:ack');
+      assert.match(state.activities.find((item) => item.content.type === 'response').content.body, /Fixed the login bug\./);
+      assert.deepEqual(state.session.external_urls, [{ label: 'Open in Devin', url: 'https://app.devin.ai/sessions/1' }]);
+      assert.equal((await send(created)).status, 200);
+      assert.equal((await results()).devin.sessions.length, 1, 'A redelivered event creates no second Devin session');
+
+      await upstream.fetch('https://shortcut.mock/advance-turn', { method: 'POST' });
+      assert.equal((await send(event('event-prompted', 'session.prompted', 2, 'Also fix Firefox'))).status, 200);
+      state = await eventually(results, answered(2), 'Devin Bridge turn 2 response');
+      assert.match(state.activities.find((item) => item.turn === 2 && item.content.type === 'response').content.body, /Fixed Firefox too\./);
+      assert.deepEqual(state.devin.received, ['Also fix Firefox']);
+      assert.equal(state.devin.sessions.length, 1, 'The follow-up goes to the same Devin session');
+    } else if (demo === 'estimate-guardian') {
       await deliver('zero-estimate', { actions: [{ action: 'update', entity_type: 'story', id: 124, global_id: 'v2:s:workspace:124',
         changes: [{ attribute: 'workflow_state', adds: [{ id: 2 }], removes: [{ id: 1 }] }] }] });
       assert.equal((await results()).posts.length, 0, 'A zero-point Estimate must not trigger a warning');

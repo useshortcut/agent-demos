@@ -13,11 +13,12 @@ An agent is a web service you own. Shortcut sends it signed webhooks when someth
 | [Quote Agent](./quote-agent) | Workers, Hono, Durable Object | The interaction lifecycle: install, verified webhooks, threaded replies, and deduplicated deliveries. Posts a random quote when assigned, mentioned, or replied to. |
 | [Estimate Guardian](./estimate-guardian) | Workers, Hono, Durable Object | Enforcing a rule from observer webhooks. Bounces stories started without an estimate, using the action's `changes` diff and durable recovery. |
 | [Team Cop](./team-cop) | Workers, SQLite Durable Object | The same observer pattern in plain JavaScript. Comments when a story is created or started without a Team, with durable retries. |
+| [Devin Bridge](./devin-bridge) | Workers, Hono, SQLite Durable Objects | A third-party agent on agent sessions. Relays each Shortcut session to a Devin session: progress, questions, answers, follow-ups, and stop. |
 
 ## Docs
 
 - [Custom Agents overview](./docs/custom-agents.md): concepts, payload shapes, interaction triggers, and the app review lifecycle.
-- [`@shortcut/client`](https://github.com/useshortcut/shortcut-client-js): the official JavaScript client. `@shortcut/client/v4` covers the API, the agent OAuth flow, and token refresh; `@shortcut/client/webhooks` verifies deliveries and types their payloads. All three demos use it.
+- [`@shortcut/client`](https://github.com/useshortcut/shortcut-client-js): the official JavaScript client. `@shortcut/client/v4` covers the API, the agent OAuth flow, and token refresh; `@shortcut/client/webhooks` verifies deliveries and types their payloads. Every demo uses it.
 - [Shortcut REST API](https://developer.shortcut.com/api/rest/v3): the full API reference.
 
 ## Building your own
