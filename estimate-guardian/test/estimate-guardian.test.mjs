@@ -295,16 +295,24 @@ it('health check lists no workspaces, slugs, scopes, or tokens', async () => {
 });
 
 function signed(body, secret = 'signing') {
-  return { method: 'POST', body, headers: { 'Payload-Signature': createHmac('sha256', secret).update(body).digest('hex') } };
+  return { method: 'POST', body, headers: shortcutHeaders(body, secret) };
 }
 
-it('rejects unsigned and mis-signed webhooks, with no bypass flag', async (t) => {
+// Shortcut's headers without the deprecated Payload-Signature, as sc-322342 will send them.
+function shortcutHeaders(body, secret = 'signing', timestamp = String(Math.floor(Date.now() / 1000))) {
+  const delivery = 'test-delivery';
+  const signature = createHmac('sha256', secret).update(`${timestamp}.${delivery}.`).update(body).digest('hex');
+  return { 'Shortcut-Signature': signature, 'Shortcut-Timestamp': timestamp, 'Shortcut-Delivery': delivery };
+}
+
+it('rejects unsigned, mis-signed, and stale webhooks, with no bypass flag', async (t) => {
   t.mock.method(console, 'error', () => {});
   const { env } = session();
   const body = '{"type":"validation"}';
   assert.equal((await app.request('/webhook', { method: 'POST', body }, env)).status, 401);
   assert.equal((await app.request('/webhook', signed(body, 'wrong'), env)).status, 401);
   assert.equal((await app.request('/webhook', signed(body, 'wrong'), { ...env, DEV: 'true' })).status, 401);
+  assert.equal((await app.request('/webhook', { method: 'POST', body, headers: shortcutHeaders(body, 'signing', '1700000000') }, env)).status, 401);
   assert.equal((await app.request('/webhook', signed(body), env)).status, 200);
 });
 
@@ -343,8 +351,8 @@ it('rejects oversized webhook bodies before verifying them', async (t) => {
   const { env } = session();
   const big = JSON.stringify({ type: 'validation', pad: 'x'.repeat(2 * 1024 * 1024) });
   assert.equal((await app.request('/webhook', signed(big), env)).status, 413);
-  const stream = new Request('https://worker/webhook', { method: 'POST', body: big, headers: { 'Payload-Signature': 'ab' } });
-  assert.equal((await app.fetch(new Request(stream, { headers: { 'Payload-Signature': 'ab' } }), env)).status, 413);
+  const stream = new Request('https://worker/webhook', { method: 'POST', body: big, headers: { 'Shortcut-Signature': 'ab' } });
+  assert.equal((await app.fetch(new Request(stream, { headers: { 'Shortcut-Signature': 'ab' } }), env)).status, 413);
 });
 
 it('addresses the actor by the mention name the delivery carries and sanitizes display-name fallbacks', async (t) => {

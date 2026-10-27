@@ -45,7 +45,7 @@ it("verifies signed webhooks before forwarding, and accepts validation without q
   } };
   const request = (body, valid = true) => new Request("https://worker/webhook", {
     method: "POST", body,
-    headers: { "Payload-Signature": valid ? createHmac("sha256", "signing").update(body).digest("hex") : "bad" },
+    headers: shortcutHeaders(body, valid ? "signing" : "wrong"),
   });
   assert.equal((await worker.fetch(request(JSON.stringify(payload), false), bindings)).status, 401);
   assert.equal((await worker.fetch(request('{"type":"validation"}'), bindings)).status, 200);
@@ -207,3 +207,10 @@ it("moves a pre-existing records table into the indexed tables once", async (t) 
   new DurableState(storage);
   assert.equal(await state.countDeliveries(), 1);
 });
+
+// Shortcut's headers without the deprecated Payload-Signature, as sc-322342 will send them.
+function shortcutHeaders(body, secret, timestamp = String(Math.floor(Date.now() / 1000))) {
+  const delivery = "test-delivery";
+  const signature = createHmac("sha256", secret).update(`${timestamp}.${delivery}.`).update(body).digest("hex");
+  return { "Shortcut-Signature": signature, "Shortcut-Timestamp": timestamp, "Shortcut-Delivery": delivery };
+}

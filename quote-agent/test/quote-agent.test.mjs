@@ -22,7 +22,7 @@ function harness() {
     const payload = { id, version: 'v2', timestamp: '2026-01-01T00:00:00.000Z', installation_id: 'install', workspace2: { id: 'workspace', url_slug: 'acme' },
       actor: { member_id: 'user', displayable_name: 'Ada' }, trigger: { type: 'assigned', entity_type: 'story', entity_id: '123' }, ...overrides };
     const body = JSON.stringify(payload);
-    return mod.default.request('/webhook', { method: 'POST', body, headers: { 'Payload-Signature': createHmac('sha256', 'signing').update(body).digest('hex') } }, env);
+    return mod.default.request('/webhook', { method: 'POST', body, headers: shortcutHeaders(body) }, env);
   };
   return { env, data, records, deliver, restartCoordinator };
 }
@@ -320,16 +320,24 @@ it('health check lists no workspaces, slugs, scopes, or tokens, and logs nothing
 });
 
 function signed(body, secret = 'signing') {
-  return { method: 'POST', body, headers: { 'Payload-Signature': createHmac('sha256', secret).update(body).digest('hex') } };
+  return { method: 'POST', body, headers: shortcutHeaders(body, secret) };
 }
 
-it('rejects unsigned and mis-signed webhooks, with no bypass flag', async (t) => {
+// Shortcut's headers without the deprecated Payload-Signature, as sc-322342 will send them.
+function shortcutHeaders(body, secret = 'signing', timestamp = String(Math.floor(Date.now() / 1000))) {
+  const delivery = 'test-delivery';
+  const signature = createHmac('sha256', secret).update(`${timestamp}.${delivery}.`).update(body).digest('hex');
+  return { 'Shortcut-Signature': signature, 'Shortcut-Timestamp': timestamp, 'Shortcut-Delivery': delivery };
+}
+
+it('rejects unsigned, mis-signed, and stale webhooks, with no bypass flag', async (t) => {
   t.mock.method(console, 'error', () => {});
   const { env } = harness();
   const body = '{"type":"validation"}';
   assert.equal((await mod.default.request('/webhook', { method: 'POST', body }, env)).status, 401);
   assert.equal((await mod.default.request('/webhook', signed(body, 'wrong'), env)).status, 401);
   assert.equal((await mod.default.request('/webhook', signed(body, 'wrong'), { ...env, DEV: 'true' })).status, 401);
+  assert.equal((await mod.default.request('/webhook', { method: 'POST', body, headers: shortcutHeaders(body, 'signing', '1700000000') }, env)).status, 401);
   assert.equal((await mod.default.request('/webhook', signed(body), env)).status, 200);
 });
 

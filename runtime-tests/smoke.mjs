@@ -95,8 +95,11 @@ test(`${demo}: actual Cloudflare runtime, mock Shortcut only`, { timeout: 45_000
     const request = (path, options) => mf.dispatchFetch(`https://agent.test${path}`, options);
     const send = async (payload, signed = true) => {
       const body = JSON.stringify(payload);
+      const timestamp = String(Math.floor(Date.now() / 1000));
       return request('/webhook', { method: 'POST', body, headers: {
-        'Payload-Signature': signed ? createHmac('sha256', 'synthetic-signing').update(body).digest('hex') : '0'.repeat(64),
+        'Shortcut-Signature': signed ? createHmac('sha256', 'synthetic-signing').update(`${timestamp}.smoke.`).update(body).digest('hex') : '0'.repeat(64),
+        'Shortcut-Timestamp': timestamp,
+        'Shortcut-Delivery': 'smoke',
       } });
     };
     assert.equal((await request('/')).status, 200);
