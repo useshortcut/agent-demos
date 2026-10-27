@@ -1,4 +1,4 @@
-import { verifyShortcutWebhookSignature } from "@shortcut/client/webhooks";
+import { verifyShortcutWebhookHeaders } from "@shortcut/client/webhooks";
 
 export const REMINDER_TEXT = "Stories need to be in a Team! Please add one!";
 
@@ -30,9 +30,9 @@ export function safeDisplayName(name) {
 
 // Constant-time HMAC-SHA256 over the exact request bytes (WebCrypto). A copy
 // keeps a pooled Buffer's neighbours out of the digest.
-export function verifyWebhookSignature(rawBody, signature, secret) {
+export async function verifyWebhookSignature(rawBody, headers, secret) {
   const bytes = typeof rawBody === "string" ? rawBody : new Uint8Array(rawBody);
-  return verifyShortcutWebhookSignature(secret, bytes, signature);
+  return (await verifyShortcutWebhookHeaders(secret, bytes, headers, { allowLegacySignature: false })).verified;
 }
 
 function processedKey(payload, action, reason) {

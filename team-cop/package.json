@@ -19,6 +19,6 @@
     "wrangler": "^4.137.0"
   },
   "dependencies": {
-    "@shortcut/client": "^3.4.1"
+    "@shortcut/client": "^3.5.0"
   }
 }

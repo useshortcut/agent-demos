@@ -720,7 +720,7 @@ app.post('/webhook', async (c) => {
   // actor, or a well-formed action never gets past here.
   let delivery: ShortcutVerifiedDelivery;
   try {
-    delivery = await new ShortcutWebhookClient(c.env.WEBHOOK_SECRET).verifyBody(rawBody, c.req.header('Payload-Signature'));
+    delivery = await new ShortcutWebhookClient(c.env.WEBHOOK_SECRET, { allowLegacySignature: false }).verifyBody(rawBody, c.req.raw.headers);
   } catch (error) {
     if (!(error instanceof ShortcutWebhookError)) throw error;
     if (error.status === 413) return c.json({ error: 'Payload too large' }, 413);
