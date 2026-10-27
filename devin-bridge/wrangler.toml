@@ -1,0 +1,21 @@
+name = "shortcut-devin-bridge"
+main = "src/index.ts"
+compatibility_date = "2026-09-07"
+
+# Created automatically on the first deploy; no namespace IDs to paste.
+[[durable_objects.bindings]]
+name = "WORKSPACES"
+class_name = "Workspace"
+
+[[durable_objects.bindings]]
+name = "SESSIONS"
+class_name = "Session"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Workspace", "Session"]
+
+[observability.logs]
+enabled = true
+# OAuth callback query strings contain authorization codes.
+invocation_logs = false

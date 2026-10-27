@@ -1,0 +1,22 @@
+{
+  "name": "shortcut-devin-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "deploy": "wrangler deploy",
+    "test": "node --test test/*.test.mjs",
+    "test:runtime": "node --test ../runtime-tests/smoke.mjs"
+  },
+  "dependencies": {
+    "@shortcut/client": "^3.5.0",
+    "hono": "^4.13.8"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260923.1",
+    "esbuild": "^0.28.2",
+    "miniflare": "5.20260921.0-alpha",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.137.0"
+  }
+}
