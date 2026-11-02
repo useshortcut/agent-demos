@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@shortcut/client": "^3.5.0",
-    "hono": "^4.13.8"
+    "hono": "^4.13.11"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260923.1",
