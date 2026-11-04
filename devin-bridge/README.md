@@ -11,7 +11,7 @@ For the platform itself (OAuth, webhooks, app review), see [docs/custom-agents.m
 | In Shortcut | In Devin |
 |---|---|
 | `session.created` (assigned, mentioned, or replied to) | Creates a session with the opening prompt, the story or epic link, and Shortcut's context. Links it on the card as **Open in Devin**. |
-| Devin is working | Posts Devin's newest message as an ephemeral `thought` |
+| Devin is working | Posts Devin's newest message as an ephemeral `thought`. While Devin works without a new message, posts it again every 10 minutes, so Shortcut does not mark the session stale. |
 | Devin finished | `response` with Devin's last message, its pull requests, and the Devin link |
 | Devin waits for the user | `elicitation` with Devin's question and the Devin link. The turn is handed back. |
 | Devin waits for an approval | `elicitation` with Devin's question and the Devin link, posted once per question. The bridge keeps polling, so the result of an approval given in Devin still reaches Shortcut, and a later approval with a new message is asked again. |
@@ -70,7 +70,7 @@ The step runs the first due job, saves the state, and plans again until nothing 
 
 The bridge decides every Shortcut activity once, stores it in an outbox, and sends it until Shortcut accepts it. Retries resend the stored request byte for byte, so Shortcut treats them as replays.
 
-Keys are `devin-bridge:{turn}:{suffix}`. The suffixes are `ack`, `ack:restart`, `restart`, `message:{devinEventId}`, `elicitation:{devinEventId}`, `elicitation:approval`, `elicitation:user`, `response`, `error`, `error:rejected`, and `stopped`. The turn is in the key because Shortcut keeps a key unique across all turns of a session.
+Keys are `devin-bridge:{turn}:{suffix}`. The suffixes are `ack`, `ack:restart`, `restart`, `message:{devinEventId}`, `heartbeat:{time}`, `elicitation:{devinEventId}`, `elicitation:approval`, `elicitation:user`, `response`, `error`, `error:rejected`, and `stopped`. The turn is in the key because Shortcut keeps a key unique across all turns of a session.
 
 Each suffix carries one body per turn, because Shortcut answers a reused key with a different body with a 409. So a stale stop's ack has its own suffix, since the turn's `ack` may already be posted with another text. An elicitation whose Devin message has no text is keyed by its kind.
 
@@ -119,7 +119,9 @@ Retirement has its own budget of 8 calls and its own backoff deadline, so it nev
 
 **When polling stops.** Polling stops once the turn has a `response`, an `error`, or an `elicitation` for a question Devin asks the user. An elicitation for an approval does not stop it. The approval happens in Devin, so the bridge records which question it asked and keeps polling. It asks again only when Devin waits with a new message, posts Devin's later progress, and ends the turn with Devin's answer. A wait that comes back on the same message is not written again.
 
-**Quiet sessions.** While Devin is quiet at the 60 second cap, each poll also reads the Shortcut session. Polling stops if Shortcut ended the turn on its own (`complete`, `error`, `stale`, or a `closed_reason`), so the bridge does not poll a silent Devin session forever. That read is a Shortcut job of its own, due with the poll. It waits on the Shortcut deadline, not the Devin one. A 429 or a transient failure on it holds the read and not the poll, and a Devin failure in the poll after it keeps what the read learned.
+**Quiet sessions.** Shortcut marks a session `stale` after 30 minutes without an agent activity. So while Devin reports `working` and has said nothing new for 10 minutes, the bridge posts a `heartbeat` thought. It repeats Devin's newest message, or says "Devin is still working." when there is none, because each thought replaces the one before it on the card. The bridge does not treat `stale` as an ended turn. Shortcut takes the next activity on a stale session and makes it active again, so Devin's later progress and outcome still arrive.
+
+While Devin is quiet at the 60 second cap, each poll also reads the Shortcut session. Polling stops if Shortcut ended the turn on its own (`complete`, `error`, or a `closed_reason`), so the bridge does not poll a silent Devin session forever. Shortcut ends a session that stays stale for 24 hours with an `error`. That read is a Shortcut job of its own, due with the poll. It waits on the Shortcut deadline, not the Devin one. A 429 or a transient failure on it holds the read and not the poll, and a Devin failure in the poll after it keeps what the read learned.
 
 **The baseline.** Right after a relay, Devin can still report the previous turn's finished or waiting status. So before it sends a reply, the bridge reads Devin's status and the id of the newest message, called the baseline. It saves them with the text the send carries. A retried send reuses the saved baseline and repeats the same text, so the bridge still finds an answer Devin gave to a send whose response was lost. A reply or a context that arrives after the baseline waits for the next relay. A relay that fails without reaching Devin keeps its late context for the next reply.
 

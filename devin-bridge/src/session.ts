@@ -46,7 +46,8 @@ type Io = { shortcut: ShortcutSessions; devin: DevinClient; slug: string };
 const UNEXPECTED_RETRY_MS = 60_000;
 const INBOX = 'inbox:';
 const DELETE_BATCH = 128;
-const ENDED = ['complete', 'error', 'stale'];
+// A stale session is not ended. Shortcut takes the next activity and makes it active again.
+const ENDED = ['complete', 'error'];
 
 const wait = (state: SessionState, job: Job, ms: number) => defer(state, job, ms, Date.now());
 const strike = (state: SessionState, job: Job, count: number) => ({ ...state, failures: { ...state.failures, [job]: count } });

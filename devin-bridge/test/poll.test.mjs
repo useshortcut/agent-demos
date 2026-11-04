@@ -30,6 +30,58 @@ it('posts only the newest new Devin message as one ephemeral thought and backs o
   h.assertCleanLogs();
 });
 
+it('keeps the Shortcut session active while Devin works quietly for hours, repeating Devin\'s newest message', async (t) => {
+  const h = setup(t);
+  const devin = await h.started();
+  Object.assign(devin, { status: 'running', status_detail: 'working' });
+  h.devin.say(devin, 'Reading the login code (private-devin-text)');
+  const until = Date.now() + 2 * 60 * 60_000;
+  while (Date.now() < until) {
+    await h.tick();
+    h.shortcut.sweep();
+    assert.notEqual(h.shortcut.sessions.get(SID).status, 'stale', 'never 30 minutes without agent activity');
+  }
+  const beats = h.shortcut.activities().filter((a) => a.key.includes(':heartbeat:'));
+  assert.ok(beats.length >= 8, `about one every 10 minutes, got ${beats.length}`);
+  for (const beat of beats) assert.deepEqual([beat.content, beat.ephemeral], [{ type: 'thought', body: 'Reading the login code (private-devin-text)' }, true]);
+  h.assertCleanLogs();
+});
+
+it('says Devin is still working when a relayed reply has no fresh Devin message yet', async (t) => {
+  const h = setup(t);
+  const devin = await h.started();
+  Object.assign(devin, { status: 'running', status_detail: 'working' });
+  assert.equal((await h.deliver(h.shortcut.prompt(SID, 'Also check Firefox (private-prompt)'))).status, 200);
+  const until = Date.now() + 45 * 60_000;
+  while (Date.now() < until) {
+    await h.tick();
+    h.shortcut.sweep();
+    assert.notEqual(h.shortcut.sessions.get(SID).status, 'stale');
+  }
+  const beats = h.shortcut.activities().filter((a) => a.turn === 2 && a.key.includes(':heartbeat:'));
+  assert.ok(beats.length >= 1);
+  assert.deepEqual(beats.at(-1).content, { type: 'thought', body: 'Devin is still working.' });
+});
+
+it('keeps polling through a session Shortcut marked stale and posts Devin\'s answer when it comes', async (t) => {
+  const h = setup(t);
+  const devin = await h.started();
+  Object.assign(devin, { status: 'running', status_detail: 'working' });
+  h.shortcut.sessions.get(SID).status = 'stale';
+  for (let i = 0; i < 8; i++) await h.tick();
+  assert.ok(h.requests.some((r) => r.origin === 'shortcut' && r.method === 'GET' && r.path.endsWith(`/agent-sessions/${SID}`)), 'the quiet check read the stale session');
+  assertAbout(await h.alarmIn(), 60_000, 'still polling');
+
+  Object.assign(devin, { status_detail: 'finished' });
+  h.devin.say(devin, 'Fixed the Safari login bug (private-devin-text)');
+  await h.tick();
+  await h.tick();
+  const [response] = h.shortcut.activities().filter((a) => a.content.type === 'response');
+  assert.match(response.content.body, /Fixed the Safari login bug/);
+  assert.equal(h.shortcut.sessions.get(SID).status, 'complete');
+  assert.equal(await h.alarmIn(), null);
+});
+
 it('finishes the turn with Devin\'s last message, its pull requests, and the Devin link, then stops polling', async (t) => {
   const h = setup(t);
   const devin = await h.started();
