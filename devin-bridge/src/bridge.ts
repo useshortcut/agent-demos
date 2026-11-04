@@ -28,8 +28,8 @@ export type Phase =
   | { kind: 'start'; prompt: Pending[]; extra: Pending[]; attempted: boolean }
   /** Until `send` is set, `prompt` is what the next baseline read fixes. After, it waits for the relay that follows. */
   | { kind: 'relay'; link: Link; prompt: Pending[]; send: Send | null }
-  /** `check` asks for a Shortcut read of the session with the next poll. `asked` is the key suffix of the posted elicitation. */
-  | { kind: 'poll'; link: Link; at: number; delayMs: number; check: boolean; posted: string | null; asked: string | null; relayed: Relayed | null }
+  /** `check` asks for a Shortcut read of the session with the next poll. `asked` is the key suffix of the posted elicitation. `heartbeatAt` is when a quiet, working Devin is next reported to Shortcut. */
+  | { kind: 'poll'; link: Link; at: number; delayMs: number; check: boolean; posted: string | null; asked: string | null; relayed: Relayed | null; heartbeatAt: number }
   | { kind: 'stop'; target: Target | null; then: Pending[] }
   | { kind: 'idle'; link: Link | null }
   | { kind: 'closed' };
@@ -86,6 +86,8 @@ export type DevinSnapshot = { state: DevinState; url: string; pullRequests: stri
 export const FIRST_POLL_MS = 5_000;
 export const MAX_DELAY_MS = 60_000;
 const PICKUP_TIMEOUT_MS = 600_000;
+/** Shortcut marks a session stale after 30 minutes without agent activity, so a Devin session that works quietly is reported well inside that. */
+const HEARTBEAT_MS = 600_000;
 /** No wait is shorter than this, so a `Retry-After` of zero cannot run the same job again in the same alarm. */
 export const MIN_WAIT_MS = 1_000;
 const MAX_BODY = 32_768;
@@ -361,7 +363,7 @@ export function fail(state: SessionState, body: string, keep: boolean): SessionS
 }
 
 const polling = (link: Link, relayed: Relayed | null, now: number): PollPhase =>
-  ({ kind: 'poll', link, at: now + FIRST_POLL_MS, delayMs: FIRST_POLL_MS, check: false, posted: null, asked: null, relayed });
+  ({ kind: 'poll', link, at: now + FIRST_POLL_MS, delayMs: FIRST_POLL_MS, check: false, posted: null, asked: null, relayed, heartbeatAt: now + HEARTBEAT_MS });
 
 // A quiet Devin session writes nothing, so once the delay is at its cap each
 // poll also reads the Shortcut session, or a turn Shortcut ended on its own
@@ -429,7 +431,12 @@ export function observe(state: SessionState, phase: PollPhase, snapshot: DevinSn
   const last = devinSaid[devinSaid.length - 1] ?? null;
   const link = `[${LINK_LABEL}](${snapshot.url})`;
   const awaiting = phase.relayed && !phase.relayed.heard ? phase.relayed : null;
-  const quiet = (current: PollPhase): SessionState => ({ ...state, phase: later(current, Math.min(MAX_DELAY_MS, phase.delayMs * 2), now) });
+  const quiet = (current: PollPhase): SessionState => {
+    const next = later(current, Math.min(MAX_DELAY_MS, phase.delayMs * 2), now);
+    if (snapshot.state.kind !== 'working' || now < current.heartbeatAt) return { ...state, phase: next };
+    // Repeating the newest message keeps it on the card, since each thought replaces the one before.
+    return enqueue({ ...state, phase: { ...next, heartbeatAt: now + HEARTBEAT_MS } }, activity(state, `heartbeat:${now}`, 'thought', last?.body || 'Devin is still working.'));
+  };
   if (awaiting && devinSaid.length === 0 && sameState(awaiting.baseline.status, snapshot.state)) {
     if (snapshot.state.kind === 'working' || now - awaiting.since < PICKUP_TIMEOUT_MS) return quiet(phase);
     return fail(state, `Devin did not pick up your reply. Reply to try again. ${link}`, true);
@@ -440,7 +447,7 @@ export function observe(state: SessionState, phase: PollPhase, snapshot: DevinSn
     case 'working': {
       if (unposted.length === 0) return quiet(heard);
       const latest = unposted[unposted.length - 1];
-      return enqueue({ ...state, phase: later({ ...heard, posted: latest.id }, FIRST_POLL_MS, now) }, activity(state, `message:${latest.id}`, 'thought', latest.body || 'Devin is working.'));
+      return enqueue({ ...state, phase: later({ ...heard, posted: latest.id, heartbeatAt: now + HEARTBEAT_MS }, FIRST_POLL_MS, now) }, activity(state, `message:${latest.id}`, 'thought', latest.body || 'Devin is working.'));
     }
     case 'waiting': {
       const fallback = snapshot.state.on === 'user' ? 'Devin is waiting for your input.' : 'Devin is waiting for you to approve an action in Devin.';
@@ -450,7 +457,7 @@ export function observe(state: SessionState, phase: PollPhase, snapshot: DevinSn
       if (snapshot.state.on === 'user') return enqueue({ ...state, phase: { kind: 'idle', link: phase.link } }, asked);
       // An approval happens in Devin, so the turn stays open and the bridge keeps watching for the result. Only a new message is a new question.
       if (heard.asked === suffix) return quiet(heard);
-      return enqueue({ ...state, phase: later({ ...heard, asked: suffix, posted: last?.id ?? heard.posted }, FIRST_POLL_MS, now) }, asked);
+      return enqueue({ ...state, phase: later({ ...heard, asked: suffix, posted: last?.id ?? heard.posted, heartbeatAt: now + HEARTBEAT_MS }, FIRST_POLL_MS, now) }, asked);
     }
     case 'finished': {
       const pulls = snapshot.pullRequests.length ? `Pull requests:\n${snapshot.pullRequests.map((pr) => `- ${pr}`).join('\n')}\n\n` : '';

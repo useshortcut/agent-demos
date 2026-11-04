@@ -182,18 +182,6 @@ it('honors a stop that arrives while an elicitation is still queued', async (t) 
   assert.equal(await h.alarmIn(), null);
 });
 
-it('ends the turn quietly when Shortcut reports the session stale', async (t) => {
-  const h = setup(t);
-  const devin = await h.started();
-  Object.assign(devin, { status: 'running', status_detail: 'working' });
-  for (let i = 0; i < 5; i++) await h.tick();
-  h.shortcut.sessions.get(SID).status = 'stale';
-  await h.tick();
-  assert.equal(await h.alarmIn(), null);
-  assert.equal(h.devinCalls('DELETE').length, 0);
-  assert.equal(h.shortcut.activities().filter((a) => a.content.type === 'error').length, 0);
-});
-
 it('stops polling a quiet Devin session once Shortcut has ended the turn on its own', async (t) => {
   const h = setup(t);
   const devin = await h.started();

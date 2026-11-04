@@ -85,6 +85,7 @@ function mockShortcut(log) {
     if (s.outcome) return json({ message: 'A completed turn requires a new human prompt.' }, 409);
     const activity = { key, turn, content, ...(ephemeral ? { ephemeral: true } : {}) };
     s.activities.push(activity);
+    s.lastAgentAt = Date.now();
     if (content.type === 'response' || content.type === 'error') { s.outcome = content.type; s.stopRequested = false; }
     s.status = { thought: 'active', elicitation: 'awaiting_input', response: 'complete', error: 'error' }[content.type];
     return json(activity, 201);
@@ -107,6 +108,11 @@ function mockShortcut(log) {
       const s = sessions.get(id);
       s.stopRequested = true;
       return event('session.prompted', s, prompt(s, 'Stop', 'stop'));
+    },
+    // Shortcut's housekeeping: an active session with no agent activity for 30 minutes goes stale.
+    sweep(id = SID) {
+      const s = sessions.get(id);
+      if (s.status === 'active' && Date.now() - (s.lastAgentAt ?? 0) >= 30 * 60_000) s.status = 'stale';
     },
     failTurn(id) {
       const s = sessions.get(id);
