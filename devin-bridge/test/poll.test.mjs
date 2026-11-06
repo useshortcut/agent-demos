@@ -667,3 +667,47 @@ it('drops an older reply that arrives while a newer one is waiting to be resent'
   for (let i = 0; i < 3; i++) await h.tick();
   assert.deepEqual(devin.received, ['Three (private-prompt)'], 'the older reply is superseded once the newer one is sent');
 });
+
+// Devin's app renders [NAME]…[/NAME] as UI, and the first live run ended with one on the card.
+const MARKED = 'Added the form.\n\n[OFFER_TEST_APP]Try the login page[/OFFER_TEST_APP]';
+const UNMARKED = 'Added the form.\n\nTry the login page';
+for (const [type, detail, key] of [
+  ['thought', 'working', 'devin-bridge:1:message:evt-1'],
+  ['elicitation', 'waiting_for_user', 'devin-bridge:1:elicitation:evt-1'],
+  ['response', 'finished', 'devin-bridge:1:response'],
+]) {
+  it(`drops Devin's UI markup from the ${type} and keeps the text inside`, async (t) => {
+    const h = setup(t);
+    const devin = await h.started();
+    Object.assign(devin, { status: 'running', status_detail: detail });
+    h.devin.say(devin, MARKED);
+    await h.tick();
+    const posted = h.shortcut.activities().find((a) => a.key === key);
+    assert.equal(posted.content.type, type);
+    assert.equal(posted.content.body, type === 'thought' ? UNMARKED : `${UNMARKED}\n\n[Open in Devin](${devin.url})`);
+  });
+}
+
+it('drops nested, repeated, and multi-line markup, and leaves every other bracket as written', async (t) => {
+  const h = setup(t);
+  const devin = await h.started();
+  Object.assign(devin, { status: 'running', status_detail: 'working' });
+  const untouched = (text) => [text, text];
+  const cases = [
+    ['[OUTER][INNER]nested[/INNER][/OUTER]', 'nested'],
+    ['[A]one[/A] and [A]two[/A]', 'one and two'],
+    ['[NOTE]line one\nline two[/NOTE]', 'line one\nline two'],
+    untouched('[OFFER_TEST_APP]never closed'),
+    untouched('a stray [/OFFER_TEST_APP] closer'),
+    untouched('[A]closed by another[/B]'),
+    untouched('see [the docs](https://example.com/docs) and `[key]` and [TODO]'),
+    untouched('[lower]case[/lower] and [Mixed_Case]name[/Mixed_Case]'),
+  ];
+  for (const [message, expected] of cases) {
+    h.devin.say(devin, message);
+    await h.tick();
+    const thoughts = h.shortcut.activities().filter((a) => a.key.includes(':message:'));
+    assert.equal(thoughts[thoughts.length - 1].content.body, expected, message);
+  }
+  assert.equal(h.shortcut.activities().filter((a) => a.key.includes(':message:')).length, cases.length);
+});

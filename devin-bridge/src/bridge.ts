@@ -412,9 +412,17 @@ export const isFinal = (devinState: DevinState) => devinState.kind === 'failed' 
 
 const sameState = (a: DevinState, b: DevinState) => JSON.stringify(a) === JSON.stringify(b);
 
+// Devin's app renders [NAME]…[/NAME] as UI, such as a button, and Shortcut would show the tags as written.
+const UI_MARKUP = /\[([A-Z_]+)\]([\s\S]*?)\[\/\1\]/g;
+
+function unmarked(text: string): string {
+  const inner = text.replace(UI_MARKUP, '$2');
+  return inner === text ? text : unmarked(inner);
+}
+
 // What Devin said after the relayed reply, so the previous turn's answer never becomes this turn's.
 function spoken(messages: DevinMessage[], relayed: Relayed | null): DevinMessage[] {
-  const devins = (list: DevinMessage[]) => list.filter((m) => m.source === 'devin');
+  const devins = (list: DevinMessage[]) => list.filter((m) => m.source === 'devin').map((m) => ({ ...m, body: unmarked(m.body) }));
   if (relayed === null) return devins(messages);
   const { last } = relayed.baseline;
   const at = last === null ? -1 : messages.findIndex((m) => m.id === last);
