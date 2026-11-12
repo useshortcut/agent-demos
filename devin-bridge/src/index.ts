@@ -133,7 +133,7 @@ app.post('/webhook', async (c) => {
 
   let payload;
   try {
-    ({ payload } = await new ShortcutWebhookClient(c.env.WEBHOOK_SECRET, { allowLegacySignature: false }).verifyBody(rawBody, c.req.raw.headers));
+    ({ payload } = await new ShortcutWebhookClient(c.env.WEBHOOK_SECRET).verifyBody(rawBody, c.req.raw.headers));
   } catch (error) {
     if (!(error instanceof ShortcutWebhookError)) throw error;
     if (error.status === 401) {

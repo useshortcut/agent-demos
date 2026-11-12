@@ -315,7 +315,7 @@ export function setup(t) {
   return h;
 }
 
-// Shortcut's headers without the deprecated Payload-Signature, as sc-322342 will send them.
+// Shortcut's headers without the deprecated Payload-Signature, as Shortcut sends them since sc-322342.
 export function shortcutHeaders(body, secret, timestamp = String(Math.floor(Date.now() / 1000))) {
   const delivery = JSON.parse(body).id ?? 'test-delivery';
   const signature = createHmac('sha256', secret).update(`${timestamp}.${delivery}.`).update(body).digest('hex');
