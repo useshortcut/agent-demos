@@ -4,11 +4,11 @@ This file provides guidance to coding agents when working with code in this repo
 
 ## What this repo is
 
-Reference implementations for Shortcut Custom Agents — web services that receive signed webhooks from a Shortcut workspace and call back into the Shortcut v4 API. Each demo lives in its own top-level directory with its own `package.json` and README, and is meant to be small, readable end to end, and focused on one idea (per the root README's contributing note — not production-ready).
+Reference implementations for Shortcut Open Agents — web services that receive signed webhooks from a Shortcut workspace and call back into the Shortcut v4 API. Each demo lives in its own top-level directory with its own `package.json` and README, and is meant to be small, readable end to end, and focused on one idea (per the root README's contributing note — not production-ready).
 
 - `estimate-guardian/` — observer-only agent: blocks stories from being started without an Estimate (comments at the mover, reverts the state).
 - `quote-agent/` — interaction-triggered agent: posts a random quote when assigned, @-mentioned, or replied to. Shows the full lifecycle including threaded replies.
-- `docs/custom-agents.md` — the platform reference: payload shapes (observer vs. interaction envelopes), trigger semantics, review lifecycle. Read this before touching webhook-handling code.
+- `docs/open-agents.md` — the platform reference: payload shapes (observer vs. interaction envelopes), trigger semantics, review lifecycle. Read this before touching webhook-handling code.
 - `devin-bridge/` — agent-session agent: relays each Shortcut agent session (`session.created`, `session.prompted`, stop) to a Devin v3 session and publishes progress, questions, and outcomes as idempotent activities. A `Workspace` SQLite Durable Object owns credentials and serializes refresh. A `Session` object per Shortcut session runs an inbox, an outbox, and an alarm loop over the pure state machine in `src/bridge.ts`. No KV. See its README.
 - `team-cop/` — observer agent that comments when stories are created or started without a Team. Uses a SQLite Durable Object for credentials, receipts, and capped alarm retries. Plain JavaScript, no Hono or KV; run `npm test`, `npm run dev`, and `npm run deploy:check` from its directory. The Hono/KV conventions below apply to Quote Agent and Estimate Guardian. Devin Bridge uses Hono but no KV, and its README documents its commands, secrets, and state machine.
 

@@ -4,7 +4,7 @@ A Cloudflare Worker that joins Shortcut's agent sessions to [Devin](https://devi
 
 It is a reference demo of a third-party agent on the agent-session protocol, not an official Devin integration. It uses one Devin organization and API key for every connected workspace, so anyone who can mention it can direct Devin at that organization's repositories. It serves only the workspaces listed in `ALLOWED_WORKSPACE_IDS`. Shortcut shows an unapproved agent app to every workspace in your organization, so the list is what keeps other workspaces off your Devin organization.
 
-For the platform itself (OAuth, webhooks, app review), see [docs/custom-agents.md](../docs/custom-agents.md).
+For the platform itself (OAuth, webhooks, app review), see [docs/open-agents.md](../docs/open-agents.md).
 
 ## What it does
 

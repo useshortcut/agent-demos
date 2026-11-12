@@ -1,8 +1,8 @@
 # Quote Agent
 
-A Cloudflare Worker that shows the interaction side of Shortcut Custom Agents. Installed in a workspace, it posts a random quote as a comment whenever someone assigns it a story or epic, @-mentions it, or replies to one of its comments.
+A Cloudflare Worker that shows the interaction side of Shortcut Open Agents. Installed in a workspace, it posts a random quote as a comment whenever someone assigns it a story or epic, @-mentions it, or replies to one of its comments.
 
-For the platform itself (payload shapes, triggers, app review), see [docs/custom-agents.md](../docs/custom-agents.md).
+For the platform itself (payload shapes, triggers, app review), see [docs/open-agents.md](../docs/open-agents.md).
 
 ## What it does
 
