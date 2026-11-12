@@ -32,7 +32,7 @@ export function safeDisplayName(name) {
 // keeps a pooled Buffer's neighbours out of the digest.
 export async function verifyWebhookSignature(rawBody, headers, secret) {
   const bytes = typeof rawBody === "string" ? rawBody : new Uint8Array(rawBody);
-  return (await verifyShortcutWebhookHeaders(secret, bytes, headers, { allowLegacySignature: false })).verified;
+  return (await verifyShortcutWebhookHeaders(secret, bytes, headers)).verified;
 }
 
 function processedKey(payload, action, reason) {
