@@ -4,7 +4,7 @@ A Shortcut observer agent that comments when a story is **created or started wit
 
 > @name Stories need to be in a Team! Please add one!
 
-It addresses whoever created or started the story, comments at most once per story, and never changes the workflow state. For a rule that does move stories back, see [Estimate Guardian](../estimate-guardian). For the platform itself, see [docs/custom-agents.md](../docs/custom-agents.md).
+It addresses whoever created or started the story, comments at most once per story, and never changes the workflow state. For a rule that does move stories back, see [Estimate Guardian](../estimate-guardian). For the platform itself, see [docs/open-agents.md](../docs/open-agents.md).
 
 ## How it works
 

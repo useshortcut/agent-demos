@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/useshortcut/agent-demos/actions/workflows/ci.yml/badge.svg)](https://github.com/useshortcut/agent-demos/actions/workflows/ci.yml)
 
-Reference implementations for [Shortcut Custom Agents](https://shortcut.com), the platform for building agents that live inside a Shortcut workspace.
+Reference implementations for [Shortcut Open Agents](https://shortcut.com), the platform for building agents that live inside a Shortcut workspace.
 
 An agent is a web service you own. Shortcut sends it signed webhooks when something happens in the workspace, or when someone assigns it a story, @-mentions it, or replies to one of its comments. The agent calls back into the Shortcut API to do its work. These demos are small, complete examples of that loop.
 
@@ -17,7 +17,7 @@ An agent is a web service you own. Shortcut sends it signed webhooks when someth
 
 ## Docs
 
-- [Custom Agents overview](./docs/custom-agents.md): concepts, payload shapes, interaction triggers, and the app review lifecycle.
+- [Shortcut Open Agents overview](./docs/open-agents.md): concepts, payload shapes, interaction triggers, and the app review lifecycle.
 - [`@shortcut/client`](https://github.com/useshortcut/shortcut-client-js): the official JavaScript client. `@shortcut/client/v4` covers the API, the agent OAuth flow, and token refresh; `@shortcut/client/webhooks` verifies deliveries and types their payloads. Every demo uses it.
 - [Shortcut REST API](https://developer.shortcut.com/api/rest/v3): the full API reference.
 

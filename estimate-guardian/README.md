@@ -8,7 +8,7 @@ When someone moves an unestimated story into a started state, Estimate Guardian 
 
 It warns once per story. An estimate of 0 counts as estimated. Removing the estimate from a started story also triggers the check. This is a webhook rule, not a block in the UI, so the story does move for a moment before it bounces back.
 
-For Team reminders that never change state, see [Team Cop](../team-cop). For the platform itself (payload shapes, triggers, app review), see [docs/custom-agents.md](../docs/custom-agents.md).
+For Team reminders that never change state, see [Team Cop](../team-cop). For the platform itself (payload shapes, triggers, app review), see [docs/open-agents.md](../docs/open-agents.md).
 
 ## How it works
 
