@@ -13,8 +13,8 @@ export type Identity = {
   linkLabel: string;
 };
 
-/** A backend session the bridge knows. `memo` is the adapter's own durable state: the core saves it with the phase and hands it back, and never reads it. */
-export type Conversation<M> = { id: string; url: string; memo: M };
+/** A backend session the bridge knows. `url` is null when the backend has no page for one session. `memo` is the adapter's own durable state: the core saves it with the phase and hands it back, and never reads it. */
+export type Conversation<M> = { id: string; url: string | null; memo: M };
 
 /** What a stop or a retirement acts on: a conversation, or whatever an interrupted open made under a key. */
 export type Target<M> =

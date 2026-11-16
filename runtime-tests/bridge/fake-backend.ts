@@ -21,7 +21,7 @@ export type Call = 'open' | 'prepare' | 'send' | 'observe' | 'halt';
 /** One conversation at the fake vendor. A test reads it, and sets `status` and `gone` to script what the bridge sees next. */
 export type Chat = {
   id: string;
-  url: string;
+  url: string | null;
   key: string;
   /** The text the open carried. */
   opened: string;
@@ -40,6 +40,11 @@ export type Script = ReturnType<typeof script>;
 export function script(log: unknown[]) {
   const chats: Chat[] = [];
   const failures: { call: Call; error: Error; landed: boolean }[] = [];
+  /** What this backend is like. A test changes one before the call it bears on. */
+  const facts = {
+    /** A chat has a page of its own to link. */
+    linked: true,
+  };
   let ids = 0;
 
   function attempt<T>(call: Call, path: string, run: () => T): T {
@@ -64,7 +69,7 @@ export function script(log: unknown[]) {
     async open({ key, text }) {
       return attempt('open', key, () => {
         const n = chats.length + 1;
-        const chat = chats.find((candidate) => candidate.key === key) ?? { id: `chat-${n}`, url: `https://fake.example/chats/${n}`, key, opened: text, received: [], said: [], status: { kind: 'working' }, gone: false, halted: false };
+        const chat = chats.find((candidate) => candidate.key === key) ?? { id: `chat-${n}`, url: facts.linked ? `https://fake.example/chats/${n}` : null, key, opened: text, received: [], said: [], status: { kind: 'working' }, gone: false, halted: false };
         if (!chats.includes(chat)) chats.push(chat);
         return { conversation: conversation(chat), duplicates: [] };
       });
@@ -104,6 +109,7 @@ export function script(log: unknown[]) {
 
   return {
     backend,
+    facts,
     chats,
     only(): Chat {
       if (chats.length !== 1) throw new Error(`expected exactly one chat at the fake backend, found ${chats.length}`);

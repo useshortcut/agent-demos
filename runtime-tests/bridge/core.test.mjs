@@ -54,6 +54,8 @@ it('opens one conversation for a session, however often its event is delivered, 
     ['fake-bridge:1:message:said-1', 'thought', 'Looking into it'],
     ['fake-bridge:1:response', 'response', 'Fixed it'],
   ]);
+  assert.deepEqual(h.shortcut.sessions.get(SID).external_urls, [{ label: 'Open in Fake', url: chat.url }]);
+  assert.equal(h.bodies('response')[0], `Fixed it\n\n[Open in Fake](${chat.url})`);
   assert.equal(await h.alarmIn(), null);
   h.assertCleanLogs();
 });
@@ -73,5 +75,53 @@ it('waits out a hold without spending a strike, however many arrive in a row', a
   await h.tick();
   assert.deepEqual(chat.received, ['Also fix Firefox']);
   assert.equal(h.calls('prepare').length, 1, 'a held send is not prepared again');
+  h.assertCleanLogs();
+});
+
+it('writes no link text and sets no card link for a conversation without a URL, whatever the turn ends in', async (t) => {
+  const h = setup(t);
+  h.fake.facts.linked = false;
+  const chat = await h.started();
+  assert.equal(chat.url, null);
+  h.fake.say(chat, 'Looking into it');
+  await h.tick();
+  h.fake.say(chat, 'Which browser?');
+  chat.status = { kind: 'asked', on: 'user' };
+  await h.tick();
+  assert.equal(await h.alarmIn(), null, 'a handed-back turn waits on nothing, a link included');
+
+  await h.accept(h.shortcut.prompt(SID, 'Safari'));
+  await h.tick();
+  h.fake.say(chat, 'Fixed it');
+  chat.status = { kind: 'finished' };
+  await h.tick();
+
+  await h.accept(h.shortcut.prompt(SID, 'And Firefox?'));
+  await h.tick();
+  chat.status = { kind: 'failed', body: 'The Fake session ran out of budget.', keep: true };
+  await h.tick();
+
+  await h.accept(h.shortcut.prompt(SID, 'Anyone there?'));
+  await h.tick();
+  chat.status = { kind: 'pending' };
+  for (let i = 0; i < 20 && h.bodies('error').length < 2; i++) await h.tick();
+
+  await h.accept(h.shortcut.prompt(SID, 'Once more'));
+  await h.tick();
+  await h.accept(h.shortcut.stop(SID));
+  await h.tick();
+
+  assert.deepEqual(h.shortcut.activities().filter((a) => !a.key.endsWith(':ack')).map((a) => [a.content.type, a.content.body]), [
+    ['thought', 'Looking into it'],
+    ['elicitation', 'Which browser?'],
+    ['response', 'Fixed it'],
+    ['error', 'The Fake session ran out of budget.'],
+    ['error', 'Fake did not pick up your reply. Reply to try again.'],
+    ['response', 'Stopped.'],
+  ]);
+  assert.deepEqual(chat.received, ['Safari', 'And Firefox?', 'Anyone there?', 'Once more']);
+  assert.deepEqual(h.requests.filter((r) => r.method === 'PATCH'), [], 'the card link is never written');
+  assert.deepEqual(h.shortcut.sessions.get(SID).external_urls, []);
+  assert.equal(await h.alarmIn(), null);
   h.assertCleanLogs();
 });

@@ -58,7 +58,7 @@ export type SessionState = {
   phase: Phase;
   /** Conversations the bridge gave up and still has to halt. */
   retire: Held[];
-  /** The conversation URL last set, or given up, on the session card. A phase link that differs is still to be set. */
+  /** The conversation URL last set, or given up, on the session card. A phase link that differs is still to be set. A conversation without a URL has no link to set. */
   linked: string | null;
   outbox: Activity[];
   /** Consecutive failures per job. Each resets on its own success. */
@@ -134,6 +134,9 @@ function contextOf(event: ShortcutSessionEventPayload): string {
 }
 
 const joined = (...parts: string[]) => parts.filter(Boolean).join('\n\n');
+
+/** The body with the conversation's link after it, or alone when the conversation has none. */
+const linkedBody = (body: string, link: string) => (link ? `${body} ${link}` : body);
 
 const turnOf = (event: ShortcutSessionEventPayload) => event.activity?.turn ?? event.session.turn;
 
@@ -399,7 +402,7 @@ export function stopped(state: SessionState, phase: StopPhase, halted: Halted): 
 export function observed(state: SessionState, phase: PollPhase, { memo, said, status }: Observed<Memo>, now: number): SessionState {
   const unposted = said.slice(said.findIndex((m) => m.id === phase.posted) + 1);
   const last = said[said.length - 1] ?? null;
-  const link = `[${identity.linkLabel}](${phase.on.url})`;
+  const link = phase.on.url ? `[${identity.linkLabel}](${phase.on.url})` : '';
   const current: PollPhase = { ...phase, on: { ...phase.on, memo } };
   const quiet = (beat: boolean): SessionState => {
     const next = later(current, Math.min(MAX_DELAY_MS, phase.delayMs * 2), now);
@@ -411,7 +414,7 @@ export function observed(state: SessionState, phase: PollPhase, { memo, said, st
   switch (status.kind) {
     case 'pending':
       if (now - phase.sentAt < PICKUP_TIMEOUT_MS) return quiet(false);
-      return fail(state, `${identity.name} did not pick up your reply. Reply to try again. ${link}`, true);
+      return fail(state, linkedBody(`${identity.name} did not pick up your reply. Reply to try again.`, link), true);
     case 'working': {
       if (unposted.length === 0) return quiet(true);
       const latest = unposted[unposted.length - 1];
@@ -428,9 +431,9 @@ export function observed(state: SessionState, phase: PollPhase, { memo, said, st
       return enqueue({ ...state, phase: later({ ...current, asked: suffix, posted: last?.id ?? current.posted, heartbeatAt: now + HEARTBEAT_MS }, FIRST_POLL_MS, now) }, asked);
     }
     case 'finished':
-      return enqueue({ ...state, phase: { kind: 'idle', on: current.on } }, activity(state, 'response', 'response', last?.text || `${identity.name} finished.`, status.footer ? `${status.footer}\n\n${link}` : link));
+      return enqueue({ ...state, phase: { kind: 'idle', on: current.on } }, activity(state, 'response', 'response', last?.text || `${identity.name} finished.`, joined(status.footer ?? '', link)));
     case 'failed':
-      return fail(state, `${status.body} ${link}`, status.keep);
+      return fail(state, linkedBody(status.body, link), status.keep);
   }
 }
 
@@ -468,7 +471,7 @@ export function plan(state: SessionState, now: number): Due[] {
   if (phase.kind === 'stop') due.push({ effect: 'halt', phase, at: at(notBefore.backend) });
   if (state.retire.length) due.push({ effect: 'retire', at: at(notBefore.backend, notBefore.retire) });
   if (state.outbox.length) due.push({ effect: 'publish', at: at(notBefore.shortcut) });
-  if (on && on.url !== state.linked) due.push({ effect: 'link', url: on.url, at: at(notBefore.shortcut, notBefore.link) });
+  if (on && on.url !== null && on.url !== state.linked) due.push({ effect: 'link', url: on.url, at: at(notBefore.shortcut, notBefore.link) });
   if (phase.kind === 'poll' && phase.check) due.push({ effect: 'check', phase, at: at(notBefore.shortcut, phase.at) });
   if (phase.kind === 'start' || phase.kind === 'relay') due.push({ effect: 'act', phase, at: at(notBefore.backend) });
   if (phase.kind === 'poll') due.push({ effect: 'act', phase, at: at(notBefore.backend, phase.at) });
