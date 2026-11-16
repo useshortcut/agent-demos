@@ -175,7 +175,7 @@ const { upgradeState }: BackendModule<Memo, BackendEnv> = adapter;
 async function load(storage: DurableObjectStorage, sessionId: string): Promise<SessionState | null> {
   const stored = await storage.get<SessionState | FirstPortState | { v?: undefined }>('state');
   if (stored === undefined) return null;
-  const known = stored.v === 2 ? stored : upgradeState?.(stored) ?? null;
+  const known = stored.v === 2 || stored.v === 3 ? stored : upgradeState?.(stored) ?? null;
   if (known !== null) return restored(known);
   console.warn(`${identity.title} dropped a stored session state of an older shape`, { sessionId });
   await storage.delete('state');

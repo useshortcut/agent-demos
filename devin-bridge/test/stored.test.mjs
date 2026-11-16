@@ -262,6 +262,14 @@ if (RECORD_FROM) {
     assert.ok(sends.every((send) => 'late' in send && !('key' in send)), 'every prepared send has a `late` and no key');
   });
 
+  it('saves a state the first port stored under today\'s tag, with one owner for the context, at its next step', async (t) => {
+    const [scenario] = scenarios;
+    const [resume] = fixtures[scenario.name];
+    const { h } = await run(t, scenario, resume);
+    const state = h.env.SESSIONS.storages.get(SID).data.get('state');
+    assert.deepEqual([state.v, 'briefing' in state, 'late' in state], [3, true, false]);
+  });
+
   for (const scenario of scenarios) {
     it(`continues from each state the first port stored as if it had stored it itself: ${scenario.name}`, async (t) => {
       let whole;

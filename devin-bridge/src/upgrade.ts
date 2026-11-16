@@ -1,10 +1,10 @@
 import type { Memo } from './backend';
 import type { Activity, FirstPortState, Pending } from './core/bridge';
+import type { DevinState } from './devin';
+import type { Conversation, Target } from './core/port';
 
 type Phase = FirstPortState['phase'];
 type Send = NonNullable<Extract<Phase, { kind: 'relay' }>['send']>;
-import type { DevinState } from './devin';
-import type { Conversation, Target } from './core/port';
 
 type Fields = Record<string, unknown>;
 
@@ -129,7 +129,7 @@ function jobs<T>(value: unknown, read: (value: unknown) => T) {
   return { backend: read(devin), shortcut: read(shortcut), retire: read(retire), link: read(link) };
 }
 
-/** A state stored before the backend port, in the shape the first port stored, or null for anything else. */
+/** Reads a state stored before the backend port, which has no `v`, field by field into the shape the first port stored. Null when a field is not what that code stored. */
 export function upgradeState(stored: unknown): FirstPortState | null {
   try {
     const state = fields(stored);

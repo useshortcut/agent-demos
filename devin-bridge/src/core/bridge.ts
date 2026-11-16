@@ -49,8 +49,8 @@ export type StopPhase = Extract<Phase, { kind: 'stop' }>;
 export type Job = 'backend' | 'shortcut' | 'retire' | 'link';
 
 export type SessionState = {
-  /** A stored state without it has an earlier shape. */
-  v: 2;
+  /** Names this shape among the ones a deployed bridge can hold. `FirstPortState` is 2, and a state from before the backend port has none. */
+  v: 3;
   shortcutSessionId: string;
   workspaceId: string;
   entity: { type: string; id: number };
@@ -94,8 +94,8 @@ export type SessionState = {
  * three places: `late`, the `late` of a prepared send, and the text of an
  * `opening` request, which ended with the context. Its sends had no key.
  */
-export type FirstPortState = Omit<SessionState, 'briefing' | 'phase'> & {
-  briefing?: undefined;
+export type FirstPortState = Omit<SessionState, 'v' | 'briefing' | 'phase'> & {
+  v: 2;
   late: Pending | null;
   phase:
     | { kind: 'start'; prompt: Pending[]; extra: Pending[]; attempted: boolean }
@@ -139,14 +139,14 @@ export const sendKey = (state: Pick<SessionState, 'shortcutSessionId' | 'generat
  * then waited to follow as a message.
  */
 export function restored(stored: SessionState | FirstPortState): SessionState {
-  if (stored.briefing !== undefined) return stored;
-  const { late, phase, ...rest } = stored;
+  if (stored.v === 3) return stored;
+  const { v, late, phase, ...rest } = stored;
   const block = stored.context && contextBlock(stored.context);
   const under = `\n\n${block}`;
   const bare = (reply: Pending): Pending => (!reply.opening || !block ? reply : { ...reply, text: reply.text === block ? '' : reply.text.endsWith(under) ? reply.text.slice(0, -under.length) : reply.text });
   const requests = (waiting: Pending[]) => waiting.map(bare).filter((reply) => reply.text !== '');
   const carried = (waiting: Pending[]) => block !== '' && waiting.some((reply) => reply.opening);
-  const state = (briefing: SessionState['briefing'], current: Phase): SessionState => ({ ...rest, briefing, phase: current });
+  const state = (briefing: SessionState['briefing'], current: Phase): SessionState => ({ ...rest, v: 3, briefing, phase: current });
   switch (phase.kind) {
     case 'start': {
       // A start that replaces a conversation that ended took over what waited for it, so its prompt can hold the opening request too.
@@ -265,7 +265,7 @@ export const retiring = (state: SessionState): SessionState => {
 function initial(event: ShortcutSessionEventPayload): SessionState {
   const { session } = event;
   const state: SessionState = {
-    v: 2,
+    v: 3,
     shortcutSessionId: session.id,
     workspaceId: event.workspace_id,
     entity: { type: session.entity_type, id: session.entity_id },
