@@ -17,6 +17,7 @@ export { Session } from './session';
 export { Workspace } from './workspace';
 
 backend satisfies BackendModule<backend.Memo, backend.BackendEnv>;
+const { title } = backend.identity;
 
 type ShortcutEnv = {
   WORKSPACES: DurableObjectNamespace;
@@ -68,7 +69,7 @@ async function readBody(request: Request): Promise<Uint8Array | null> {
 
 const app = new Hono<{ Bindings: Env }>();
 app.onError((_error, c) => {
-  console.error('Devin Bridge request failed', { method: c.req.method, path: c.req.path });
+  console.error(`${title} request failed`, { method: c.req.method, path: c.req.path });
   return c.text('Request failed. Check Worker logs.', 500);
 });
 app.use('/oauth/callback', async (c, next) => {
@@ -82,7 +83,7 @@ app.use('/webhook', async (c, next) => {
 
 app.get('/oauth/callback', async (c) => {
   if (c.req.query('error')) {
-    console.error('Devin Bridge OAuth authorization rejected');
+    console.error(`${title} OAuth authorization rejected`);
     return c.html(
       `<h2>&#10060; Authorization failed</h2>
        <p>Please close this tab and try connecting again.</p>`,
@@ -102,7 +103,7 @@ app.get('/oauth/callback', async (c) => {
 
   const workspaceId = tokens.workspace2_id;
   if (!workspaceAllowed(c.env, workspaceId)) {
-    console.warn('Devin Bridge refused a workspace that is not in ALLOWED_WORKSPACE_IDS', { workspaceId });
+    console.warn(`${title} refused a workspace that is not in ALLOWED_WORKSPACE_IDS`, { workspaceId });
     return c.html(
       html`<h2>This workspace is not allowed</h2>
        <p>Add <code>${workspaceId}</code> to the worker's <code>ALLOWED_WORKSPACE_IDS</code> secret, then click Activate again.</p>`,
@@ -112,9 +113,9 @@ app.get('/oauth/callback', async (c) => {
   const credentials = credentialsFromTokens(tokens);
   await storeCredentials(c.env, workspaceId, credentials);
   const sessionsEnabled = (await shortcutSessions(c.env, workspaceId, credentials).ensureSubscribed()).kind === 'ok';
-  console.log('Devin Bridge connected', { workspaceId, scopes: credentials.scopes ?? 'unknown', sessionsEnabled });
+  console.log(`${title} connected`, { workspaceId, scopes: credentials.scopes ?? 'unknown', sessionsEnabled });
   if (credentials.scopes && !['read', 'write'].every((scope) => credentials.scopes?.includes(scope))) {
-    console.warn('Devin Bridge needs the Read and Write scopes', { workspaceId, scopes: credentials.scopes });
+    console.warn(`${title} needs the Read and Write scopes`, { workspaceId, scopes: credentials.scopes });
   }
   if (!sessionsEnabled) {
     return c.html(
@@ -149,15 +150,15 @@ app.post('/webhook', async (c) => {
 
   if (isShortcutValidationPayload(payload)) return c.json({ ok: true });
   if (!isShortcutSessionEventPayload(payload)) return c.json({ ok: true, ignored: true });
-  // A stop still reaches its session, so a workspace taken off the list can end the Devin sessions it started.
+  // A stop still reaches its session, so a workspace taken off the list can end the sessions it started.
   if (!workspaceAllowed(c.env, payload.workspace_id) && !isStop(payload)) {
-    console.warn('Devin Bridge ignored an event from a workspace that is not in ALLOWED_WORKSPACE_IDS', { workspaceId: payload.workspace_id });
+    console.warn(`${title} ignored an event from a workspace that is not in ALLOWED_WORKSPACE_IDS`, { workspaceId: payload.workspace_id });
     return c.json({ ok: true, ignored: true });
   }
   const session = c.env.SESSIONS.get(c.env.SESSIONS.idFromName(payload.session.id));
   return session.fetch(new Request('https://session/event', { method: 'POST', body: JSON.stringify(payload) }));
 });
 
-app.get('/', (c) => c.json({ status: 'ok', service: 'Shortcut Devin Bridge' }));
+app.get('/', (c) => c.json({ status: 'ok', service: `Shortcut ${title}` }));
 
 export default app;

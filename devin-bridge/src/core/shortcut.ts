@@ -26,7 +26,7 @@ export type Credentials = {
 const REQUEST_TIMEOUT_MS = 15_000;
 const TOKEN_PATH = '/oauth-authorization-code-flow/token';
 
-/** Every connected workspace spends this deployment's Devin organization, so only listed workspaces are served. */
+/** Every connected workspace spends this deployment's backend account, so only listed workspaces are served. */
 export const workspaceAllowed = (env: Env, workspaceId: string) =>
   workspaceId !== '' && (env.ALLOWED_WORKSPACE_IDS ?? '').split(',').map((id) => id.trim()).includes(workspaceId);
 
