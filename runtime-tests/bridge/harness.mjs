@@ -174,10 +174,16 @@ function mockShortcut(log) {
 const clocks = new WeakSet();
 
 // This file sits outside every demo, so esbuild comes from the bridge at `root`.
-export async function bridgeHarness({ root, secrets, sensitive, vendor }) {
+// `backend` is a module that takes the place of the bridge's src/backend.ts.
+// The bundle then also exports it as `backend`, and the core's `BackendError`,
+// which a stand-in outside the demo cannot import.
+export async function bridgeHarness({ root, secrets, sensitive, vendor, backend = null }) {
   const { build } = createRequire(new URL('package.json', root))('esbuild');
-  const source = await readFile(new URL('src/index.ts', root), 'utf8');
-  const compiled = await build({ stdin: { contents: source, resolveDir: fileURLToPath(new URL('src', root)), loader: 'ts' }, bundle: true, format: 'esm', platform: 'node', external: ['cloudflare:workers'], write: false });
+  const index = await readFile(new URL('src/index.ts', root), 'utf8');
+  const standIn = backend && fileURLToPath(backend);
+  const source = standIn ? `${index}\nexport { BackendError } from './core/port';\nexport * as backend from ${JSON.stringify(standIn)};\n` : index;
+  const swap = { name: 'backend', setup: (bundle) => bundle.onResolve({ filter: /^\.\.\/backend$/ }, () => ({ path: standIn })) };
+  const compiled = await build({ stdin: { contents: source, resolveDir: fileURLToPath(new URL('src', root)), loader: 'ts' }, bundle: true, format: 'esm', platform: 'node', external: ['cloudflare:workers'], write: false, plugins: standIn ? [swap] : [] });
   const mod = await import(`data:text/javascript;base64,${Buffer.from(`${compiled.outputFiles[0].text}\n//# sourceURL=${basename(fileURLToPath(root))}-test-bundle.mjs`).toString('base64')}`);
   const SECRETS = { CLIENT_ID: 'client', CLIENT_SECRET: 'private-client', WEBHOOK_SECRET: 'private-signing', REDIRECT_URI: 'https://bridge.example/oauth/callback',
     ...secrets, ALLOWED_WORKSPACE_IDS: 'other-workspace, workspace' };
