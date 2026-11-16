@@ -32,10 +32,10 @@ import {
   type SessionState,
   type StopPhase,
 } from './bridge';
-import { connect as backendOf, identity, type Memo } from './backend';
-import * as adapter from './backend';
+import { connect as backendOf, identity, type Memo } from '../backend';
+import * as adapter from '../backend';
 import { BackendError, type Backend, type BackendFailure, type Halted } from './port';
-import type { Env } from './index';
+import type { Env } from './app';
 import { loadCredentials, shortcutSessions, workspaceAllowed, type Outcome, type ShortcutSessions } from './shortcut';
 
 type Save = (state: SessionState) => Promise<void>;

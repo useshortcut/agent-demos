@@ -1,5 +1,5 @@
 import { ShortcutOAuthError } from '@shortcut/client/v4';
-import type { Env } from './index';
+import type { Env } from './app';
 import { credentialsFromTokens, logFailure, oauthClient, type Credentials } from './shortcut';
 
 // Shortcut rotates the refresh token on every refresh, and every session in a

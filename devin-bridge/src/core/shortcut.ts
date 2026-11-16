@@ -12,7 +12,7 @@ import {
 import type { ShortcutAgentSession, ShortcutAgentSessionExternalUrl } from '@shortcut/client/webhooks';
 import type { Activity } from './bridge';
 import { retryAfterMs } from './http';
-import type { Env } from './index';
+import type { Env } from './app';
 
 export type Credentials = {
   token: string;

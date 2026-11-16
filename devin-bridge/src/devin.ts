@@ -1,4 +1,4 @@
-import { BackendError, failureOf } from './port';
+import { BackendError, failureOf } from './core/port';
 
 export type DevinConfig = { apiKey: string; orgId: string; baseUrl?: string };
 

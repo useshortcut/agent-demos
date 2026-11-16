@@ -1,5 +1,5 @@
 import type { ShortcutSessionEventPayload, ShortcutSessionPromptedPayload } from '@shortcut/client/webhooks';
-import { identity, type Memo } from './backend';
+import { identity, type Memo } from '../backend';
 import type { Conversation, Halted, Observed, Opened, Target } from './port';
 
 export type Activity = {

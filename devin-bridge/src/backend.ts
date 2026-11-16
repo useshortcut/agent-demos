@@ -1,5 +1,5 @@
 import { devinClient, type DevinMessage, type DevinSession, type DevinState } from './devin';
-import { BackendError, type Backend, type Conversation, type Identity, type Said, type Status } from './port';
+import { BackendError, type Backend, type Conversation, type Identity, type Said, type Status } from './core/port';
 
 export { upgradeState } from './upgrade';
 

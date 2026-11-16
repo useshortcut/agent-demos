@@ -206,7 +206,7 @@ it('forwards a stop from a workspace taken off the allowlist to its session, whi
 });
 
 it('keeps http.ts free of bridge imports', async () => {
-  const http = await readFile(new URL('../src/http.ts', import.meta.url), 'utf8');
+  const http = await readFile(new URL('../src/core/http.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(http, /from '\.\/bridge'/);
 });
 

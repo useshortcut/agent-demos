@@ -1,7 +1,7 @@
 import type { Memo } from './backend';
-import type { Activity, Pending, Phase, Send, SessionState } from './bridge';
+import type { Activity, Pending, Phase, Send, SessionState } from './core/bridge';
 import type { DevinState } from './devin';
-import type { Conversation, Target } from './port';
+import type { Conversation, Target } from './core/port';
 
 type Fields = Record<string, unknown>;
 
