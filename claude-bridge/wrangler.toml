@@ -1,0 +1,26 @@
+name = "shortcut-claude-bridge"
+main = "src/index.ts"
+compatibility_date = "2026-09-07"
+
+# Optional: the Claude Console workspace id of the API key, or "default", for
+# the card's Open in Claude Console link.
+# [vars]
+# CLAUDE_CONSOLE_WORKSPACE_ID = "default"
+
+# Created automatically on the first deploy; no namespace IDs to paste.
+[[durable_objects.bindings]]
+name = "WORKSPACES"
+class_name = "Workspace"
+
+[[durable_objects.bindings]]
+name = "SESSIONS"
+class_name = "Session"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Workspace", "Session"]
+
+[observability.logs]
+enabled = true
+# OAuth callback query strings contain authorization codes.
+invocation_logs = false

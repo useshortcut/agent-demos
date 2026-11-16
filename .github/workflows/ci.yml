@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        demo: [devin-bridge, estimate-guardian, quote-agent, team-cop]
+        demo: [claude-bridge, devin-bridge, estimate-guardian, quote-agent, team-cop]
     defaults:
       run:
         working-directory: ${{ matrix.demo }}
