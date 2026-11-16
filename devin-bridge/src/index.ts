@@ -8,6 +8,7 @@ import {
   isShortcutSessionEventPayload,
   isShortcutValidationPayload,
 } from '@shortcut/client/webhooks';
+import { secrets, type BackendEnv } from './backend';
 import { isStop } from './bridge';
 import { credentialsFromTokens, logFailure, oauthClient, shortcutSessions, storeCredentials, workspaceAllowed } from './shortcut';
 
@@ -21,16 +22,13 @@ export type Env = {
   CLIENT_SECRET: string;
   REDIRECT_URI: string;
   WEBHOOK_SECRET: string;
-  DEVIN_API_KEY: string;
-  DEVIN_ORG_ID: string;
   ALLOWED_WORKSPACE_IDS: string;
   SHORTCUT_API_BASE?: string;
-  DEVIN_API_BASE?: string;
-};
+} & BackendEnv;
 
 // Deliveries need no allowlist: an empty one allows no workspace, and a stop
 // still reaches the session it names, so clearing the list keeps cleanup working.
-const DELIVERY_SECRETS = ['CLIENT_ID', 'CLIENT_SECRET', 'WEBHOOK_SECRET', 'REDIRECT_URI', 'DEVIN_API_KEY', 'DEVIN_ORG_ID'] as const;
+const DELIVERY_SECRETS = ['CLIENT_ID', 'CLIENT_SECRET', 'WEBHOOK_SECRET', 'REDIRECT_URI', ...secrets] as const;
 const ALL_SECRETS = [...DELIVERY_SECRETS, 'ALLOWED_WORKSPACE_IDS'] as const;
 function configured(env: Env, keys: typeof ALL_SECRETS | typeof DELIVERY_SECRETS): boolean {
   return keys.every((key) => typeof env[key] === 'string' && env[key].trim() !== '');

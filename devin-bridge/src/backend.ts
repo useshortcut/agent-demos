@@ -1,7 +1,12 @@
 import { devinClient, type DevinMessage, type DevinSession, type DevinState } from './devin';
-import { BackendError, type Backend, type Conversation, type Said, type Status } from './port';
+import { BackendError, type Backend, type Conversation, type Identity, type Said, type Status } from './port';
+
+export const identity: Identity = { slug: 'devin-bridge', title: 'Devin Bridge', name: 'Devin', aSession: 'a Devin session', linkLabel: 'Open in Devin' };
 
 export type BackendEnv = { DEVIN_API_KEY: string; DEVIN_ORG_ID: string; DEVIN_API_BASE?: string };
+
+/** The names `/webhook` and `/oauth/callback` require, on top of the Shortcut ones. */
+export const secrets = ['DEVIN_API_KEY', 'DEVIN_ORG_ID'] as const;
 
 /** What Devin showed before a reply was sent. Until Devin acts on the reply, its status still describes the previous turn. */
 type Baseline = { last: string | null; status: DevinState };

@@ -1,19 +1,18 @@
 import type { ShortcutSessionEventPayload } from '@shortcut/client/webhooks';
 import {
-  LINK_LABEL,
   MAX_FAILURES,
   MAX_LOOKUPS,
   applyEvent,
   backoffMs,
   checked,
   close,
+  conversationKey,
   defer,
-  devinPrompt,
-  devinTag,
   dueAt,
   dueNow,
   endTurn,
   fail,
+  introduction,
   linked,
   live,
   observed,
@@ -33,7 +32,7 @@ import {
   type SessionState,
   type StopPhase,
 } from './bridge';
-import { connect as backendOf, type Memo } from './backend';
+import { connect as backendOf, identity, type Memo } from './backend';
 import { BackendError, type Backend, type BackendFailure, type Halted } from './port';
 import type { Env } from './index';
 import { loadCredentials, shortcutSessions, workspaceAllowed, type Outcome, type ShortcutSessions } from './shortcut';
@@ -54,7 +53,7 @@ const besidesDeadlines = (state: SessionState) => JSON.stringify({ ...state, not
 /** A job ran, changed nothing but a deadline, and was due again at once. */
 class StalledError extends Error {
   constructor() {
-    super('Devin Bridge step made no progress');
+    super(`${identity.title} step made no progress`);
     this.name = 'StalledError';
   }
 }
@@ -98,7 +97,7 @@ export class Session {
     try {
       await this.step();
     } catch (error) {
-      console.error('Devin Bridge step failed', { error: error instanceof Error ? error.name : typeof error, sessionId: this.ctx.id.name ?? String(this.ctx.id) });
+      console.error(`${identity.title} step failed`, { error: error instanceof Error ? error.name : typeof error, sessionId: this.ctx.id.name ?? String(this.ctx.id) });
       await this.ctx.storage.setAlarm(Date.now() + UNEXPECTED_RETRY_MS).catch(() => undefined);
     } finally {
       this.stepping = false;
@@ -129,7 +128,7 @@ export class Session {
   }
 
   // Each job's side effects are saved before the next job runs, so a step
-  // that dies mid-publish does not redo a Devin call. A stop's terminate and
+  // that dies mid-publish does not redo a backend call. A stop's halt and
   // retirement run before the Shortcut credentials are loaded.
   private async run(state: SessionState, save: Save): Promise<SessionState> {
     const backend = backendOf(this.env);
@@ -153,12 +152,12 @@ export class Session {
 
   private async connect(state: SessionState, backend: Backend<Memo>): Promise<Io | null> {
     if (!workspaceAllowed(this.env, state.workspaceId)) {
-      console.warn('Devin Bridge closed a session from a workspace that is not in ALLOWED_WORKSPACE_IDS', { workspaceId: state.workspaceId, sessionId: state.shortcutSessionId });
+      console.warn(`${identity.title} closed a session from a workspace that is not in ALLOWED_WORKSPACE_IDS`, { workspaceId: state.workspaceId, sessionId: state.shortcutSessionId });
       return null;
     }
     const credentials = await loadCredentials(this.env, state.workspaceId);
     if (!credentials) {
-      console.error('Devin Bridge has no credentials for the workspace', { workspaceId: state.workspaceId, sessionId: state.shortcutSessionId });
+      console.error(`${identity.title} has no credentials for the workspace`, { workspaceId: state.workspaceId, sessionId: state.shortcutSessionId });
       return null;
     }
     return { shortcut: shortcutSessions(this.env, state.workspaceId, credentials), backend, slug: credentials.slug };
@@ -180,7 +179,7 @@ async function execute(state: SessionState, due: Due, backend: Backend<Memo>, co
   }
 }
 
-// What a Devin failure costs. A 429 holds every Devin call until Retry-After.
+// What a backend failure costs. A hold stops every backend call until it passes.
 // A failure the job may retry spends one of its strikes and backs the job off
 // alone. Null once the budget is spent.
 function held(state: SessionState, failure: BackendFailure, job: 'backend' | 'retire', retry: boolean): SessionState | null {
@@ -189,7 +188,7 @@ function held(state: SessionState, failure: BackendFailure, job: 'backend' | 're
   return retry && strikes < MAX_FAILURES ? wait(strike(state, job, strikes), job, backoffMs(strikes)) : null;
 }
 
-// Devin failures of the phase's work land here. A 429 and a transient failure set a deadline; anything else ends the phase.
+// Backend failures of the phase's work land here. A hold and a transient failure set a deadline; anything else ends the phase.
 async function guarded(state: SessionState, run: () => Promise<SessionState>): Promise<SessionState> {
   try {
     return await run();
@@ -200,10 +199,10 @@ async function guarded(state: SessionState, run: () => Promise<SessionState>): P
     if (waiting) return waiting;
     const reset = succeeded(state, 'backend');
     if (state.phase.kind === 'stop') return stopped(retiring(reset), state.phase, { kind: 'ended', url: null });
-    if (failure.kind !== 'rejected') return fail(reset, 'Devin Bridge could not reach Devin. Reply to try again.', true);
+    if (failure.kind !== 'rejected') return fail(reset, `${identity.title} could not reach ${identity.name}. Reply to try again.`, true);
     // Auth failures are the bridge's, not the session's, so the next reply may still reach it.
     const keep = failure.status === 401 || failure.status === 403;
-    return fail(reset, `Devin rejected the request (HTTP ${failure.status}). ${keep ? 'Reply to try again.' : 'Reply to start a new Devin session.'}`, keep);
+    return fail(reset, `${identity.name} rejected the request (HTTP ${failure.status}). ${keep ? 'Reply to try again.' : `Reply to start a new ${identity.name} session.`}`, keep);
   }
 }
 
@@ -239,8 +238,8 @@ function shortcutFailed(state: SessionState): SessionState {
   return wait(strike(state, 'shortcut', count), 'shortcut', backoffMs(count));
 }
 
-// The phase's Devin work, and nothing else: a Shortcut call in here would lose
-// its deadline and strikes when a later Devin call failed, since `guarded`
+// The phase's backend work, and nothing else: a Shortcut call in here would
+// lose its deadline and strikes when a later backend call failed, since `guarded`
 // keeps the state the job started from.
 async function perform(state: SessionState, phase: ActPhase, { backend, slug }: Io): Promise<SessionState> {
   switch (phase.kind) {
@@ -252,9 +251,9 @@ async function perform(state: SessionState, phase: ActPhase, { backend, slug }: 
       // so replies that arrived meanwhile are relayed rather than folded into
       // the opening text.
       const opened = await backend.open({
-        key: devinTag(state.shortcutSessionId, state.generation),
+        key: conversationKey(state.shortcutSessionId, state.generation),
         title: `Shortcut ${state.entity.type} ${state.entity.id}`,
-        text: devinPrompt(state, promptText(phase.prompt), slug),
+        text: introduction(state, promptText(phase.prompt), slug),
       });
       const known = succeeded({ ...state, retire: [...state.retire, ...opened.duplicates.map(live)] }, 'backend');
       return started(known, phase, opened, Date.now());
@@ -300,7 +299,7 @@ async function readTurn(state: SessionState, shortcut: ShortcutSessions, open: (
 // gone closes the bridge's, a revoked grant ends the turn, a wait is retried
 // on the link's own budget, and a refusal or a spent budget gives the link up.
 async function link(state: SessionState, url: string, { shortcut }: Io): Promise<SessionState> {
-  const outcome = await linkDevin(shortcut, state.shortcutSessionId, url);
+  const outcome = await setLink(shortcut, state.shortcutSessionId, url);
   switch (outcome.kind) {
     case 'ok': return succeeded(linked(state, url), 'shortcut');
     case 'closed': return close(state);
@@ -338,20 +337,20 @@ async function retire(state: SessionState, backend: Backend<Memo>): Promise<Sess
     if (!(error instanceof BackendError)) throw error;
     const waiting = held(state, error.failure, 'retire', true);
     if (waiting) return waiting;
-    console.warn('Devin Bridge gave up terminating a Devin session', { sessionId: state.shortcutSessionId, target: target.kind === 'live' ? target.conversation.id : target.key });
+    console.warn(`${identity.title} gave up terminating ${identity.aSession}`, { sessionId: state.shortcutSessionId, target: target.kind === 'live' ? target.conversation.id : target.key });
     return done;
   }
 }
 
 // The link is set with the session's current version and retried once on a 409.
-async function linkDevin(shortcut: ShortcutSessions, sessionId: string, url: string): Promise<Outcome<unknown>> {
+async function setLink(shortcut: ShortcutSessions, sessionId: string, url: string): Promise<Outcome<unknown>> {
   const once = async (): Promise<Outcome<unknown>> => {
     const read = await shortcut.getSession(sessionId);
     if (read.kind !== 'ok') return read;
     const session = read.value;
     if (session.closed_reason) return { kind: 'closed' };
-    const others = session.external_urls.filter((link) => link.label !== LINK_LABEL && link.url !== url).slice(0, 19);
-    return shortcut.setExternalUrls(sessionId, session.version, [...others, { label: LINK_LABEL, url }]);
+    const others = session.external_urls.filter((link) => link.label !== identity.linkLabel && link.url !== url).slice(0, 19);
+    return shortcut.setExternalUrls(sessionId, session.version, [...others, { label: identity.linkLabel, url }]);
   };
   const first = await once();
   return first.kind === 'conflict' ? once() : first;

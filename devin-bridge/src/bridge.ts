@@ -1,5 +1,5 @@
 import type { ShortcutSessionEventPayload, ShortcutSessionPromptedPayload } from '@shortcut/client/webhooks';
-import type { Memo } from './backend';
+import { identity, type Memo } from './backend';
 import type { Conversation, Halted, Observed, Opened, Target } from './port';
 
 export type Activity = {
@@ -11,10 +11,10 @@ export type Activity = {
 
 export type Live = Conversation<Memo>;
 
-/** A Devin session the bridge may still have to terminate: one it knows, or any a create may have made under a key. */
+/** A conversation the bridge may still have to halt: one it knows, or any an open may have made under a key. */
 export type Held = Target<Memo>;
 
-/** A reply Devin has not received yet. Its turn orders it among the others, whatever order they arrived in. The opening request of a late `session.created` is never superseded by a newer reply. */
+/** A reply the agent has not received yet. Its turn orders it among the others, whatever order they arrived in. The opening request of a late `session.created` is never superseded by a newer reply. */
 export type Pending = { turn: number; text: string; opening?: true };
 
 /** What one relay sends, fixed when it is prepared, so a retried send repeats the same text and places the answer the same way. */
@@ -24,7 +24,7 @@ export type Phase =
   | { kind: 'start'; prompt: Pending[]; extra: Pending[]; attempted: boolean }
   /** Until `send` is set, `prompt` is what the next prepare fixes. After, it waits for the relay that follows. */
   | { kind: 'relay'; on: Live; prompt: Pending[]; send: Send | null }
-  /** `check` asks for a Shortcut read of the session with the next poll. `posted` and `asked` are the last message and the key suffix of the elicitation written to Shortcut. `sentAt` starts the pickup clock. `heartbeatAt` is when a quiet, working Devin is next reported to Shortcut. */
+  /** `check` asks for a Shortcut read of the session with the next poll. `posted` and `asked` are the last message and the key suffix of the elicitation written to Shortcut. `sentAt` starts the pickup clock. `heartbeatAt` is when a quiet, working agent is next reported to Shortcut. */
   | { kind: 'poll'; on: Live; at: number; delayMs: number; check: boolean; posted: string | null; asked: string | null; sentAt: number; heartbeatAt: number }
   | { kind: 'stop'; target: Held | null; then: Pending[] }
   | { kind: 'idle'; on: Live | null }
@@ -35,7 +35,7 @@ export type RelayPhase = Extract<Phase, { kind: 'relay' }>;
 export type PollPhase = Extract<Phase, { kind: 'poll' }>;
 export type StopPhase = Extract<Phase, { kind: 'stop' }>;
 
-/** The jobs that fail and wait on their own: each Devin phase action, each Shortcut call, retirement, and the card link. */
+/** The jobs that fail and wait on their own: each backend phase action, each Shortcut call, retirement, and the card link. */
 export type Job = 'backend' | 'shortcut' | 'retire' | 'link';
 
 export type SessionState = {
@@ -44,20 +44,20 @@ export type SessionState = {
   entity: { type: string; id: number };
   context: string;
   turn: number;
-  /** The turn the bridge started on. The first Devin session's opening request belongs to it. */
+  /** The turn the bridge started on. The first conversation's opening request belongs to it. */
   first: number;
-  /** The context of a late `session.created`, waiting to go to the first Devin session ahead of the next reply. */
+  /** The context of a late `session.created`, waiting to go to the first conversation ahead of the next reply. */
   late: Pending | null;
-  /** Numbers the Devin sessions started for this Shortcut session; the current one is tagged with it. */
+  /** Numbers the conversations opened for this Shortcut session; the current one's key carries it. */
   generation: number;
   /** The newest stop's turn. A reply of that turn or an older one is cancelled, however late it arrives. */
   cutoff: number;
-  /** The newest turn whose reply reached Devin. An older reply that arrives later is superseded and dropped. */
+  /** The newest turn whose reply reached the agent. An older reply that arrives later is superseded and dropped. */
   sent: number;
   phase: Phase;
-  /** Devin sessions the bridge gave up and still has to terminate. */
+  /** Conversations the bridge gave up and still has to halt. */
   retire: Held[];
-  /** The Devin URL last set, or given up, on the session card. A phase link that differs is still to be set. */
+  /** The conversation URL last set, or given up, on the session card. A phase link that differs is still to be set. */
   linked: string | null;
   outbox: Activity[];
   /** Consecutive failures per job. Each resets on its own success. */
@@ -71,7 +71,7 @@ export type SessionState = {
 export const FIRST_POLL_MS = 5_000;
 export const MAX_DELAY_MS = 60_000;
 const PICKUP_TIMEOUT_MS = 600_000;
-/** Shortcut marks a session stale after 30 minutes without agent activity, so a Devin session that works quietly is reported well inside that. */
+/** Shortcut marks a session stale after 30 minutes without agent activity, so an agent that works quietly is reported well inside that. */
 const HEARTBEAT_MS = 600_000;
 /** No wait is shorter than this, so a `Retry-After` of zero cannot run the same job again in the same alarm. */
 export const MIN_WAIT_MS = 1_000;
@@ -79,16 +79,15 @@ const MAX_BODY = 32_768;
 export const MAX_FAILURES = 8;
 /** How often an unresolved key that finds nothing is looked up before the bridge believes it. */
 export const MAX_LOOKUPS = 3;
-export const LINK_LABEL = 'Open in Devin';
 
 export const backoffMs = (failures: number) => Math.min(MAX_DELAY_MS, FIRST_POLL_MS * 2 ** (failures - 1));
 
-export const devinTag = (shortcutSessionId: string, generation: number) => `shortcut-session-${shortcutSessionId}-${generation}`;
+export const conversationKey = (shortcutSessionId: string, generation: number) => `shortcut-session-${shortcutSessionId}-${generation}`;
 
 export const entityUrl = (slug: string, entity: SessionState['entity']) =>
   `https://app.shortcut.com/${encodeURIComponent(slug)}/${entity.type === 'epic' ? 'epic' : 'story'}/${entity.id}`;
 
-export function devinPrompt(state: SessionState, message: string, slug: string): string {
+export function introduction(state: SessionState, message: string, slug: string): string {
   return [
     message.trim() ? `A Shortcut user asked:\n\n${message}` : `Work on this Shortcut ${state.entity.type}.`,
     `Shortcut ${state.entity.type}: ${entityUrl(slug, state.entity)}`,
@@ -107,7 +106,7 @@ function truncate(text: string, max: number): string {
 
 function activity(state: SessionState, suffix: string, type: Activity['content']['type'], body: string, footer = ''): Activity {
   const text = truncate(footer ? `${truncate(body, MAX_BODY - footer.length - 2)}\n\n${footer}` : body, MAX_BODY);
-  return { key: `devin-bridge:${state.turn}:${suffix}`, turn: state.turn, content: { type, body: text }, ...(type === 'thought' ? { ephemeral: true as const } : {}) };
+  return { key: `${identity.slug}:${state.turn}:${suffix}`, turn: state.turn, content: { type, body: text }, ...(type === 'thought' ? { ephemeral: true as const } : {}) };
 }
 
 // Only the newest progress matters, so a thought replaces an unpublished
@@ -140,16 +139,16 @@ const turnOf = (event: ShortcutSessionEventPayload) => event.activity?.turn ?? e
 /** The event's reply as a pending prompt, or nothing when it carries no text. */
 const said = (event: ShortcutSessionEventPayload): Pending[] => (text(event) ? [{ turn: turnOf(event), text: text(event) }] : []);
 
-/** What Devin reads: the pending replies in turn order. */
+/** What the agent reads: the pending replies in turn order. */
 export const promptText = (pending: Pending[]) => [...pending].sort((a, b) => a.turn - b.turn).map((p) => p.text).join('\n\n');
 
 export const live = (conversation: Live): Held => ({ kind: 'live', conversation });
 
-/** The Devin session the current phase would have to give up. */
+/** The conversation the current phase would have to give up. */
 export function targetOf(state: SessionState): Held | null {
   const { phase } = state;
   switch (phase.kind) {
-    case 'start': return phase.attempted ? { kind: 'unresolved', key: devinTag(state.shortcutSessionId, state.generation), lookups: 0 } : null;
+    case 'start': return phase.attempted ? { kind: 'unresolved', key: conversationKey(state.shortcutSessionId, state.generation), lookups: 0 } : null;
     case 'relay':
     case 'poll': return live(phase.on);
     case 'stop': return phase.target;
@@ -158,7 +157,7 @@ export function targetOf(state: SessionState): Held | null {
   }
 }
 
-/** The current phase's Devin session goes on the retire list. */
+/** The current phase's conversation goes on the retire list. */
 export const retiring = (state: SessionState): SessionState => {
   const target = targetOf(state);
   return target ? { ...state, retire: [...state.retire, target] } : state;
@@ -185,7 +184,7 @@ function initial(event: ShortcutSessionEventPayload): SessionState {
     notBefore: { backend: null, shortcut: null, retire: null, link: null },
     applied: 0,
   };
-  return enqueue(state, activity(state, 'ack', 'thought', 'Starting a Devin session.'));
+  return enqueue(state, activity(state, 'ack', 'thought', `Starting ${identity.aSession}.`));
 }
 
 type StopEvent = ShortcutSessionPromptedPayload & { activity: { signal: 'stop' } };
@@ -212,20 +211,20 @@ export function applyEvent(current: SessionState | null, event: ShortcutSessionE
   const relay = (on: Live): Phase => ({ kind: 'relay', on, prompt: [reply], send: null });
   switch (phase.kind) {
     case 'start':
-      return enqueue({ ...state, phase: { ...phase, extra: [...phase.extra, reply] } }, ack('Starting a Devin session.'));
+      return enqueue({ ...state, phase: { ...phase, extra: [...phase.extra, reply] } }, ack(`Starting ${identity.aSession}.`));
     case 'relay':
-      return enqueue({ ...state, phase: { ...phase, prompt: [...phase.prompt, reply] } }, ack('Passing your message to Devin.'));
+      return enqueue({ ...state, phase: { ...phase, prompt: [...phase.prompt, reply] } }, ack(`Passing your message to ${identity.name}.`));
     case 'stop':
-      return enqueue({ ...state, phase: { ...phase, then: [...phase.then, reply] } }, ack('Starting a new Devin session.'));
+      return enqueue({ ...state, phase: { ...phase, then: [...phase.then, reply] } }, ack(`Starting a new ${identity.name} session.`));
     case 'poll':
-      return enqueue({ ...state, phase: relay(phase.on) }, ack('Passing your message to Devin.'));
+      return enqueue({ ...state, phase: relay(phase.on) }, ack(`Passing your message to ${identity.name}.`));
     case 'idle':
       if (phase.on === null) return startNew(state, [reply]);
-      return enqueue({ ...state, phase: relay(phase.on) }, ack('Passing your message to Devin.'));
+      return enqueue({ ...state, phase: relay(phase.on) }, ack(`Passing your message to ${identity.name}.`));
   }
 }
 
-/** The replies Devin has not received yet. A relay counts until its send is confirmed, a start's prompt until its create is attempted, and a stop's replies until they open the next session. */
+/** The replies the agent has not received yet. A relay counts until its send is confirmed, a start's prompt until its open is attempted, and a stop's replies until they open the next session. */
 function unsent(phase: Phase): Pending[] {
   switch (phase.kind) {
     case 'start': return phase.attempted ? phase.extra : [...phase.prompt, ...phase.extra];
@@ -259,19 +258,19 @@ function staleStop(state: SessionState, turn: number): SessionState {
   const then = unsent(state.phase).filter((reply) => reply.turn > turn);
   if (then.length === 0) return cancelled;
   const stopping = stop(cancelled, turn, then);
-  return enqueue(stopping, activity(stopping, 'ack:restart', 'thought', 'Starting a new Devin session.'));
+  return enqueue(stopping, activity(stopping, 'ack:restart', 'thought', `Starting a new ${identity.name} session.`));
 }
 
-/** The first Devin session's opening turn is still open: nothing answered it and no newer reply replaced it. */
+/** The first conversation's opening turn is still open: nothing answered it and no newer reply replaced it. */
 const opening = ({ generation, turn, first, phase }: SessionState) =>
   generation === 1 && turn === first && (phase.kind === 'start' || phase.kind === 'relay' || phase.kind === 'poll');
 
 // A reply can be delivered before the session.created that opened the session.
-// The opening request reaches only the first Devin session: in the create if
+// The opening request reaches only the first conversation: in the open if
 // none went out, else as a relayed message while its turn is still open. Once
 // that turn has its outcome, or a newer reply was sent, the request is never
 // sent again, and the context alone goes ahead of the next reply to that
-// session. A later generation gets the context in its create.
+// conversation. A later generation gets the context in its open.
 function merge(current: SessionState, event: ShortcutSessionEventPayload): SessionState {
   const context = contextOf(event);
   const state = { ...current, context };
@@ -290,7 +289,7 @@ function merge(current: SessionState, event: ShortcutSessionEventPayload): Sessi
   }
 }
 
-// The next Devin session's card link starts on a full budget: the strikes were the last link's.
+// The next conversation's card link starts on a full budget: the strikes were the last link's.
 const fresh = (state: SessionState, prompt: Pending[]): SessionState => ({
   ...state,
   generation: state.generation + 1,
@@ -301,7 +300,7 @@ const fresh = (state: SessionState, prompt: Pending[]): SessionState => ({
 });
 
 const startNew = (state: SessionState, prompt: Pending[]): SessionState =>
-  enqueue(fresh(state, prompt), activity(state, 'ack', 'thought', 'Starting a new Devin session.'));
+  enqueue(fresh(state, prompt), activity(state, 'ack', 'thought', `Starting a new ${identity.name} session.`));
 
 // Shortcut accepts only a response or an error on a turn with a stop request.
 const acceptedAfterStop = (activity: Activity) => activity.content.type === 'response' || activity.content.type === 'error';
@@ -314,7 +313,7 @@ function stop(state: SessionState, turn: number, then: Pending[] = []): SessionS
 // still has to end the turn, so a short error takes its place, once.
 export function rejected(activity: Activity, status: number): Activity | null {
   if (activity.content.type === 'thought' || activity.key.endsWith(':error:rejected')) return null;
-  return { key: `devin-bridge:${activity.turn}:error:rejected`, turn: activity.turn, content: { type: 'error', body: `Shortcut rejected Devin's ${activity.content.type} (HTTP ${status}).` } };
+  return { key: `${identity.slug}:${activity.turn}:error:rejected`, turn: activity.turn, content: { type: 'error', body: `Shortcut rejected ${identity.name}'s ${activity.content.type} (HTTP ${status}).` } };
 }
 
 const conversationOf = (phase: Phase): Live | null => ('on' in phase ? phase.on : null);
@@ -323,12 +322,12 @@ const conversationOf = (phase: Phase): Live | null => ('on' in phase ? phase.on 
 export type TurnEnd = 'conflict' | 'revoked' | 'ended';
 
 /**
- * Shortcut takes no more writes for the turn. A known Devin session stays
+ * Shortcut takes no more writes for the turn. A known conversation stays
  * usable; anything less certain is retired. A reply not sent yet survives a
  * 409 alone, once a read of the session has shown the turn still open: the
  * event behind the 409, a newer reply or a stop, says what becomes of the
  * reply. The other reasons bring no such event, so the reply is dropped and
- * nothing reaches Devin that Shortcut cannot see.
+ * nothing reaches the agent that Shortcut cannot see.
  */
 export function endTurn(state: SessionState, reason: TurnEnd): SessionState {
   if (reason === 'conflict' && state.phase.kind === 'relay') return { ...state, outbox: [] };
@@ -336,7 +335,7 @@ export function endTurn(state: SessionState, reason: TurnEnd): SessionState {
   return { ...(on ? keepLate(state) : retiring(state)), phase: { kind: 'idle', on }, outbox: [] };
 }
 
-// A relay that never went through still owes the first Devin session the late context it carried.
+// A relay that never went through still owes the first conversation the late context it carried.
 const keepLate = (state: SessionState): SessionState =>
   state.phase.kind === 'relay' && state.phase.send?.late && !state.late ? { ...state, late: state.phase.send.late } : state;
 
@@ -350,9 +349,9 @@ export function fail(state: SessionState, body: string, keep: boolean): SessionS
 const polling = (on: Live, now: number): PollPhase =>
   ({ kind: 'poll', on, at: now + FIRST_POLL_MS, delayMs: FIRST_POLL_MS, check: false, posted: null, asked: null, sentAt: now, heartbeatAt: now + HEARTBEAT_MS });
 
-// A quiet Devin session writes nothing, so once the delay is at its cap each
-// poll also reads the Shortcut session, or a turn Shortcut ended on its own
-// would go unnoticed until Devin spoke again.
+// A quiet agent writes nothing, so once the delay is at its cap each poll
+// also reads the Shortcut session, or a turn Shortcut ended on its own would
+// go unnoticed until the agent spoke again.
 const later = (phase: PollPhase, delayMs: number, now: number): PollPhase => ({ ...phase, delayMs, at: now + delayMs, check: delayMs >= MAX_DELAY_MS });
 
 export const checked = (state: SessionState, phase: PollPhase): SessionState => ({ ...state, phase: { ...phase, check: false } });
@@ -367,7 +366,7 @@ export function started(state: SessionState, phase: StartPhase, { conversation: 
   return { ...state, sent: newest(state.sent, phase.prompt), phase: extra.length ? { kind: 'relay', on, prompt: extra, send: null } : polling(on, now) };
 }
 
-/** The memo and the text are fixed together, before the send, so a retried send places Devin's answer the same way. The text is a late context first, then the replies in turn order. */
+/** The memo and the text are fixed together, before the send, so a retried send places the agent's answer the same way. The text is a late context first, then the replies in turn order. */
 export const prepared = (state: SessionState, phase: RelayPhase, memo: Memo): SessionState => {
   const { prompt } = phase;
   const { late } = state;
@@ -385,13 +384,13 @@ export function relayed(state: SessionState, phase: RelayPhase, send: Send, memo
 
 /** The session a reply was meant for is already over, so the reply opens a new one. */
 export function restarted(state: SessionState, phase: RelayPhase): SessionState {
-  return enqueue(fresh(retiring(state), unsent(phase)), activity(state, 'restart', 'thought', 'The last Devin session ended. Starting a new one.'));
+  return enqueue(fresh(retiring(state), unsent(phase)), activity(state, 'restart', 'thought', `The last ${identity.name} session ended. Starting a new one.`));
 }
 
 export function stopped(state: SessionState, phase: StopPhase, halted: Halted): SessionState {
   if (phase.then.length) return fresh(state, phase.then);
   const url = halted.kind === 'ended' ? halted.url : null;
-  const body = url ? `Stopped. The Devin session was terminated: ${url}` : 'Stopped.';
+  const body = url ? `Stopped. The ${identity.name} session was terminated: ${url}` : 'Stopped.';
   return enqueue({ ...state, phase: { kind: 'idle', on: null } }, activity(state, 'stopped', 'response', body));
 }
 
@@ -399,26 +398,26 @@ export function stopped(state: SessionState, phase: StopPhase, halted: Halted): 
 export function observed(state: SessionState, phase: PollPhase, { memo, said, status }: Observed<Memo>, now: number): SessionState {
   const unposted = said.slice(said.findIndex((m) => m.id === phase.posted) + 1);
   const last = said[said.length - 1] ?? null;
-  const link = `[${LINK_LABEL}](${phase.on.url})`;
+  const link = `[${identity.linkLabel}](${phase.on.url})`;
   const current: PollPhase = { ...phase, on: { ...phase.on, memo } };
   const quiet = (beat: boolean): SessionState => {
     const next = later(current, Math.min(MAX_DELAY_MS, phase.delayMs * 2), now);
     if (!beat || now < current.heartbeatAt) return { ...state, phase: next };
     // Repeating the newest message keeps it on the card, since each thought replaces the one before.
-    return enqueue({ ...state, phase: { ...next, heartbeatAt: now + HEARTBEAT_MS } }, activity(state, `heartbeat:${now}`, 'thought', last?.text || 'Devin is still working.'));
+    return enqueue({ ...state, phase: { ...next, heartbeatAt: now + HEARTBEAT_MS } }, activity(state, `heartbeat:${now}`, 'thought', last?.text || `${identity.name} is still working.`));
   };
 
   switch (status.kind) {
     case 'pending':
       if (now - phase.sentAt < PICKUP_TIMEOUT_MS) return quiet(false);
-      return fail(state, `Devin did not pick up your reply. Reply to try again. ${link}`, true);
+      return fail(state, `${identity.name} did not pick up your reply. Reply to try again. ${link}`, true);
     case 'working': {
       if (unposted.length === 0) return quiet(true);
       const latest = unposted[unposted.length - 1];
-      return enqueue({ ...state, phase: later({ ...current, posted: latest.id, heartbeatAt: now + HEARTBEAT_MS }, FIRST_POLL_MS, now) }, activity(state, `message:${latest.id}`, 'thought', latest.text || 'Devin is working.'));
+      return enqueue({ ...state, phase: later({ ...current, posted: latest.id, heartbeatAt: now + HEARTBEAT_MS }, FIRST_POLL_MS, now) }, activity(state, `message:${latest.id}`, 'thought', latest.text || `${identity.name} is working.`));
     }
     case 'asked': {
-      const fallback = status.on === 'user' ? 'Devin is waiting for your input.' : 'Devin is waiting for you to approve an action in Devin.';
+      const fallback = status.on === 'user' ? `${identity.name} is waiting for your input.` : `${identity.name} is waiting for you to approve an action in ${identity.name}.`;
       // The suffix names the message, or the kind when the message has no text, so one turn never posts two bodies under one key.
       const suffix = last?.text ? `elicitation:${last.id}` : `elicitation:${status.on}`;
       const asked = activity(state, suffix, 'elicitation', last?.text || fallback, link);
@@ -428,7 +427,7 @@ export function observed(state: SessionState, phase: PollPhase, { memo, said, st
       return enqueue({ ...state, phase: later({ ...current, asked: suffix, posted: last?.id ?? current.posted, heartbeatAt: now + HEARTBEAT_MS }, FIRST_POLL_MS, now) }, asked);
     }
     case 'finished':
-      return enqueue({ ...state, phase: { kind: 'idle', on: current.on } }, activity(state, 'response', 'response', last?.text || 'Devin finished.', status.footer ? `${status.footer}\n\n${link}` : link));
+      return enqueue({ ...state, phase: { kind: 'idle', on: current.on } }, activity(state, 'response', 'response', last?.text || `${identity.name} finished.`, status.footer ? `${status.footer}\n\n${link}` : link));
     case 'failed':
       return fail(state, `${status.body} ${link}`, status.keep);
   }
@@ -454,11 +453,11 @@ export type Due = { at: number } & (
 
 /**
  * Every job the state calls for and the earliest time it may run, soonest
- * first. Each Devin job waits only on the Devin deadline, each Shortcut job
+ * first. Each backend job waits only on the backend deadline, each Shortcut job
  * only on the Shortcut deadline, and retirement and the card link on their
  * own as well. Ties keep this order: a stop's halt, retirement, the
  * Shortcut jobs (the next write, the card link, the quiet-poll read), then
- * the phase's Devin work. The first two need no Shortcut credentials.
+ * the phase's backend work. The first two need no Shortcut credentials.
  */
 export function plan(state: SessionState, now: number): Due[] {
   const { phase, notBefore } = state;
