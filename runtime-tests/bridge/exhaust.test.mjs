@@ -63,6 +63,7 @@ const PINNED = [
   ['repeats an open\'s text when the context arrives before its retry in a conversation opened after a stop', DEVIN, ['reply 2', 'stop 1', 'tick: open fails', 'created', 'tick', 'rest']],
   ['ends the turn, and opens no conversation, when the context of a late session.created is all that waits for a conversation that is gone', DEVIN, ['reply 2', 'tick', 'created', 'stop 1', 'gone', 'tick', 'rest']],
   ['drops a stopped opening request that a failed turn kept, when the next reply takes along what the turn dropped', DEVIN, ['reply 2', 'tick', 'created', 'gone', 'tick: halt dies', 'stop 1', 'reply 3', 'tick', 'rest']],
+  ['drops the older reply that waits on a stop when a second stale stop cancels it', DEVIN, ['reply 3', 'tick: open dies', 'reply 2', 'tick: prepare fails', 'stop 1', 'stop 2', 'tick', 'rest']],
   ['goes on reading the agent, and ends no turn, when the backend refuses the send that carries only the context', DEVIN, ['reply 2', 'stop 1', 'tick', 'created', 'tick: send refused', 'finish', 'tick', 'rest']],
   ['goes on reading the agent, and ends no turn, when the backend refuses the prepare of a send that would carry only the context', DEVIN, ['reply 2', 'stop 1', 'tick', 'created', 'tick: prepare refused', 'rest']],
 ];
