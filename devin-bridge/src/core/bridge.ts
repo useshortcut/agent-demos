@@ -14,8 +14,8 @@ type Live = Conversation<Memo> & { empty?: true };
 
 type Held = Target<Memo>;
 
-/** A reply the agent has not received yet. Its turn orders it among the others, whatever order they arrived in. The opening request of a late `session.created` is never superseded by a newer reply. */
-export type Pending = { turn: number; text: string; opening?: true };
+/** A reply the agent has not received yet. Its turn orders it among the others, whatever order they arrived in. The opening request of a late `session.created` is never superseded by a newer reply. Its `text` ends with Shortcut's context, and `bare` is the request without it, for an introduction, which carries the context itself. */
+export type Pending = { turn: number; text: string; opening?: true; bare?: string };
 
 /** What one relay sends, fixed when it is prepared, so a retried send repeats the same text under the same key and places the answer the same way. A send stored before sends had keys has none. */
 export type Send = { prompt: Pending[]; late: Pending | null; text: string; key?: string; memo: Memo };
@@ -157,6 +157,9 @@ const said = (event: ShortcutSessionEventPayload): Pending[] => (text(event) ? [
 /** What the agent reads: the pending replies in turn order. */
 export const promptText = (pending: Pending[]) => [...pending].sort((a, b) => a.turn - b.turn).map((p) => p.text).join('\n\n');
 
+/** The pending replies as an introduction takes them: an opening request without the context under it. */
+const bare = (pending: Pending[]): Pending[] => pending.map((p) => ({ ...p, text: p.bare ?? p.text })).filter((p) => p.text);
+
 export const live = (conversation: Live): Held => ({ kind: 'live', conversation });
 
 /** The conversation the current phase would have to give up. */
@@ -282,21 +285,40 @@ const opening = ({ generation, turn, first, phase }: SessionState) =>
   generation === 1 && turn === first && (phase.kind === 'start' || phase.kind === 'relay' || phase.kind === 'poll');
 
 // A reply can be delivered before the session.created that opened the session.
-// The opening request reaches only the first conversation: in the open if
-// none went out, else as a relayed message while its turn is still open. Once
-// that turn has its outcome, or a newer reply was sent, the request is never
-// sent again, and the context alone goes ahead of the next reply to that
-// conversation. A later generation gets the context in its open.
+// The opening request reaches only the first conversation, and how depends on
+// whether that conversation's opening text is fixed yet.
+//
+// Not fixed: no open has gone out, or the open made an empty conversation and
+// the send that introduces it is not prepared. Nothing has reached the agent,
+// so the request joins the opening text, whatever replies arrived meanwhile,
+// and the context reaches the agent in the introduction and nowhere else.
+//
+// Fixed, by an open that went out with its text or by the prepare of the
+// introducing send: the request is relayed as a message with the context
+// under it, while its turn is still open. Once that turn has its outcome, or
+// a newer reply was sent, the request is never sent again, and the context
+// alone goes ahead of the next reply to that conversation.
+//
+// Not known: an open was attempted and has not answered whether it delivered
+// its text. The rule for a fixed text applies, since the text may be out. If
+// the open then answers that the conversation is empty, a request kept as a
+// message goes into the introduction by its `bare` words, and a context kept
+// to go ahead of the next reply is spent on the introduction.
+//
+// A later generation gets the context in its open or its introduction, and
+// never the request.
 function merge(current: SessionState, event: ShortcutSessionEventPayload): SessionState {
   const context = contextOf(event);
   const state = { ...current, context };
   const { phase } = current;
   if (current.generation !== 1) return state;
-  if (phase.kind === 'start' && !phase.attempted) return { ...state, phase: { ...phase, prompt: [...phase.prompt, ...said(event)] } };
+  if ((phase.kind === 'start' && !phase.attempted) || (phase.kind === 'relay' && phase.on.empty && phase.send === null)) {
+    return { ...state, phase: { ...phase, prompt: [...phase.prompt, ...said(event)] } };
+  }
   if (!opening(current)) return context ? { ...state, late: { turn: turnOf(event), text: contextBlock(context) } } : state;
   const message = joined(text(event), context && contextBlock(context));
   if (!message) return state;
-  const request: Pending = { turn: turnOf(event), text: message, opening: true };
+  const request: Pending = { turn: turnOf(event), text: message, opening: true, bare: text(event) };
   switch (phase.kind) {
     case 'start': return { ...state, phase: { ...phase, extra: [...phase.extra, request] } };
     case 'relay': return { ...state, phase: { ...phase, prompt: [...phase.prompt, request] } };
@@ -394,7 +416,7 @@ export function started(state: SessionState, phase: StartPhase, { conversation: 
 export function prepared(state: SessionState, phase: RelayPhase, memo: Memo, slug: string): SessionState {
   const { prompt } = phase;
   const late = phase.on.empty ? null : state.late;
-  const text = phase.on.empty ? introduction(state, promptText(prompt), slug) : promptText(late ? [late, ...prompt] : prompt);
+  const text = phase.on.empty ? introduction(state, promptText(bare(prompt)), slug) : promptText(late ? [late, ...prompt] : prompt);
   return { ...state, late: null, phase: { ...phase, prompt: [], send: { prompt, late, text, key: sendKey(state), memo } } };
 }
 

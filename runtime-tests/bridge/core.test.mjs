@@ -374,3 +374,71 @@ it('still introduces a kept conversation whose first send was stopped before it 
   await h.tick();
   assert.deepEqual(chat.received, [introduction('Try Chrome instead'), 'And Edge']);
 });
+
+for (const [window, failing] of [['before the open is attempted', null], ['while the open is unresolved', 'open'], ['before the introduction is prepared', 'prepare']]) {
+  it(`puts a session.created delivered after a reply into the introduction of an empty conversation when it arrives ${window}`, async (t) => {
+    const h = setup(t);
+    h.fake.facts.empty = true;
+    await h.connect();
+    const created = h.shortcut.open();
+    await h.accept(h.shortcut.prompt(SID, 'Pick this up'));
+    if (failing) {
+      h.fake.failNext(failing, new BackendError({ kind: 'transient' }));
+      await h.tick();
+    }
+    await h.accept(created);
+    await h.ticks(2);
+    assert.deepEqual(h.fake.only().received, [introduction(`${REQUEST}\n\nPick this up`)], 'the request and the context reach the agent once, in the one introduction');
+    h.assertCleanLogs();
+  });
+}
+
+it('relays a session.created that arrives after the introduction was prepared as a message of its own, with the context under it', async (t) => {
+  const h = setup(t);
+  h.fake.facts.empty = true;
+  await h.connect();
+  const created = h.shortcut.open();
+  await h.accept(h.shortcut.prompt(SID, 'Pick this up'));
+  h.fake.failNext('send', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  await h.accept(created);
+  await h.ticks(2);
+  assert.deepEqual(h.fake.only().received, [
+    introduction('Pick this up', ''),
+    `${REQUEST}\n\nContext from Shortcut:\n\n${CONTEXT}`,
+  ], 'the introduction goes out as it was prepared, and the request follows it');
+});
+
+it('sends only the context of a session.created that arrives after the first turn was answered, ahead of the next reply to an introduced conversation', async (t) => {
+  const h = setup(t);
+  h.fake.facts.empty = true;
+  await h.connect();
+  const created = h.shortcut.open();
+  await h.accept(h.shortcut.prompt(SID, 'Pick this up'));
+  await h.tick();
+  const chat = h.fake.only();
+  chat.status = { kind: 'finished' };
+  await h.tick();
+  await h.accept(created);
+  await h.tick();
+  await h.accept(h.shortcut.prompt(SID, 'Next'));
+  await h.tick();
+  assert.deepEqual(chat.received, [introduction('Pick this up', ''), `Context from Shortcut:\n\n${CONTEXT}\n\nNext`]);
+});
+
+it('carries the context of a late session.created once, in the introduction, when the conversation is still empty after a stop', async (t) => {
+  const h = setup(t);
+  Object.assign(h.fake.facts, { empty: true, keeps: true });
+  await h.connect();
+  const created = h.shortcut.open();
+  await h.accept(h.shortcut.prompt(SID, 'Pick this up'));
+  h.fake.failNext('prepare', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  await h.accept(h.shortcut.stop(SID));
+  await h.ticks(2);
+  await h.accept(created);
+  await h.tick();
+  await h.accept(h.shortcut.prompt(SID, 'Try Chrome instead'));
+  await h.tick();
+  assert.deepEqual(h.fake.only().received, [introduction('Try Chrome instead')], 'the stopped request does not come back, and the context is not sent a second time ahead of the reply');
+});
