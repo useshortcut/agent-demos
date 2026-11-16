@@ -39,6 +39,8 @@ export type StopPhase = Extract<Phase, { kind: 'stop' }>;
 export type Job = 'backend' | 'shortcut' | 'retire' | 'link';
 
 export type SessionState = {
+  /** A stored state without it has an earlier shape: the backend's `upgradeState` reads it, or it is dropped with a warning. */
+  v: 2;
   shortcutSessionId: string;
   workspaceId: string;
   entity: { type: string; id: number };
@@ -166,6 +168,7 @@ export const retiring = (state: SessionState): SessionState => {
 function initial(event: ShortcutSessionEventPayload): SessionState {
   const { session } = event;
   const state: SessionState = {
+    v: 2,
     shortcutSessionId: session.id,
     workspaceId: event.workspace_id,
     entity: { type: session.entity_type, id: session.entity_id },

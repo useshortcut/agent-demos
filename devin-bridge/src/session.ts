@@ -33,6 +33,7 @@ import {
   type StopPhase,
 } from './bridge';
 import { connect as backendOf, identity, type Memo } from './backend';
+import * as adapter from './backend';
 import { BackendError, type Backend, type BackendFailure, type Halted } from './port';
 import type { Env } from './index';
 import { loadCredentials, shortcutSessions, workspaceAllowed, type Outcome, type ShortcutSessions } from './shortcut';
@@ -108,7 +109,7 @@ export class Session {
   private async step(): Promise<void> {
     const storage = this.ctx.storage;
     const inbox = await storage.list<ShortcutSessionEventPayload>({ prefix: INBOX });
-    let state = (await storage.get<SessionState>('state')) ?? null;
+    let state = await load(storage, this.ctx.id.name ?? String(this.ctx.id));
     for (const [key, event] of inbox) {
       const seq = Number(key.slice(INBOX.length));
       if (state !== null && seq <= state.applied) continue;
@@ -162,6 +163,22 @@ export class Session {
     }
     return { shortcut: shortcutSessions(this.env, state.workspaceId, credentials), backend, slug: credentials.slug };
   }
+}
+
+// A backend whose bridge once stored states of another shape exports `upgradeState` to read them. Any other leaves it out.
+const { upgradeState } = adapter as { upgradeState?: (stored: unknown) => SessionState | null };
+
+// An upgraded state is saved in the current shape by the step's next save. A
+// state the backend cannot upgrade is dropped.
+async function load(storage: DurableObjectStorage, sessionId: string): Promise<SessionState | null> {
+  const stored = await storage.get<SessionState | { v?: undefined }>('state');
+  if (stored === undefined) return null;
+  if (stored.v === 2) return stored;
+  const upgraded = upgradeState?.(stored) ?? null;
+  if (upgraded !== null) return upgraded;
+  console.warn(`${identity.title} dropped a stored session state of an older shape`, { sessionId });
+  await storage.delete('state');
+  return null;
 }
 
 async function execute(state: SessionState, due: Due, backend: Backend<Memo>, connect: (state: SessionState) => Promise<Io | null>): Promise<SessionState> {
