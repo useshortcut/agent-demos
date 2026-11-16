@@ -12,9 +12,9 @@
 // landing when the call answers and the step saves its state. A send repeated
 // under its key, or an open that finds the conversation again, teaches it
 // later. Until then the landing is one the bridge cannot know about. A
-// prepare that finds a message in a conversation teaches it less: that the
-// conversation's first text landed, and so whether the conversation was told
-// the context by it. A turn has its outcome once the bridge has read that the
+// prepare that finds a message in a conversation teaches it less. It shows
+// that the conversation's first text landed, and so whether that text told
+// the conversation the context. A turn has its outcome once the bridge has read that the
 // agent finished or failed, once a backend call was refused, or once Shortcut
 // holds a response, a question, or an error for it.
 export const RULES = {
@@ -23,15 +23,15 @@ export const RULES = {
     'A request the agent has moved past is superseded, and no text fixed after that carries it.',
     'A reply is superseded when it arrives after the bridge learned that a newer reply landed.',
     'A reply that arrives while a newer reply waits in a prepared send is superseded when the bridge learns that the send landed.',
-    'A reply that arrives while a newer reply waits in an open that has no answer yet is not: it follows the open.',
+    'A reply that arrives while a newer reply waits in an open that has no answer yet is not superseded. It follows the open.',
     'The request of a `session.created` is accepted when it arrives before any text is fixed, or while the bridge is still on its first conversation, has received no reply newer than the one it started from, and no turn has an outcome. Otherwise it is superseded. Once accepted it is never superseded.',
   ].join(' '),
-  once: 'No text carries a request twice, and no request lands twice, unless the bridge never learned that its earlier landing happened. Then it may land once more: as that send\'s retry, or in the text that takes its place after a stop halted the conversation.',
+  once: 'No text carries a request twice, and no request lands twice, unless the bridge never learned that its earlier landing happened. Then it may land once more, as that send\'s retry or in the text that takes its place after a stop halted the conversation.',
   ordered: 'A text carries its requests in turn order.',
   briefed: 'A text that is fixed after `session.created` arrived carries the context when it lands in a conversation that no earlier text told it to. A stop cancels requests and never the context.',
   briefedOnce: 'No text carries the context twice, and no conversation is told it twice, unless the bridge never learned that the earlier text landed. A conversation\'s first text is never such an exception once a prepare has found a message in it.',
-  owed: 'Every open carries a request that is still owed: one that arrived, is neither cancelled nor superseded, and has not landed as far as the bridge knows. Every send carries one too, or the context alone. The context goes alone only while the bridge is still on its first conversation, has received no reply newer than the one it started from, and no turn has an outcome.',
-  rest: 'When the bridge comes to rest, every request that arrived has landed, or is cancelled or superseded, or belongs to a turn that ended in an error the user was told about.',
+  owed: 'Every open carries a request that is still owed, which is one that arrived, is neither cancelled nor superseded, and has not landed as far as the bridge knows. Every send carries one too, or the context alone. The context goes alone only while the bridge is still on its first conversation, has received no reply newer than the one it started from, and no turn has an outcome.',
+  rest: 'When the bridge comes to rest, every request that arrived has landed, or is cancelled or superseded, or its turn or a later one ended in an error the user was told about.',
   keys: 'A send is prepared before it first goes out. A retried open or send repeats its text, and no two different sends share a key.',
   single: 'When the bridge comes to rest, at most one conversation is working.',
   links: 'A conversation without a URL gets no card link, and no activity carries link text for it.',
@@ -72,8 +72,8 @@ export function ledger(tokens, { opensEmpty }) {
   function fix(id, text, { conversation, knew, alone, send }) {
     const holds = carried(text);
     // A newly prepared send means the bridge gave up the one before it, so nothing waits on that one any more.
-    if (send) for (const earlier of Object.values(s.texts)) if (earlier.send && !earlier.learned) earlier.dropped = true;
-    s.texts[id] = { conversation, text, holds, knew, send, landed: false, learned: false };
+    if (send) for (const earlier of Object.values(s.texts)) if (earlier.send) earlier.dropped = true;
+    s.texts[id] = { conversation, text, holds, knew, send, landed: false };
     if (send || !opensEmpty) s.fixedAny = true;
     for (const turn of holds) {
       if (count(text, tokenOf(turn)) > 1) broke('once', `one text carries ${named(turn)} twice`);
@@ -95,7 +95,7 @@ export function ledger(tokens, { opensEmpty }) {
 
   function land(id, conversation) {
     const text = s.texts[id];
-    Object.assign(text, { conversation, landed: true, learned: false });
+    Object.assign(text, { conversation, landed: true });
     for (const turn of text.holds) {
       const request = s.requests[turn];
       if (request.landed && request.learned) broke('once', `${named(turn)} landed twice`);
@@ -125,7 +125,7 @@ export function ledger(tokens, { opensEmpty }) {
   return {
     get state() { return s; },
     set state(next) { s = next; },
-    /** The rules broken since the last call. */
+    /** The rules broken since the last call, each as `rule: what happened`. */
     broken() {
       const found = problems;
       problems = [];
@@ -145,7 +145,7 @@ export function ledger(tokens, { opensEmpty }) {
       s.newest = Math.max(s.newest, turn);
       if (cancelled(turn)) return;
       if (s.learnedNewest > turn) request.superseded = true;
-      else request.waits = Object.keys(s.texts).find((id) => s.texts[id].send && !s.texts[id].learned && !s.texts[id].dropped && s.texts[id].holds.some((held) => held > turn)) ?? null;
+      else request.waits = Object.keys(s.texts).find((id) => s.texts[id].send && !s.texts[id].dropped && s.texts[id].holds.some((held) => held > turn)) ?? null;
     },
 
     /** Shortcut accepted an activity. */
@@ -161,6 +161,7 @@ export function ledger(tokens, { opensEmpty }) {
     opening(key, text) {
       if (Number(key.match(/-(\d+)$/)?.[1]) > 1) s.laterOpen = true;
       if (!s.texts[key]) fix(key, text, { conversation: null, knew: s.created, alone: false, send: false });
+      // Nothing reads the text of an open that delivers none, so it may differ between attempts.
       call(key, opensEmpty ? s.texts[key].text : text);
     },
     /** `landed`: this call created the conversation with its text. `learned`: the call answered and the step saved. */
@@ -172,7 +173,7 @@ export function ledger(tokens, { opensEmpty }) {
     /** `ready`: the conversation takes a message. `empty`: it holds none. */
     prepared(conversation, { ready, empty }) {
       const told = s.told[conversation];
-      if (!empty && told?.last === told?.first) told.learned = true;
+      if (!empty && told && told.last === told.first) told.learned = true;
       s.preparing = ready ? { conversation, knew: s.created, alone: onOpening() } : null;
     },
 

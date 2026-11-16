@@ -8,7 +8,7 @@ import { existsSync } from 'node:fs';
 import { it } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import { BACKENDS, describeBackend, loadBridge, replay, told, world } from './exhaust.mjs';
+import { BACKENDS, describeBackend, explore, loadBridge, replay, runEach, told, world } from './exhaust.mjs';
 import { RULES } from './ledger.mjs';
 
 // EXHAUST_ROOT runs this against a bridge elsewhere, as broken-cores.test.mjs does with a copy it has broken.
@@ -61,7 +61,21 @@ const PINNED = [
   ['ends the turn, and opens no conversation, when the context of a late session.created is all that waits for a conversation that is gone', DEVIN, ['reply 2', 'tick', 'created', 'stop 1', 'gone', 'tick', 'rest']],
 ];
 
-const bridge = PINNED.length ? await loadBridge(root) : null;
+const bridge = await loadBridge(root);
+
+it('counts the scripts of a small scope as running each from its own start does', async (t) => {
+  const small = { from: ['created', 'reply 2', 'stop 1'], events: 3, faults: 1, finish: 0, gone: 1, total: 4 };
+  for (const facts of [DEVIN, { keeps: true, empty: true, dedupes: true }]) {
+    const w = await world(t, bridge, facts);
+    const start = await w.snapshot();
+    const each = await runEach(w, small);
+    await w.restore(start);
+    const { scripts, broken } = await explore(w, small);
+    assert.deepEqual(broken, []);
+    assert.equal(scripts, each, `on ${describeBackend(facts)}`);
+  }
+});
+
 for (const [title, facts, steps] of PINNED) {
   it(title, async (t) => {
     const w = await world(t, bridge, facts);

@@ -207,10 +207,7 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
   }
 
   const w = {
-    facts,
     chats: fake.chats,
-    /** What the bridge has stored, for a failing script's report. */
-    stored: () => storage.data.get('state'),
 
     /** Runs one step and returns the backend calls it made. */
     async act(label) {
@@ -274,17 +271,24 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
 
     /**
      * Names the state for the search: two scripts that reach the same name
-     * have the same future. Clock readings are left out, so the search follows
-     * one of the scripts that differ only in how long the bridge waited, and
-     * send keys are named by the order they were first used.
+     * have the same future. Send keys are named by the order they were first
+     * used. Of the clock only what decides which jobs the next alarms run is
+     * kept: how long each wait still has, or that it ends after the next
+     * poll. How far off that poll is, and how often the agent was quiet, is
+     * left out, so an agent that stays quiet is polled once and not six
+     * times.
      */
     async name() {
       const state = storage.data.get('state');
-      const timeless = state && { ...state, notBefore: Object.values(state.notBefore).map((deadline) => deadline !== null), phase: { ...state.phase, at: 0, delayMs: 0, check: false, sentAt: 0, heartbeatAt: 0 } };
+      const now = Date.now();
+      const poll = state?.phase.at > now ? state.phase.at : null;
+      const wait = (deadline) => (deadline === null || deadline <= now ? 0 : poll !== null && deadline > poll ? 'after the poll' : deadline - now);
+      const timeless = state && { ...state, notBefore: Object.values(state.notBefore).map(wait), phase: { ...state.phase, at: poll !== null, delayMs: 0, check: false, sentAt: 0, heartbeatAt: 0 } };
       const inbox = [...storage.data].filter(([key]) => key.startsWith('inbox:')).map(([, event]) => event.id);
       const s = session();
+      const alarm = await storage.getAlarm();
       let json = JSON.stringify([
-        timeless, inbox, (await storage.getAlarm()) !== null,
+        timeless, inbox, alarm === null ? null : alarm > now,
         fake.chats.map((chat) => [chat.key, chat.opened, chat.received, chat.sends, chat.status.kind, chat.gone, chat.halted]),
         [s.turn, s.stopRequested, s.outcome, s.closed, s.activities.map((a) => `${a.key} ${a.content.body}`).sort(), s.external_urls],
         led.state, [...delivered].sort(),
@@ -314,6 +318,12 @@ const BUDGETS = ['events', 'faults', 'finish', 'gone', 'total'];
 const within = (left, most) => BUDGETS.every((budget) => left[budget] <= most[budget]);
 const spend = (left, budget) => (budget ? { ...left, [budget]: left[budget] - 1, total: left.total - 1 } : left);
 const affords = (left, budget) => !budget || (left[budget] > 0 && left.total > 0);
+const budgetsOf = (scope) => Object.fromEntries(BUDGETS.map((budget) => [budget, scope[budget] ?? Infinity]));
+
+/** The faults a scope allows on the calls one alarm made. A read changes nothing at the backend, so one whose answer is lost is one that failed. */
+const faultsOn = (calls, scope) => calls.flatMap(({ call, nth }) => MODES
+  .filter((mode) => !(mode === 'lost' && READS.includes(call)) && (!scope.only || scope.only.includes(`${call} ${mode}`)))
+  .map((mode) => `tick: ${call}${nth > 1 ? ` ${nth}` : ''} ${mode}`));
 
 /**
  * Runs every script the scope allows, shortest first, and stops a script at
@@ -327,7 +337,7 @@ const affords = (left, budget) => !budget || (left[budget] > 0 && left.total > 0
  * different scripts within the scope that those states stand for.
  */
 export async function explore(w, scope) {
-  const start = Object.fromEntries(BUDGETS.map((budget) => [budget, scope[budget] ?? Infinity]));
+  const start = budgetsOf(scope);
   const nodes = [{ parent: null, via: null, left: start, snapshot: await w.snapshot(), edges: [] }];
   const seen = new Map([[await w.name(), [0]]]);
   const broken = new Map();
@@ -359,11 +369,13 @@ export async function explore(w, scope) {
           return null;
         }
         const name = await w.name();
+        // A step that changes nothing makes no new script.
+        if (name === own) return calls;
         const left = spend(node.left, budget);
         const known = seen.get(name) ?? seen.set(name, []).get(name);
         const covering = known.find((other) => within(left, nodes[other].left));
         if (covering !== undefined) {
-          if (covering !== id) node.edges.push({ to: covering, budget });
+          node.edges.push({ to: covering, budget });
           return calls;
         }
         const child = nodes.push({ parent: id, via: label, left, snapshot: await w.snapshot(), edges: [] }) - 1;
@@ -387,18 +399,12 @@ export async function explore(w, scope) {
       };
 
       await w.restore(from);
+      const own = await w.name();
       for (const [label, budget] of await w.enabled(scope.from)) {
         if (!affords(node.left, budget)) continue;
         const calls = await run(label, budget);
         if (label !== 'tick' || !affords(node.left, 'faults')) continue;
-        for (const { call, nth } of calls ?? []) {
-          // A read changes nothing at the backend, so one whose answer is lost is one that failed.
-          for (const mode of MODES) {
-            if (mode === 'lost' && READS.includes(call)) continue;
-            if (scope.only && !scope.only.includes(`${call} ${mode}`)) continue;
-            await run(`tick: ${call}${nth > 1 ? ` ${nth}` : ''} ${mode}`, 'faults');
-          }
-        }
+        for (const fault of faultsOn(calls ?? [], scope)) await run(fault, 'faults');
       }
     }
     frontier = next;
@@ -419,4 +425,33 @@ export async function explore(w, scope) {
     return total;
   };
   return { states: nodes.length, steps, scripts: count(0, start), broken: [...broken].map(([rule, found]) => ({ rule, ...found })) };
+}
+
+/**
+ * Counts the scripts of a scope by running each from its own start, with no
+ * state merged. Slow, and what `explore` is tested against: a search that
+ * merged two states with different futures would count other scripts.
+ */
+export async function runEach(w, scope) {
+  let scripts = 0;
+  const from = async (snapshot, name, left) => {
+    scripts++;
+    const run = async (label, budget) => {
+      await w.restore(snapshot);
+      const calls = (await w.act(label)) ?? [];
+      if (w.broken().length) return void scripts++;
+      const reached = await w.name();
+      if (reached !== name) await from(await w.snapshot(), reached, spend(left, budget));
+      return calls;
+    };
+    await w.restore(snapshot);
+    for (const [label, budget] of await w.enabled(scope.from)) {
+      if (!affords(left, budget)) continue;
+      const calls = await run(label, budget);
+      if (label !== 'tick' || !affords(left, 'faults')) continue;
+      for (const fault of faultsOn(calls ?? [], scope)) await run(fault, 'faults');
+    }
+  };
+  await from(await w.snapshot(), await w.name(), budgetsOf(scope));
+  return BigInt(scripts);
 }

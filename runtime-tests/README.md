@@ -172,10 +172,13 @@ covered.
 
 The search does not run each script from the start. Two scripts that reach
 the same stored state, backend, Shortcut session, and ledger have the same
-future, so the second one ends there. Clock readings are left out of that
-comparison. With one fault to a script, a backend that deduplicates sends
-differs from its twin only when the fault is a send that landed, so it runs
-only those faults.
+future, so the second one ends there. Of the clock, that comparison keeps
+only what decides which jobs the next alarms run. A second test keeps the
+merging honest: it runs every script of a small scope from its own start,
+with nothing merged, and expects the search to count the same scripts. With
+one fault to a script, a backend that deduplicates sends differs from its
+twin only when the fault is a send that landed, so it runs only those
+faults.
 
 When a script breaks a rule the test fails with the rule, what happened, the
 backend, and the shortest script that does it, as a line to paste into
