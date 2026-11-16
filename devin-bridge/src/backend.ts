@@ -76,11 +76,12 @@ export function connect(env: BackendEnv): Backend<Memo> {
       return { conversation: conversation(session), delivered: true, duplicates: duplicates.map(conversation) };
     },
 
+    // A Devin session is created with its prompt, so it is never empty.
     async prepare({ id }) {
       const session = await devin.getSession(id);
-      if (isFinal(session.state)) return { kind: 'gone' };
+      if (isFinal(session.state)) return { kind: 'gone', empty: false };
       const { messages } = await devin.listMessages(id);
-      return { kind: 'ready', memo: { baseline: { last: messages[messages.length - 1]?.id ?? null, status: session.state }, prompt: null, heard: false } };
+      return { kind: 'ready', empty: false, memo: { baseline: { last: messages[messages.length - 1]?.id ?? null, status: session.state }, prompt: null, heard: false } };
     },
 
     async send({ id, memo }, { text }) {

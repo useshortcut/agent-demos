@@ -1,6 +1,6 @@
 import type { ShortcutSessionEventPayload, ShortcutSessionPromptedPayload } from '@shortcut/client/webhooks';
 import { identity, type Memo } from '../backend';
-import type { Conversation, Halted, Observed, Opened, Target } from './port';
+import type { Conversation, Halted, Observed, Opened, Prepared, Target } from './port';
 
 export type Activity = {
   key: string;
@@ -9,13 +9,21 @@ export type Activity = {
   ephemeral?: true;
 };
 
-/** `empty`: opened without the opening text, and no send to it is confirmed, so the next relay to it carries the introduction. */
-type Live = Conversation<Memo> & { empty?: true };
+type Live = Conversation<Memo>;
 
 type Held = Target<Memo>;
 
-/** A reply the agent has not received yet. Its turn orders it among the others, whatever order they arrived in. The opening request of a late `session.created` is never superseded by a newer reply. Its `text` ends with Shortcut's context, and `bare` is the request without it, for an introduction, which carries the context itself. */
-export type Pending = { turn: number; text: string; opening?: true; bare?: string };
+/**
+ * A reply the agent has not received yet. Its turn orders it among the
+ * others, whatever order they arrived in. The request of a late
+ * `session.created` that could not join the opening text waits in one of two
+ * forms. `opening`: a newer reply never supersedes it. Its `text` ends with
+ * Shortcut's context, and `bare` is the request without it, for an
+ * introduction, which carries the context itself. `superseded`: newer replies
+ * had arrived before it, so it goes only into an introduction, where nothing
+ * has reached the agent yet.
+ */
+export type Pending = { turn: number; text: string; opening?: true; bare?: string; superseded?: true };
 
 /** What one relay sends, fixed when it is prepared, so a retried send repeats the same text under the same key and places the answer the same way. A send stored before sends had keys has none. */
 export type Send = { prompt: Pending[]; late: Pending | null; text: string; key?: string; memo: Memo };
@@ -286,24 +294,25 @@ const opening = ({ generation, turn, first, phase }: SessionState) =>
 
 // A reply can be delivered before the session.created that opened the session.
 // The opening request reaches only the first conversation, and how depends on
-// whether that conversation's opening text is fixed yet.
+// what the agent may have been told by then.
 //
-// Not fixed: no open has gone out, or the open made an empty conversation and
-// the send that introduces it is not prepared. Nothing has reached the agent,
-// so the request joins the opening text, whatever replies arrived meanwhile,
-// and the context reaches the agent in the introduction and nowhere else.
+// Nothing: no open has gone out. The request joins the opening text, whatever
+// replies arrived meanwhile.
 //
-// Fixed, by an open that went out with its text or by the prepare of the
-// introducing send: the request is relayed as a message with the context
-// under it, while its turn is still open. Once that turn has its outcome, or
-// a newer reply was sent, the request is never sent again, and the context
-// alone goes ahead of the next reply to that conversation.
+// Anything else is not the core's to know: an open may have delivered its
+// text, and only the backend can say whether a conversation holds a message.
+// So what arrives waits in the form the backend's next answer needs. While
+// the turn the bridge started on is still open, the request waits as a
+// message with the context under it. After a newer reply, the context waits
+// in `late` for the next send, and a request that arrives beside a relay
+// waits with that relay as `superseded`. A prepare that finds the
+// conversation empty then puts all of it into the introduction: each request
+// by its own words, and the context once, since the introduction carries it.
+// A prepare that finds a message sends the rest as messages and drops a
+// superseded request.
 //
-// Not known: an open was attempted and has not answered whether it delivered
-// its text. The rule for a fixed text applies, since the text may be out. If
-// the open then answers that the conversation is empty, a request kept as a
-// message goes into the introduction by its `bare` words, and a context kept
-// to go ahead of the next reply is spent on the introduction.
+// Once the first turn has its outcome, the request is never sent, and the
+// context alone waits in `late`.
 //
 // A later generation gets the context in its open or its introduction, and
 // never the request.
@@ -312,13 +321,16 @@ function merge(current: SessionState, event: ShortcutSessionEventPayload): Sessi
   const state = { ...current, context };
   const { phase } = current;
   if (current.generation !== 1) return state;
-  if ((phase.kind === 'start' && !phase.attempted) || (phase.kind === 'relay' && phase.on.empty && phase.send === null)) {
-    return { ...state, phase: { ...phase, prompt: [...phase.prompt, ...said(event)] } };
+  const turn = turnOf(event);
+  const asked = text(event);
+  if (phase.kind === 'start' && !phase.attempted) return { ...state, phase: { ...phase, prompt: [...phase.prompt, ...said(event)] } };
+  if (!opening(current)) {
+    const owed = context ? { ...state, late: { turn, text: contextBlock(context) } } : state;
+    return phase.kind === 'relay' && asked ? { ...owed, phase: { ...phase, prompt: [...phase.prompt, { turn, text: asked, superseded: true }] } } : owed;
   }
-  if (!opening(current)) return context ? { ...state, late: { turn: turnOf(event), text: contextBlock(context) } } : state;
-  const message = joined(text(event), context && contextBlock(context));
+  const message = joined(asked, context && contextBlock(context));
   if (!message) return state;
-  const request: Pending = { turn: turnOf(event), text: message, opening: true, bare: text(event) };
+  const request: Pending = { turn, text: message, opening: true, bare: asked };
   switch (phase.kind) {
     case 'start': return { ...state, phase: { ...phase, extra: [...phase.extra, request] } };
     case 'relay': return { ...state, phase: { ...phase, prompt: [...phase.prompt, request] } };
@@ -402,29 +414,30 @@ const newest = (sent: number, replies: Pending[]) => Math.max(sent, ...replies.m
 export function started(state: SessionState, phase: StartPhase, { conversation: on, delivered }: Opened<Memo>, now: number): SessionState {
   const { extra } = phase;
   // Nothing reached the agent, so the opening prompt and the replies that arrived since wait together for the relay that introduces the conversation.
-  if (!delivered) return { ...state, phase: { kind: 'relay', on: { ...on, empty: true }, prompt: [...phase.prompt, ...extra], send: null } };
+  if (!delivered) return { ...state, phase: { kind: 'relay', on, prompt: [...phase.prompt, ...extra], send: null } };
   return { ...state, sent: newest(state.sent, phase.prompt), phase: extra.length ? { kind: 'relay', on, prompt: extra, send: null } : polling(on, now) };
 }
 
 /**
  * The memo, the text, and the key are fixed together, before the send, so a
  * retried send is the same send and places the agent's answer the same way.
- * The text is a late context first, then the replies in turn order. For an
- * empty conversation it is the introduction instead, which carries Shortcut's
- * context itself, so a late context is spent on it.
+ * The text is a late context first, then the replies in turn order. For a
+ * conversation the backend finds empty it is the introduction instead, which
+ * carries Shortcut's context itself, so a late context is spent on it. The
+ * backend's answer decides, here and nowhere else, so a send whose outcome
+ * the core never learned cannot make it introduce a conversation twice.
  */
-export function prepared(state: SessionState, phase: RelayPhase, memo: Memo, slug: string): SessionState {
-  const { prompt } = phase;
-  const late = phase.on.empty ? null : state.late;
-  const text = phase.on.empty ? introduction(state, promptText(bare(prompt)), slug) : promptText(late ? [late, ...prompt] : prompt);
+export function prepared(state: SessionState, phase: RelayPhase, { memo, empty }: Extract<Prepared<Memo>, { kind: 'ready' }>, slug: string): SessionState {
+  const prompt = empty ? phase.prompt : phase.prompt.filter((reply) => !reply.superseded);
+  const late = empty ? null : state.late;
+  const text = empty ? introduction(state, promptText(bare(prompt)), slug) : promptText(late ? [late, ...prompt] : prompt);
   return { ...state, late: null, phase: { ...phase, prompt: [], send: { prompt, late, text, key: sendKey(state), memo } } };
 }
 
 /** The send went through now, so the pickup clock starts here, not at the prepare. A reply that arrived after the prepare is relayed next. */
 export function relayed(state: SessionState, phase: RelayPhase, send: Send, memo: Memo, now: number): SessionState {
   const sent = newest(state.sent, send.prompt);
-  // Rebuilt without `empty`: the conversation holds a message now.
-  const on: Live = { id: phase.on.id, url: phase.on.url, memo };
+  const on: Live = { ...phase.on, memo };
   const waiting = phase.prompt.filter((reply) => reply.opening || reply.turn > sent);
   const next: Phase = waiting.length ? { ...phase, on, prompt: waiting, send: null } : polling(on, now);
   return { ...state, sent, phase: next };
@@ -437,8 +450,8 @@ export function relayed(state: SessionState, phase: RelayPhase, send: Send, memo
  * all gone would have the bridge open them without a wait or an end. The turn
  * fails, and the next reply opens one.
  */
-export function restarted(state: SessionState, phase: RelayPhase): SessionState {
-  if (phase.on.empty) return fail(state, `The ${identity.name} session ended before it took your message. Reply to start a new one.`, false);
+export function restarted(state: SessionState, phase: RelayPhase, empty: boolean): SessionState {
+  if (empty) return fail(state, `The ${identity.name} session ended before it took your message. Reply to start a new one.`, false);
   return enqueue(fresh(retiring(state), unsent(phase)), activity(state, 'restart', 'thought', `The last ${identity.name} session ended. Starting a new one.`));
 }
 

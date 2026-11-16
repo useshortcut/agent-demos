@@ -400,6 +400,29 @@ it('still introduces a kept conversation whose first send was stopped before it 
   assert.deepEqual(chat.received, [openingText('Try Chrome instead'), 'And Edge']);
 });
 
+for (const [lost, lose] of [
+  ['its answer was lost', (h) => h.fake.failNext('send', new BackendError({ kind: 'transient' }), { landed: true })],
+  ['the step died before saving it', (h) => dieAtSaveAfter(h, () => h.calls('send').length === 1)],
+]) {
+  it(`sends the reply after a kept stop as it is when the introduction reached the conversation and ${lost}`, async (t) => {
+    const h = setup(t);
+    Object.assign(h.fake.facts, { empty: true, keeps: true });
+    await h.connect();
+    await h.accept(h.shortcut.open());
+    lose(h);
+    await h.tick();
+    const chat = h.fake.only();
+    assert.deepEqual(chat.received, [openingText(REQUEST)]);
+    await h.accept(h.shortcut.stop(SID));
+    await h.ticks(2);
+    assert.deepEqual(h.bodies('response'), ['Stopped.']);
+
+    await h.accept(h.shortcut.prompt(SID, 'Try Chrome instead'));
+    await h.ticks(2);
+    assert.deepEqual(chat.received, [openingText(REQUEST), 'Try Chrome instead'], 'the backend says the conversation holds a message, so it is not introduced a second time');
+  });
+}
+
 it('ends the turn when an empty conversation is gone before its first message, and opens another only for the next reply', async (t) => {
   const h = setup(t);
   h.fake.facts.empty = true;

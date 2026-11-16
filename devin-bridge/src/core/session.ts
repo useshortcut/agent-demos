@@ -277,8 +277,8 @@ async function perform(state: SessionState, phase: ActPhase, { backend, slug }: 
     case 'relay': {
       if (phase.send === null) {
         const ready = await backend.prepare(phase.on);
-        if (ready.kind === 'gone') return restarted(succeeded(state, 'backend'), phase);
-        return prepared(succeeded(state, 'backend'), phase, ready.memo, slug);
+        const known = succeeded(state, 'backend');
+        return ready.kind === 'gone' ? restarted(known, phase, ready.empty) : prepared(known, phase, ready, slug);
       }
       const { text, key = sendKey(state, 0), memo } = phase.send;
       const sent = await backend.send({ ...phase.on, memo }, { text, key });

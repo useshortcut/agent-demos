@@ -31,14 +31,20 @@ export type OpenRequest = {
 
 export type Opened<M> = {
   conversation: Conversation<M>;
-  /** False when the conversation was created empty. The core then sends `text` as its first message, through `prepare` and `send`. */
+  /** False when the conversation was created empty. The core then relays what `text` held, and the `prepare` of that relay answers `empty`. */
   delivered: boolean;
   /** Other conversations found under the key. The core retires them. */
   duplicates: Conversation<M>[];
 };
 
-/** `gone`: the conversation cannot take a message any more, so the core opens a new one with the reply. */
-export type Prepared<M> = { kind: 'ready'; memo: M } | { kind: 'gone' };
+/**
+ * `empty`: the conversation holds no message yet, so the send that follows
+ * introduces it. The backend is the only record of this. The core keeps none
+ * of its own, because a send whose answer was lost would leave it wrong.
+ * `gone`: the conversation cannot take a message any more. The core opens a
+ * new one with the reply, unless the one that is gone was still empty.
+ */
+export type Prepared<M> = { empty: boolean } & ({ kind: 'ready'; memo: M } | { kind: 'gone' });
 
 /** `key` is fixed with `text` when the send is prepared: a retried send repeats both, and no other send of any session carries the key. A backend whose sends are idempotent passes it on. */
 export type Outgoing = { text: string; key: string };
@@ -99,7 +105,7 @@ export interface Backend<M> {
    * second kind answers `ended` without a call.
    */
   open(request: OpenRequest): Promise<Opened<M>>;
-  /** Reads what the next send depends on. The core saves the memo before the send goes out. */
+  /** Reads what the next send depends on, and whether the conversation holds a message yet. The core saves the memo before the send goes out. */
   prepare(conversation: Conversation<M>): Promise<Prepared<M>>;
   /** `conversation.memo` is the prepared memo. Returns the memo that places the agent's answer. */
   send(conversation: Conversation<M>, message: Outgoing): Promise<M>;

@@ -87,7 +87,8 @@ export function script(log: unknown[]) {
     async prepare({ id }) {
       return attempt('prepare', id, () => {
         const chat = known(id);
-        return chat.gone ? { kind: 'gone' } : { kind: 'ready', memo: { heard: chat.said.length } };
+        const empty = chat.opened === null && chat.received.length === 0;
+        return chat.gone ? { kind: 'gone', empty } : { kind: 'ready', empty, memo: { heard: chat.said.length } };
       });
     },
 
