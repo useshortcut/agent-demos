@@ -144,7 +144,7 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
     prepare: faulted('prepare', async (mode, conversation) => {
       if (mode === 'fails') throw transient();
       if (mode === 'refused') {
-        led.refused(null);
+        led.refused(null, conversation.id);
         throw refusal();
       }
       const ready = await raw.prepare(conversation);

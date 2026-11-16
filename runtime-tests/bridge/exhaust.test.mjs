@@ -66,6 +66,8 @@ const PINNED = [
   ['ends the turn, and opens no conversation, when the context of a late session.created is all that waits for a conversation that is gone', DEVIN, ['reply 2', 'tick', 'created', 'stop 1', 'gone', 'tick', 'rest']],
   ['drops a stopped opening request that a failed turn kept, when the next reply takes along what the turn dropped', DEVIN, ['reply 2', 'tick', 'created', 'gone', 'tick: halt dies', 'stop 1', 'reply 3', 'tick', 'rest']],
   ['drops the older reply that waits on a stop when a second stale stop cancels it', DEVIN, ['reply 3', 'tick: open dies', 'reply 2', 'tick: prepare fails', 'stop 1', 'stop 2', 'tick', 'rest']],
+  ['ends the turn when the backend refuses the read of an empty conversation that a stop left with nothing to be asked', { keeps: false, empty: true, dedupes: false }, ['reply 2', 'tick', 'created', 'gone', 'tick: prepare 2 dies', 'stop 1', 'tick: prepare refused', 'rest']],
+  ['drops a late opening request that arrives after a turn failed on a send that had landed', { keeps: false, empty: true, dedupes: false }, ['reply 2', 'tick: send lost', 'gone', 'tick: halt dies', 'created', 'reply 3', 'tick', 'rest']],
   ['goes on reading the agent, and ends no turn, when the backend refuses the send that carries only the context', DEVIN, ['reply 2', 'stop 1', 'tick', 'created', 'tick: send refused', 'finish', 'tick', 'rest']],
   ['goes on reading the agent, and ends no turn, when the backend refuses the prepare of a send that would carry only the context', DEVIN, ['reply 2', 'stop 1', 'tick', 'created', 'tick: prepare refused', 'rest']],
 ];

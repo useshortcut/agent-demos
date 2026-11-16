@@ -29,7 +29,7 @@ export const RULES = {
     'A reply is superseded when it arrives after the bridge learned that a newer reply landed.',
     'A reply that arrives while a newer reply waits in a prepared send is superseded when the bridge learns that the send landed.',
     'A reply that arrives while a newer reply waits in an open that has no answer yet is not superseded. It follows the open.',
-    'The request of a `session.created` is accepted when it arrives while no text is fixed that may have landed, or while the bridge is on its starting reply. Otherwise it is superseded. Once accepted it is never superseded. A text the backend refused has not landed, and neither has the text of an open that delivers none.',
+    'The request of a `session.created` is accepted when it arrives while no text is fixed that may have landed, or while the bridge is on its starting reply. Otherwise it is superseded. Once accepted it is never superseded. A text the backend refused before any attempt of it landed has not landed, and neither has the text of an open that delivers none.',
   ].join(' '),
   once: 'No text carries a request twice, and no request lands twice, unless the bridge never learned that its earlier landing happened. Then it may land once more: as that send\'s retry under its key, or, after a stop halted the conversation, in a new text under a new key. The stop interrupted what the agent did with the first, so the bridge sends the request again, also to a conversation the backend kept.',
   ordered: 'A text carries its requests in turn order.',
@@ -40,7 +40,7 @@ export const RULES = {
   keys: 'A send is prepared before it first goes out. A retried open or send repeats its text, and no two different sends share a key. An open that delivers no text may change its text between attempts, since nothing reads it.',
   single: 'When the bridge comes to rest in a session that Shortcut has not closed, at most one conversation is working.',
   links: 'A conversation without a URL gets no card link, and no activity carries link text for it.',
-  alone: 'A call that only delivers the context ends no turn when the backend refuses it. That is the send of a text that carries no request, or the prepare for one while no request is still owed. The bridge posts no error before its next backend call.',
+  alone: 'A call that only delivers the context ends no turn when the backend refuses it. That is the send of a text that carries no request, or the prepare for one, while no request is still owed, in a conversation that holds a text. The bridge posts no error before its next backend call.',
   redelivered: 'An event that Shortcut delivers a second time changes nothing the bridge holds.',
   loop: 'Every step ends, and without an error of its own. Once no event is waiting and no agent is working the alarms run out.',
 };
@@ -170,12 +170,13 @@ export function ledger(tokens, { opensEmpty }) {
     calling() {
       s.forgiven = false;
     },
-    /** The backend refused an open or a send, or with a null `key` a prepare. Nothing it carried landed. One that served a request gives the turn its outcome. */
-    refused(key) {
+    /** The backend refused an open or a send under `key`, or with a null `key` a prepare of `conversation`. One that served a request gives the turn its outcome, and so does a prepare of a conversation that holds no text: no agent is at work in it. */
+    refused(key, conversation) {
       const text = s.texts[key];
-      if (text && !text.refused && (text.send || !opensEmpty)) s.mayHaveLanded--;
+      // An earlier attempt of the text may have landed with its answer lost. Only a text that never landed stops counting.
+      if (text && !text.refused && !text.landed && (text.send || !opensEmpty)) s.mayHaveLanded--;
       if (text) text.refused = true;
-      const served = text ? text.holds.length > 0 : Object.keys(s.requests).map(Number).some(stillOwed);
+      const served = text ? text.holds.length > 0 : !s.told[conversation] || Object.keys(s.requests).map(Number).some(stillOwed);
       if (served) s.outcome = true;
       else s.forgiven = true;
     },
