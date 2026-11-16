@@ -21,6 +21,9 @@ export function conform({ label, setup, identity, facts, vendor }) {
   const activities = (h, type) => h.shortcut.activities().filter((a) => a.content.type === type);
   const answers = (h) => activities(h, 'response').map((a) => [a.turn, a.content.body.split('\n')[0]]);
   const deliver = async (h, event) => assert.equal((await h.deliver(event)).status, 200);
+  /** How many requests the bridge has made of its backend. */
+  const asked = (h) => h.requests.filter((r) => r.origin !== 'shortcut').length;
+  const settle = async (h) => { for (let i = 0; i < 4; i++) await h.tick(); };
 
   // Each alarm runs at its scheduled time, so this also moves the clock through the bridge's waits.
   async function until(h, reached, what) {
@@ -61,8 +64,9 @@ export function conform({ label, setup, identity, facts, vendor }) {
   scenario('posts the agent\'s newest message as progress while it works', async (h) => {
     const session = await opened(h);
     vendor.work(h, session);
+    vendor.say(h, session, 'Reading the code');
     vendor.say(h, session, 'Looking into it');
-    await until(h, () => activities(h, 'thought').some((a) => a.content.body === 'Looking into it'), 'the bridge posts the agent\'s message');
+    await until(h, () => activities(h, 'thought').some((a) => a.content.body === 'Looking into it'), 'the bridge posts the newer of two messages the agent sent between two reads');
     const progress = activities(h, 'thought').find((a) => a.content.body === 'Looking into it');
     assert.deepEqual([progress.turn, progress.ephemeral], [1, true]);
     assert.deepEqual(h.shortcut.activities().filter((a) => a.content.type !== 'thought'), [], 'progress does not end the turn');
@@ -70,8 +74,10 @@ export function conform({ label, setup, identity, facts, vendor }) {
 
   scenario('posts the agent\'s last message as the response when it finishes', async (h) => {
     const session = await opened(h);
+    vendor.work(h, session);
+    vendor.say(h, session, 'Found the cause');
     await answered(h, session, 'Fixed it');
-    assert.deepEqual(activities(h, 'response').map((a) => [a.turn, a.content.body]), [[1, under('Fixed it', session)]]);
+    assert.deepEqual(activities(h, 'response').map((a) => [a.turn, a.content.body]), [[1, under('Fixed it', session)]], 'the response is the last of the messages the agent sent, not the first');
     assert.deepEqual(activities(h, 'error'), []);
   });
 
@@ -82,7 +88,9 @@ export function conform({ label, setup, identity, facts, vendor }) {
     await until(h, () => heard(h, session).length === 2, 'the bridge sends the reply');
     assert.equal(vendor.sessions(h).length, 1);
     assert.deepEqual(heard(h, session), [openingText(), 'Also fix Firefox']);
-    assert.equal(h.shortcut.activities().find((a) => a.key === `${slug}:2:ack`).content.body, `Passing your message to ${name}.`);
+    await settle(h);
+    assert.deepEqual(h.shortcut.activities().filter((a) => a.turn === 2).map((a) => [a.key, a.content.body]), [[`${slug}:2:ack`, `Passing your message to ${name}.`]],
+      'until the agent acts on the reply, the backend still shows the turn before, and none of that is posted as this turn\'s progress or outcome');
     await answered(h, session, 'Fixed Firefox too');
     assert.deepEqual(answers(h), [[1, 'Fixed it'], [2, 'Fixed Firefox too']]);
   });
@@ -93,6 +101,10 @@ export function conform({ label, setup, identity, facts, vendor }) {
     await until(h, () => activities(h, 'elicitation').length > 0, 'the bridge asks the question');
     assert.deepEqual(activities(h, 'elicitation').map((a) => [a.turn, a.content.body]), [[1, under('Which browser?', session)]]);
     assert.deepEqual(answers(h), [], 'a question is not an answer');
+    await settle(h);
+    const before = asked(h);
+    await settle(h);
+    assert.equal(asked(h), before, 'the turn is handed back, so the bridge asks the backend nothing more until a reply arrives');
     await deliver(h, h.shortcut.prompt(SID, 'Safari'));
     await until(h, () => heard(h, session).length === 2, 'the bridge passes the answer back');
     assert.equal(vendor.sessions(h).length, 1);
@@ -119,6 +131,7 @@ export function conform({ label, setup, identity, facts, vendor }) {
     await deliver(h, h.shortcut.stop(SID));
     await until(h, () => answers(h).length > 0, 'the bridge answers the stop');
     assert.equal(vendor.halted(h, session), true);
+    assert.equal(vendor.takes(h, session), facts.keeps, facts.keeps ? 'the backend still takes a message for the stopped session' : 'the backend takes no more messages for the stopped session');
     const stopped = facts.keeps || !facts.linked ? 'Stopped.' : `Stopped. The ${name} session was terminated: ${vendor.url(session)}`;
     assert.deepEqual(activities(h, 'response').map((a) => [a.turn, a.content.body]), [[1, stopped]]);
 
@@ -147,6 +160,32 @@ export function conform({ label, setup, identity, facts, vendor }) {
     for (let i = 0; i < 3; i++) await h.tick();
     assert.equal(vendor.sessions(h).length, 1);
     assert.deepEqual(heard(h, session), [openingText()]);
+  });
+
+  scenario('tells one session the opening text, once, when an open reaches the backend and its answer is lost', async (h) => {
+    await h.connect();
+    vendor.lose(h, 'open');
+    await deliver(h, h.shortcut.open());
+    const told = () => vendor.sessions(h).filter((each) => heard(h, each).length > 0);
+    await until(h, () => told().length > 0, 'the bridge tells a session the request');
+    await settle(h);
+    assert.equal(told().length, 1, 'the lost open may leave an empty session behind, and no second session is told anything');
+    assert.deepEqual(heard(h, told()[0]), [openingText()]);
+  });
+
+  scenario(`delivers a reply ${facts.dedupes ? 'once' : 'no more than twice'} when its send reaches the backend and the answer is lost`, async (h) => {
+    const session = await opened(h);
+    await answered(h, session, 'Fixed it');
+    vendor.lose(h, 'send');
+    await deliver(h, h.shortcut.prompt(SID, 'Also fix Firefox'));
+    await until(h, () => heard(h, session).includes('Also fix Firefox'), 'the bridge sends the reply');
+    await settle(h);
+    const copies = heard(h, session).filter((text) => text === 'Also fix Firefox').length;
+    if (facts.dedupes) assert.equal(copies, 1, 'the backend takes the send key, so the repeated send is the same send');
+    else assert.equal(copies, 2, 'the backend has no send key, so the one repeat is delivered, and nothing after it');
+    assert.equal(vendor.sessions(h).length, 1);
+    await answered(h, session, 'Fixed Firefox too');
+    assert.deepEqual(answers(h), [[1, 'Fixed it'], [2, 'Fixed Firefox too']]);
   });
 
   scenario('opens no second session and sends nothing twice when Shortcut delivers an event again', async (h) => {

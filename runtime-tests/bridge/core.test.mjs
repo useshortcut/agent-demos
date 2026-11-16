@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { it } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { conform } from './conform.mjs';
+import { conformFake } from './fake-conform.mjs';
 import { CONTEXT, REQUEST, SID, assertAbout, bridgeHarness, openingText } from './harness.mjs';
 
 const root = pathToFileURL(`${process.cwd()}/`);
@@ -785,28 +785,5 @@ for (const [label, facts] of [
   ['a backend that keeps its session, opens it empty, and has no link', { keeps: true, opensEmpty: true, linked: false }],
   ['a backend that keeps its session and opens it with the request', { keeps: true, opensEmpty: false, linked: true }],
 ]) {
-  conform({
-    label,
-    setup(t) {
-      const h = setup(t);
-      Object.assign(h.fake.facts, { keeps: facts.keeps, empty: facts.opensEmpty, linked: facts.linked });
-      return h;
-    },
-    identity: { slug: 'fake-bridge', name: 'Fake', aSession: 'a Fake session', linkLabel: 'Open in Fake' },
-    facts,
-    vendor: {
-      sessions: (h) => h.fake.chats,
-      told: (h, chat) => ({ opened: chat.opened, messages: chat.received }),
-      url: (chat) => chat.url,
-      work: (h, chat) => { chat.status = { kind: 'working' }; },
-      say: (h, chat, text) => h.fake.say(chat, text),
-      finish: (h, chat) => { chat.status = { kind: 'finished' }; },
-      ask(h, chat, question) {
-        h.fake.say(chat, question);
-        chat.status = { kind: 'asked', on: 'user' };
-      },
-      fail: (h, chat) => { chat.status = { kind: 'failed', body: 'The Fake session failed.', keep: false }; },
-      halted: (h, chat) => chat.halted,
-    },
-  });
+  conformFake({ label, facts, setup, BackendError });
 }
