@@ -2,6 +2,7 @@ import type { ShortcutSessionEventPayload } from '@shortcut/client/webhooks';
 import {
   MAX_FAILURES,
   MAX_LOOKUPS,
+  abandoned,
   applyEvent,
   attempting,
   backoffMs,
@@ -216,6 +217,8 @@ async function guarded(state: SessionState, run: () => Promise<SessionState>): P
     if (waiting) return waiting;
     const reset = succeeded(state, 'backend');
     if (state.phase.kind === 'stop') return stopped(retiring(reset), state.phase, { kind: 'ended', url: null });
+    const reading = state.phase.kind === 'relay' ? abandoned(reset, state.phase, Date.now()) : null;
+    if (reading) return reading;
     if (failure.kind !== 'rejected') return fail(reset, `${identity.title} could not reach ${identity.name}. Reply to try again.`, true);
     // Auth failures are the bridge's, not the session's, so the next reply may still reach it.
     const keep = failure.status === 401 || failure.status === 403;

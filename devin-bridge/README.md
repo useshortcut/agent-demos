@@ -75,6 +75,8 @@ The opening request is what the user asked on turn 1:
 
 While the bridge is on the turn it started from, a context with no request to go with goes to the Devin session alone, at once. That happens when a stop cancelled the request or the created event had no text. After that turn the context waits for the next reply.
 
+A message that carries only the context is the bridge's own errand, and Devin is still answering the turn. So when Devin refuses that message or the read before it, or either fails until the bridge gives it up, no turn ends for it. The bridge goes back to polling Devin, and the context stays owed until the next reply. If the Devin session is in fact gone, the next poll says so and ends the turn.
+
 **Replies out of turn order.** The bridge keeps every reply it has not sent to Devin with its turn, and joins them in turn order when it sends them, whatever order they arrived in. The opening request has the lowest turn, so it comes first. Once the bridge knows that Devin has a newer reply, it drops an older one however late it arrives. That includes a reply that arrived while a message with the newer one was waiting to be resent. A reply that arrives while a create with a newer one has no answer yet is not dropped. The bridge sends it as a message once the session is known.
 
 **Stale stops.** A stop for an older turn can arrive after newer replies. If any of those replies is still unsent, the bridge terminates the Devin session first and then starts a new one with the replies after the stop's turn. The stop cancels the replies up to its turn. The bridge remembers that turn, even when no reply is left to restart, so a cancelled reply that Shortcut delivers again later stays cancelled. A stop that arrives while an earlier stop is pending cancels the replies waiting on that stop up to its turn, and the rest open the new session. A start whose create was already attempted counts too, and so does a reply the stop cancels inside that create's prompt. The bridge terminates the session created under its tag. The replies after the stop's turn open a new session, both the ones inside that create's prompt and the ones that waited beside it. Once every later reply has been sent, such a stop is stale. The bridge terminates nothing, and it drops the cancelled replies that were still waiting to be sent.
@@ -118,7 +120,7 @@ When the bridge gives a Devin session up, it does not forget it. The session, or
 The bridge gives a session up when:
 
 - a stop cannot terminate it,
-- Devin rejects a relay or a poll with a 4xx other than 401 or 403,
+- Devin rejects a poll, or a relay that carried a request, with a 4xx other than 401 or 403,
 - Devin reports the session errored or terminated,
 - a reply reaches a session that has already ended,
 - a tag lookup finds more than one session,
@@ -150,7 +152,7 @@ While Devin is quiet at the 60 second cap, each poll also reads the Shortcut ses
 
 **Waits.** A 429 from either API waits for `Retry-After` and does not count as a failure. The wait is 60 seconds when the header is absent, 10 minutes at most, and one second at least. Other server errors, timeouts, and network errors back off from 5 seconds, doubling to 60.
 
-**Failure counts.** The phase's Devin work, Shortcut calls, retirement, and the card link each have their own failure count, and only that job's own success resets it. A Shortcut read that succeeds resets the Shortcut count, and a step that makes no Devin call leaves the Devin count alone. After 8 failed Devin calls in a row the bridge ends the turn with an `error` activity. The bridge never gives up a Shortcut write. It keeps retrying at 60 seconds, because replays are free and a turn Shortcut has ended answers 409.
+**Failure counts.** The phase's Devin work, Shortcut calls, retirement, and the card link each have their own failure count, and only that job's own success resets it. A Shortcut read that succeeds resets the Shortcut count, and a step that makes no Devin call leaves the Devin count alone. After 8 failed Devin calls in a row the bridge ends the turn with an `error` activity, unless the call was for a message that carried only the context (see [Events out of order](#events-out-of-order)). The bridge never gives up a Shortcut write. It keeps retrying at 60 seconds, because replays are free and a turn Shortcut has ended answers 409.
 
 **Deadlines.** A wait, whether a `Retry-After` or a backoff, is a deadline the session keeps per job:
 
@@ -161,7 +163,7 @@ While Devin is quiet at the 60 second cap, each poll also reads the Shortcut ses
 
 No deadline holds another job. The bridge records an event that arrives during a wait at once and acts on it when the deadline it needs passes. So a stop during a Shortcut outage still terminates Devin at once, and Devin keeps working while Shortcut is down.
 
-**Devin 4xx.** A Devin 4xx ends the turn with an `error` at once. A 401 or 403 is about the bridge's credentials, not the session, so the bridge keeps the Devin session. Any other 4xx retires the Devin session, and the next reply starts a new one.
+**Devin 4xx.** A Devin 4xx ends the turn with an `error` at once. A 401 or 403 is about the bridge's credentials, not the session, so the bridge keeps the Devin session. Any other 4xx retires the Devin session, and the next reply starts a new one. A 4xx on a message that carried only the context is the exception. It ends no turn and retires nothing, and the bridge goes back to polling.
 
 **A reply over an error not yet posted.** A turn that ends in an `error` drops the requests that had not reached Devin, because the error tells the user to reply again. The bridge keeps those requests until Shortcut has taken the error. If a newer reply arrives first, Shortcut takes no more writes for the older turn and the user is never told, so the bridge sends the kept requests to Devin with that reply.
 

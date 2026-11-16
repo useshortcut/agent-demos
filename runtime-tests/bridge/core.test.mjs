@@ -608,6 +608,61 @@ it('sends only the context of a late session.created whose request a stop had ca
   assert.deepEqual(chat.received, [`Context from Shortcut:\n\n${CONTEXT}`], 'the stop still cancelled the request, and the agent learns the context at once');
 });
 
+const refusal = () => new BackendError({ kind: 'rejected', status: 401 });
+for (const [failure, failing, alarms] of [
+  ['is refused', (h) => h.fake.failNext('send', refusal()), 1],
+  ['is refused at the read that prepares it', (h) => h.fake.failNext('prepare', refusal()), 1],
+  ['fails until its strikes are spent', (h) => { for (let i = 0; i < 8; i++) h.fake.failNext('send', new BackendError({ kind: 'transient' })); }, 8],
+]) {
+  it(`goes on reading the agent when a send that carried only the context ${failure}, and sends the context with the next reply`, async (t) => {
+    const h = setup(t);
+    await h.connect();
+    const created = h.shortcut.open();
+    h.shortcut.prompt(SID, 'Pick this up');
+    const stop = h.shortcut.stop(SID);
+    await h.accept(h.shortcut.prompt(SID, 'Also fix Firefox'));
+    await h.tick();
+    const chat = h.fake.only();
+    await h.accept(stop);
+    await h.tick();
+    await h.accept(created);
+    failing(h);
+    await h.ticks(alarms);
+    h.fake.say(chat, 'Fixed Firefox');
+    chat.status = { kind: 'finished' };
+    await h.ticks(3);
+    assert.deepEqual(h.bodies('error'), [], 'nothing the user asked for failed, so the turn does not end in an error');
+    assert.deepEqual(h.bodies('response').map((body) => body.split('\n')[0]), ['Fixed Firefox'], 'the agent was answering the turn, and its answer is posted');
+    assert.deepEqual(chat.received, []);
+    assert.equal(await h.alarmIn(), null, 'the context waits for a reply, and no alarm retries it');
+    await h.accept(h.shortcut.prompt(SID, 'Again'));
+    await h.tick();
+    assert.deepEqual(chat.received, [`Context from Shortcut:\n\n${CONTEXT}\n\nAgain`]);
+  });
+}
+
+it('sends the context with a reply that arrived behind a refused send that carried only the context', async (t) => {
+  const h = setup(t);
+  await h.connect();
+  const created = h.shortcut.open();
+  h.shortcut.prompt(SID, 'Pick this up');
+  const stop = h.shortcut.stop(SID);
+  await h.accept(h.shortcut.prompt(SID, 'Also fix Firefox'));
+  await h.tick();
+  const chat = h.fake.only();
+  await h.accept(stop);
+  await h.tick();
+  await h.accept(created);
+  h.fake.failNext('send', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  await h.accept(h.shortcut.prompt(SID, 'Next'));
+  h.fake.failNext('send', refusal());
+  await h.ticks(2);
+  assert.deepEqual(h.bodies('error'), []);
+  assert.deepEqual(chat.received, [`Context from Shortcut:\n\n${CONTEXT}\n\nNext`], 'the reply is a new send, and the context it still owes goes with it');
+  assert.equal(new Set(chat.sends.map((sent) => sent.key)).size, chat.sends.length, 'under a key of its own');
+});
+
 it('still sends the late context a relay carried when a kept stop came before its send went through', async (t) => {
   const h = setup(t);
   h.fake.facts.keeps = true;

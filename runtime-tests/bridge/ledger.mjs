@@ -15,8 +15,8 @@
 // prepare that finds a message in a conversation teaches it less. It shows
 // that the conversation's first text landed, and so whether that text told
 // the conversation the context. A turn has its outcome once the bridge has read that the
-// agent finished or failed, once a backend call was refused, or once Shortcut
-// holds a response, a question, or an error for it.
+// agent finished or failed, once the backend refused a call that served a
+// request, or once Shortcut holds a response, a question, or an error for it.
 export const RULES = {
   stopped: 'A stop cancels every request at or below its turn, also one that arrives later. Once the stop has arrived, no call carries a cancelled request.',
   superseded: [
@@ -35,6 +35,7 @@ export const RULES = {
   keys: 'A send is prepared before it first goes out. A retried open or send repeats its text, and no two different sends share a key.',
   single: 'When the bridge comes to rest, at most one conversation is working.',
   links: 'A conversation without a URL gets no card link, and no activity carries link text for it.',
+  alone: 'A call that only delivers the context ends no turn when the backend refuses it. That is the send of a text that carries no request, or the prepare for one while no request is still owed. The bridge posts no error before its next backend call.',
   loop: 'Every step ends without an error of its own, and once no event is waiting and no agent is working the alarms run out.',
 };
 
@@ -50,12 +51,13 @@ export function ledger(tokens, { opensEmpty }) {
     newest: 0,
     outcome: false,
     failedTurn: 0,
-    fixedAny: false,
+    mayHaveLanded: 0,
     learnedNewest: 0,
     requests: {},
     texts: {},
     told: {},
     preparing: null,
+    forgiven: false,
   });
   let s = fresh();
   let problems = [];
@@ -73,7 +75,7 @@ export function ledger(tokens, { opensEmpty }) {
     // A newly prepared send means the bridge gave up the one before it, so nothing waits on that one any more.
     if (send) for (const earlier of Object.values(s.texts)) if (earlier.send) earlier.dropped = true;
     s.texts[id] = { conversation, text, holds, knew, send, landed: false };
-    if (send || !opensEmpty) s.fixedAny = true;
+    if (send || !opensEmpty) s.mayHaveLanded++;
     for (const turn of holds) {
       if (count(text, tokenOf(turn)) > 1) broke('once', `one text carries ${named(turn)} twice`);
       if (s.requests[turn].superseded) broke('superseded', `a text fixed after ${named(turn)} was superseded carries it`);
@@ -138,7 +140,7 @@ export function ledger(tokens, { opensEmpty }) {
       const request = (s.requests[turn] = { superseded: false, waits: null, landed: 0, learned: true, last: null });
       if (type === 'created') {
         s.created = true;
-        request.superseded = !cancelled(turn) && s.fixedAny && !onOpening();
+        request.superseded = !cancelled(turn) && s.mayHaveLanded > 0 && !onOpening();
         return;
       }
       s.newest = Math.max(s.newest, turn);
@@ -150,11 +152,25 @@ export function ledger(tokens, { opensEmpty }) {
     /** Shortcut accepted an activity. */
     posted({ type, turn }) {
       if (type === 'response' || type === 'elicitation' || type === 'error') s.outcome = true;
+      if (type === 'error' && s.forgiven) broke('alone', 'a turn ended in an error because a call that only delivered the context was refused');
       if (type === 'error') s.failedTurn = Math.max(s.failedTurn, turn);
     },
-    /** The bridge read the end of a turn from the backend, or a call was refused. */
+    /** The bridge read the end of a turn from the backend, or an open or an observe was refused. */
     ended() {
       s.outcome = true;
+    },
+    /** The bridge makes a backend call. */
+    calling() {
+      s.forgiven = false;
+    },
+    /** The backend refused an open or a send, or with a null `key` a prepare. Nothing it carried landed. One that served a request gives the turn its outcome. */
+    refused(key) {
+      const text = s.texts[key];
+      if (text && !text.refused && (text.send || !opensEmpty)) s.mayHaveLanded--;
+      if (text) text.refused = true;
+      const served = text ? text.holds.length > 0 : Object.keys(s.requests).map(Number).some(stillOwed);
+      if (served) s.outcome = true;
+      else s.forgiven = true;
     },
 
     opening(key, text) {

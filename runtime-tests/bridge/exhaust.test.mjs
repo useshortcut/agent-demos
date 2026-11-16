@@ -16,7 +16,7 @@ const root = pathToFileURL(`${process.env.EXHAUST_ROOT ?? process.cwd()}/`);
 assert.ok(existsSync(new URL('src/core/port.ts', root)), 'exhaust.test.mjs tests the bridge in the current directory. Run `npm test` inside a bridge.');
 
 const SCOPES = {
-  default: { turns: [2, 3, 4], from: ['created', 'reply 2', 'reply 3', 'stop 1', 'stop 2', 'close'], events: 4, faults: 1, finish: 1, gone: 1, total: 4 },
+  default: { turns: [2, 3, 4], from: ['created', 'reply 2', 'reply 3', 'stop 1', 'stop 2', 'close'], events: 4, faults: 1, refuse: ['prepare', 'send'], finish: 1, gone: 1, total: 4 },
   deep: { turns: [2, 3, 4], from: ['created', 'reply 2', 'reply 3', 'reply 4', 'stop 1', 'stop 2', 'stop 3', 'close'], events: 5, faults: 2, finish: 1, gone: 1, total: 6 },
 };
 const scope = { ...SCOPES[process.env.EXHAUST ?? 'default'], ...JSON.parse(process.env.EXHAUST_SCOPE ?? '{}') };
@@ -61,6 +61,8 @@ const PINNED = [
   ['tells a conversation opened after a stop the context when it arrives later', DEVIN, ['reply 2', 'stop 1', 'tick', 'created', 'reply 3', 'tick', 'rest']],
   ['repeats an open\'s text when the context arrives before its retry in a conversation opened after a stop', DEVIN, ['reply 2', 'stop 1', 'tick: open fails', 'created', 'tick', 'rest']],
   ['ends the turn, and opens no conversation, when the context of a late session.created is all that waits for a conversation that is gone', DEVIN, ['reply 2', 'tick', 'created', 'stop 1', 'gone', 'tick', 'rest']],
+  ['goes on reading the agent, and ends no turn, when the backend refuses the send that carries only the context', DEVIN, ['reply 2', 'stop 1', 'tick', 'created', 'tick: send refused', 'finish', 'tick', 'rest']],
+  ['goes on reading the agent, and ends no turn, when the backend refuses the prepare of a send that would carry only the context', DEVIN, ['reply 2', 'stop 1', 'tick', 'created', 'tick: prepare refused', 'rest']],
 ];
 
 const bridge = await loadBridge(root);

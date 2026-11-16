@@ -30,8 +30,8 @@ export type Phase =
   /** An open's text is fixed when it is first attempted: `prompt`, and Shortcut's context when `briefs`. What arrives after that waits in `extra`. */
   | { kind: 'start'; prompt: Pending[]; extra: Pending[]; attempted: false }
   | { kind: 'start'; prompt: Pending[]; extra: Pending[]; attempted: true; briefs: boolean }
-  /** Until `send` is set, `prompt` is what the next prepare fixes. After, it waits for the relay that follows. */
-  | { kind: 'relay'; on: Live; prompt: Pending[]; send: Send | null }
+  /** Until `send` is set, `prompt` is what the next prepare fixes. After, it waits for the relay that follows. `working`: the agent holds a text it has not answered, so a relay that gives up with no request to send goes back to reading it. */
+  | { kind: 'relay'; on: Live; prompt: Pending[]; send: Send | null; working: boolean }
   /** `check` asks for a Shortcut read of the session with the next poll. `posted` is the id of the last message written to Shortcut, and `asked` the key suffix of the elicitation. `sentAt` starts the pickup clock. `heartbeatAt` is when a quiet, working agent is next reported to Shortcut. */
   | { kind: 'poll'; on: Live; at: number; delayMs: number; check: boolean; posted: string | null; asked: string | null; sentAt: number; heartbeatAt: number }
   | { kind: 'stop'; target: Held | null; then: Pending[] }
@@ -156,7 +156,7 @@ export function restored(stored: SessionState | FirstPortState): SessionState {
     case 'relay': {
       const send = phase.send && { prompt: requests(phase.send.prompt), briefs: phase.send.late !== null || carried(phase.send.prompt), text: phase.send.text, key: sendKey(stored, 0), memo: phase.send.memo };
       const owed = late !== null || carried(phase.prompt) || send?.briefs;
-      return state(owed || !block ? 'owed' : 'given', { ...phase, prompt: requests(phase.prompt), send });
+      return state(owed || !block ? 'owed' : 'given', { ...phase, prompt: requests(phase.prompt), send, working: false });
     }
     default:
       return state(late !== null || !block ? 'owed' : 'given', phase);
@@ -316,16 +316,16 @@ export function applyEvent(current: SessionState | null, event: ShortcutSessionE
     case 'stop':
       return enqueue({ ...state, phase: { ...phase, then: [...phase.then, reply] } }, ack(`Starting a new ${identity.name} session.`));
     case 'poll':
-      return enqueue({ ...state, phase: relaying(phase.on, [reply]) }, ack(`Passing your message to ${identity.name}.`));
+      return enqueue({ ...state, phase: relaying(phase.on, [reply], true) }, ack(`Passing your message to ${identity.name}.`));
     case 'idle': {
       const prompt = [...(phase.dropped ?? []).filter((dropped) => dropped.turn > state.cutoff), reply];
       if (phase.on === null) return startNew(state, prompt);
-      return enqueue({ ...state, phase: relaying(phase.on, prompt) }, ack(`Passing your message to ${identity.name}.`));
+      return enqueue({ ...state, phase: relaying(phase.on, prompt, false) }, ack(`Passing your message to ${identity.name}.`));
     }
   }
 }
 
-const relaying = (on: Live, prompt: Pending[]): RelayPhase => ({ kind: 'relay', on, prompt, send: null });
+const relaying = (on: Live, prompt: Pending[], working: boolean): RelayPhase => ({ kind: 'relay', on, prompt, send: null, working });
 
 /** The replies the agent has not received yet. A relay counts until its send is confirmed, a start's prompt until its open is attempted, and a stop's replies until they open the next session. */
 function unsent(phase: Phase): Pending[] {
@@ -435,7 +435,7 @@ function merge(current: SessionState, event: ShortcutSessionEventPayload): Sessi
   switch (phase.kind) {
     case 'start': return { ...state, phase: { ...phase, extra: [...phase.extra, ...request] } };
     case 'relay': return { ...state, phase: { ...phase, prompt: [...phase.prompt, ...request] } };
-    case 'poll': return opening(current) && (request.length || owes(state)) ? { ...state, phase: relaying(phase.on, request) } : state;
+    case 'poll': return opening(current) && (request.length || owes(state)) ? { ...state, phase: relaying(phase.on, request, true) } : state;
     default: return state;
   }
 }
@@ -520,10 +520,10 @@ export const linked = (state: SessionState, url: string): SessionState => ({ ...
 const newest = (sent: number, replies: Pending[]) => Math.max(sent, ...replies.map((reply) => reply.turn));
 
 export function started(state: SessionState, phase: Attempted, { conversation: on, delivered }: Opened<Memo>, now: number): SessionState {
-  if (!delivered) return { ...state, phase: relaying(on, [...phase.prompt, ...phase.extra]) };
+  if (!delivered) return { ...state, phase: relaying(on, [...phase.prompt, ...phase.extra], false) };
   const told: SessionState = { ...state, sent: newest(state.sent, phase.prompt), briefing: phase.briefs ? 'given' : state.briefing };
   const extra = phase.extra.filter((reply) => !reply.superseded);
-  return { ...told, phase: extra.length || (owes(told) && opening(told)) ? relaying(on, extra) : polling(on, now) };
+  return { ...told, phase: extra.length || (owes(told) && opening(told)) ? relaying(on, extra, true) : polling(on, now) };
 }
 
 /**
@@ -556,7 +556,23 @@ export function relayed(state: SessionState, phase: RelayPhase, send: Send, memo
   const on: Live = { ...phase.on, memo };
   const told: SessionState = { ...state, sent, briefing: send.briefs ? 'given' : state.briefing };
   const waiting = phase.prompt.filter((reply) => reply.opening || reply.turn > sent);
-  return { ...told, phase: waiting.length || (owes(told) && opening(told)) ? { ...phase, on, prompt: waiting, send: null } : polling(on, now) };
+  return { ...told, phase: waiting.length || (owes(told) && opening(told)) ? { ...phase, on, prompt: waiting, send: null, working: true } : polling(on, now) };
+}
+
+/**
+ * A relay's backend call was refused, or failed until its strikes were spent.
+ * Null when that ends the turn: the relay held a request, or no agent was at
+ * work. Otherwise all it held was Shortcut's context, or what a stop
+ * cancelled, and the agent is still answering the turn. The bridge goes back
+ * to reading it, and the context stays owed for the next reply. A reply that
+ * arrived behind a prepared send of the context alone is prepared next, and
+ * takes the context with it.
+ */
+export function abandoned(state: SessionState, phase: RelayPhase, now: number): SessionState | null {
+  if (!phase.working || phase.send?.prompt.length) return null;
+  const asked = phase.prompt.some((reply) => !reply.superseded);
+  if (phase.send === null) return asked ? null : { ...state, phase: polling(phase.on, now) };
+  return { ...state, phase: asked ? { ...phase, send: null } : polling(phase.on, now) };
 }
 
 /**
@@ -586,7 +602,7 @@ export function stopped(state: SessionState, phase: StopPhase, halted: Halted): 
   if (phase.then.length) {
     if (kept === null) return fresh(state, phase.then);
     // The replies were acknowledged as starting a new session before the halt was answered. This takes that ack's place under its own suffix, since the ack may already be posted.
-    return enqueue({ ...state, phase: relaying(kept, phase.then) }, activity(state, 'ack:kept', 'thought', `Passing your message to ${identity.name}.`));
+    return enqueue({ ...state, phase: relaying(kept, phase.then, false) }, activity(state, 'ack:kept', 'thought', `Passing your message to ${identity.name}.`));
   }
   const url = halted.kind === 'ended' ? halted.url : null;
   const body = url ? `Stopped. The ${identity.name} session was terminated: ${url}` : 'Stopped.';

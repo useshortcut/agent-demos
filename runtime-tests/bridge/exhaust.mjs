@@ -15,6 +15,7 @@
 //   'tick: send fails' the step's first send fails before it reaches the backend
 //   'tick: send lost'  it reaches the backend and its answer is lost
 //   'tick: send dies'  it is answered and the step dies before its save
+//   'tick: send refused' the backend refuses it with a 401
 //   'tick: send 2 ...' the same for the step's second send, and so on for
 //                      open, prepare, observe, and halt
 //   'rest'             every agent finishes and the alarms run until none is set
@@ -27,7 +28,7 @@ import { ledger } from './ledger.mjs';
 const SID = 'exhaust';
 const EPOCH = Date.UTC(2026, 9, 1, 12);
 const CALLS = ['open', 'prepare', 'send', 'observe', 'halt'];
-const MODES = ['fails', 'lost', 'dies'];
+const MODES = ['fails', 'lost', 'dies', 'refused'];
 const READS = ['prepare', 'observe'];
 const REST_ALARMS = 40;
 const replyText = (turn) => `reply-${turn}`;
@@ -70,6 +71,7 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
   t.mock.timers.setTime(EPOCH);
   const led = ledger({ request: REQUEST, context: CONTEXT, reply: replyText }, { opensEmpty: facts.empty });
   const transient = () => new bridge.mod.BackendError({ kind: 'transient' });
+  const refusal = (status = 401) => new bridge.mod.BackendError({ kind: 'rejected', status });
 
   // Shortcut holds every event from the start. Each is delivered when the script says.
   const events = { created: h.shortcut.open(SID), 'stop 1': h.shortcut.stop(SID) };
@@ -112,6 +114,7 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
   const faulted = (call, run) => async (...args) => {
     const nth = (step.counts[call] = (step.counts[call] ?? 0) + 1);
     step.calls.push({ call, nth });
+    led.calling();
     const mode = armed?.call === call && armed.nth === nth ? armed.mode : null;
     if (mode) armed = null;
     const answer = await run(mode, ...args);
@@ -123,6 +126,10 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
     open: faulted('open', async (mode, request) => {
       led.opening(request.key, request.text);
       if (mode === 'fails') throw transient();
+      if (mode === 'refused') {
+        led.refused(request.key);
+        throw refusal();
+      }
       const before = fake.chats.length;
       const opened = await raw.open(request);
       const made = fake.chats[before];
@@ -131,6 +138,10 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
     }),
     prepare: faulted('prepare', async (mode, conversation) => {
       if (mode === 'fails') throw transient();
+      if (mode === 'refused') {
+        led.refused(null);
+        throw refusal();
+      }
       const ready = await raw.prepare(conversation);
       // Told only what the bridge was: a prepare whose answer is lost teaches nothing.
       if (mode === null) led.prepared(conversation.id, { ready: ready.kind === 'ready', empty: ready.empty ?? false });
@@ -142,9 +153,10 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
       if (mode === 'fails') throw transient();
       const chat = fake.chats.find((candidate) => candidate.id === conversation.id);
       // The fake scripts `gone` for prepare alone. A conversation that ended on its own takes no message either.
-      if (chat.gone && !chat.halted) {
-        led.ended();
-        throw new bridge.mod.BackendError({ kind: 'rejected', status: 410 });
+      const ended = chat.gone && !chat.halted;
+      if (mode === 'refused' || ended) {
+        led.refused(key);
+        throw refusal(ended ? 410 : 401);
       }
       const before = chat.received.length;
       const memo = await raw.send(conversation, message);
@@ -153,12 +165,17 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
     }),
     observe: faulted('observe', async (mode, conversation) => {
       if (mode === 'fails') throw transient();
+      if (mode === 'refused') {
+        led.ended();
+        throw refusal();
+      }
       const seen = await raw.observe(conversation);
       if (mode === null && ['finished', 'failed'].includes(seen.status.kind)) led.ended();
       return seen;
     }),
     halt: faulted('halt', async (mode, target) => {
       if (mode === 'fails') throw transient();
+      if (mode === 'refused') throw refusal();
       return raw.halt(target);
     }),
   });
@@ -322,14 +339,15 @@ const budgetsOf = (scope) => Object.fromEntries(BUDGETS.map((budget) => [budget,
 
 /** The faults a scope allows on the calls one alarm made. A read changes nothing at the backend, so one whose answer is lost is one that failed. */
 const faultsOn = (calls, scope) => calls.flatMap(({ call, nth }) => MODES
-  .filter((mode) => !(mode === 'lost' && READS.includes(call)) && (!scope.only || scope.only.includes(`${call} ${mode}`)))
+  .filter((mode) => !(mode === 'lost' && READS.includes(call)) && !(mode === 'refused' && scope.refuse && !scope.refuse.includes(call)) && (!scope.only || scope.only.includes(`${call} ${mode}`)))
   .map((mode) => `tick: ${call}${nth > 1 ? ` ${nth}` : ''} ${mode}`));
 
 /**
  * Runs every script the scope allows, shortest first, and stops a script at
  * the first rule it breaks. `scope` is `{ events, faults, finish, gone }`, how
  * many of each a script may hold, `total`, how many of them together, `from`,
- * the events it may deliver, and `only`, the faults it may hold when not all. A
+ * the events it may deliver, `refuse`, the calls the backend may refuse when
+ * not all, and `only`, the faults it may hold when not all. A
  * script that reaches a state an earlier one reached with as much of the
  * scope left ends there, since the earlier one's futures hold all of its own.
  * Returns the shortest script that breaks each rule, and how much was run:

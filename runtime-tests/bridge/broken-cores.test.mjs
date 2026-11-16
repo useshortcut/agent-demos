@@ -48,6 +48,13 @@ const BROKEN = [
     scope: { from: ['created', 'reply 2', 'stop 1'], events: 3, faults: 1, only: ['send lost'], finish: 0, gone: 0, total: 4 },
     breaks: 'briefedOnce',
   },
+  {
+    core: 'ends the turn when the backend refuses a send that carried only the context',
+    replace: [['  if (!phase.working || phase.send?.prompt.length) return null;', '  if (phase.on) return null;']],
+    facts: DEVIN,
+    scope: { from: ['created', 'reply 2', 'stop 1'], events: 3, faults: 1, only: ['send refused'], finish: 0, gone: 0, total: 4 },
+    breaks: 'alone',
+  },
 ];
 
 function brokenCopy(replace) {
