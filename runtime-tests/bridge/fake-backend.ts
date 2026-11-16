@@ -75,7 +75,6 @@ export function script(log: unknown[]) {
   const conversation = ({ id, url }: Chat): Conversation<Memo> => ({ id, url, memo: { heard: 0 } });
 
   const backend: Backend<Memo> = {
-    // Unless it opens empty, a retried open finds the chat an interrupted one made under the same key.
     async open({ key, text }) {
       return attempt('open', key, () => {
         const n = chats.length + 1;

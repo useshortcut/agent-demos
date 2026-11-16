@@ -235,15 +235,14 @@ if (RECORD_FROM) {
   const fixtures = JSON.parse(await readFile(FIXTURES, 'utf8'));
   const states = Object.values(fixtures).flat().map(({ state }) => state);
 
-  it('has a recorded state for every phase and variant, each in the shape stored before the port learned kept stops, empty opens, and send keys', () => {
+  it('has a recorded state for every phase and variant, each in the shape the first port stored', () => {
     assert.deepEqual(Object.keys(fixtures), scenarios.map((s) => s.name));
     const covered = new Set(states.flatMap(variants));
     assert.deepEqual(REQUIRED.filter((variant) => !covered.has(variant)), []);
     assert.ok(states.every((state) => state.v === 2), 'every state is one the bridge loads without an upgrade');
+    assert.ok(states.every((state) => 'late' in state && !('briefing' in state)), 'every state keeps the context it owes in `late`, not in `briefing`');
     const sends = states.map(({ phase }) => phase.send).filter(Boolean);
-    assert.deepEqual(sends.filter((send) => 'key' in send), [], 'no recorded send has a key');
-    assert.deepEqual(states.flatMap(pendings).filter((pending) => 'bare' in pending), [], 'no recorded opening request has its bare words');
-    assert.doesNotMatch(JSON.stringify(states), /"empty":/, 'no recorded conversation is marked empty');
+    assert.ok(sends.every((send) => 'late' in send && !('key' in send)), 'every prepared send has a `late` and no key');
   });
 
   for (const scenario of scenarios) {

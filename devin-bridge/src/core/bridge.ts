@@ -76,7 +76,7 @@ export type SessionState = {
   phase: Phase;
   /** Conversations the bridge gave up and still has to halt. */
   retire: Held[];
-  /** The conversation URL last set, or given up, on the session card. A phase link that differs is still to be set. A conversation without a URL has no link to set. */
+  /** The conversation URL last set, or given up, on the session card. A phase link that differs is still to be set. */
   linked: string | null;
   outbox: Activity[];
   /** Consecutive failures per job. Each resets on its own success. */
@@ -219,7 +219,6 @@ function contextOf(event: ShortcutSessionEventPayload): string {
 
 const joined = (...parts: string[]) => parts.filter(Boolean).join('\n\n');
 
-/** The body with the conversation's link after it, or alone when the conversation has none. */
 const linkedBody = (body: string, link: string) => (link ? `${body} ${link}` : body);
 
 const turnOf = (event: ShortcutSessionEventPayload) => event.activity?.turn ?? event.session.turn;
@@ -399,9 +398,9 @@ const opening = ({ generation, turn, first, phase }: SessionState) =>
 // the context carries it, so this function only stores it.
 //
 // The request is cancelled by a stop for its turn or a later one, whether the
-// stop came first or comes later, and it never reaches a conversation after
-// the first. Otherwise where it goes depends on what the agent may have been
-// told by now.
+// stop came first or comes later. One that arrives after the bridge has moved
+// to a later conversation is dropped. Otherwise where it goes depends on what
+// the agent may have been told by now.
 //
 // Nothing was told: no open has gone out. The request joins the opening text,
 // whatever replies arrived meanwhile.
@@ -418,6 +417,9 @@ const opening = ({ generation, turn, first, phase }: SessionState) =>
 // prepare that finds the conversation empty puts it into the introduction.
 //
 // The turn the bridge started from has its outcome: the request is dropped.
+//
+// A request that still waits when its conversation turns out to be gone opens
+// the next one with whatever else waited.
 function merge(current: SessionState, event: ShortcutSessionEventPayload): SessionState {
   const state = { ...current, context: contextOf(event) };
   const { phase } = current;
@@ -502,7 +504,6 @@ export const linked = (state: SessionState, url: string): SessionState => ({ ...
 const newest = (sent: number, replies: Pending[]) => Math.max(sent, ...replies.map((reply) => reply.turn));
 
 export function started(state: SessionState, phase: Attempted, { conversation: on, delivered }: Opened<Memo>, now: number): SessionState {
-  // Nothing reached the agent, so the opening prompt and all that arrived since wait together for the relay that introduces the conversation.
   if (!delivered) return { ...state, phase: relaying(on, [...phase.prompt, ...phase.extra]) };
   const told: SessionState = { ...state, sent: newest(state.sent, phase.prompt), briefing: phase.briefs ? 'given' : state.briefing };
   const extra = phase.extra.filter((reply) => !reply.superseded);

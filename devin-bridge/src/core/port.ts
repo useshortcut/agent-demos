@@ -100,7 +100,7 @@ export function failureOf(status: number, retryAfter: string | null, now: number
 export interface Backend<M> {
   /**
    * Safe to repeat for one `key`: either the adapter finds what an earlier
-   * attempt created under the key, or the open carries no text and starts no
+   * attempt created under the key, or the open delivers no text and starts no
    * work, so one lost to a crash is inert. Halting an unresolved key of the
    * second kind answers `ended` without a call.
    */

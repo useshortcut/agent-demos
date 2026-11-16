@@ -1,8 +1,7 @@
 // Rewrites first-port-states.json: runs the scenarios in ../stored.test.mjs
-// against the bridge as it was when its backend port first stored states,
-// before the port learned kept stops, empty opens, missing links, and send
-// keys. A deployed bridge of that version still holds such states. Run from
-// devin-bridge:
+// against the bridge as it was when its backend port first stored states.
+// `FirstPortState` in src/core/bridge.ts describes that shape. A deployed
+// bridge of that version still holds such states. Run from devin-bridge:
 //   node test/fixtures/record-first-port.mjs
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';

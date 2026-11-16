@@ -21,8 +21,7 @@ export function conform({ label, setup, identity, facts, vendor }) {
   const activities = (h, type) => h.shortcut.activities().filter((a) => a.content.type === type);
   const answers = (h) => activities(h, 'response').map((a) => [a.turn, a.content.body.split('\n')[0]]);
   const deliver = async (h, event) => assert.equal((await h.deliver(event)).status, 200);
-  /** How many requests the bridge has made of its backend. */
-  const asked = (h) => h.requests.filter((r) => r.origin !== 'shortcut').length;
+  const backendRequests = (h) => h.requests.filter((r) => r.origin !== 'shortcut').length;
   const settle = async (h) => { for (let i = 0; i < 4; i++) await h.tick(); };
 
   // Each alarm runs at its scheduled time, so this also moves the clock through the bridge's waits.
@@ -102,9 +101,9 @@ export function conform({ label, setup, identity, facts, vendor }) {
     assert.deepEqual(activities(h, 'elicitation').map((a) => [a.turn, a.content.body]), [[1, under('Which browser?', session)]]);
     assert.deepEqual(answers(h), [], 'a question is not an answer');
     await settle(h);
-    const before = asked(h);
+    const before = backendRequests(h);
     await settle(h);
-    assert.equal(asked(h), before, 'the turn is handed back, so the bridge asks the backend nothing more until a reply arrives');
+    assert.equal(backendRequests(h), before, 'the turn is handed back, so the bridge asks the backend nothing more until a reply arrives');
     await deliver(h, h.shortcut.prompt(SID, 'Safari'));
     await until(h, () => heard(h, session).length === 2, 'the bridge passes the answer back');
     assert.equal(vendor.sessions(h).length, 1);

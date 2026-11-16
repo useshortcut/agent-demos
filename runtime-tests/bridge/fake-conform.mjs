@@ -1,4 +1,4 @@
-// conform() against fake-backend.ts, for core.test.mjs and for mutants.test.mjs.
+// conform() against fake-backend.ts, for core.test.mjs and for mutant.mjs.
 import { conform } from './conform.mjs';
 
 /** `setup(t)` returns the harness of a bridge bundled with the fake backend. `BackendError` is that bundle's. */
