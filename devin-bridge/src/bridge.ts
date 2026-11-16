@@ -9,10 +9,10 @@ export type Activity = {
   ephemeral?: true;
 };
 
-export type Live = Conversation<Memo>;
+type Live = Conversation<Memo>;
 
 /** A conversation the bridge may still have to halt: one it knows, or any an open may have made under a key. */
-export type Held = Target<Memo>;
+type Held = Target<Memo>;
 
 /** A reply the agent has not received yet. Its turn orders it among the others, whatever order they arrived in. The opening request of a late `session.created` is never superseded by a newer reply. */
 export type Pending = { turn: number; text: string; opening?: true };
@@ -370,11 +370,11 @@ export function started(state: SessionState, phase: StartPhase, { conversation: 
 }
 
 /** The memo and the text are fixed together, before the send, so a retried send places the agent's answer the same way. The text is a late context first, then the replies in turn order. */
-export const prepared = (state: SessionState, phase: RelayPhase, memo: Memo): SessionState => {
+export function prepared(state: SessionState, phase: RelayPhase, memo: Memo): SessionState {
   const { prompt } = phase;
   const { late } = state;
   return { ...state, late: null, phase: { ...phase, prompt: [], send: { prompt, late, text: promptText(late ? [late, ...prompt] : prompt), memo } } };
-};
+}
 
 /** The send went through now, so the pickup clock starts here, not at the prepare. A reply that arrived after the prepare is relayed next. */
 export function relayed(state: SessionState, phase: RelayPhase, send: Send, memo: Memo, now: number): SessionState {

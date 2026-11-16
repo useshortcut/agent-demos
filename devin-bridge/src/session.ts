@@ -256,8 +256,8 @@ function shortcutFailed(state: SessionState): SessionState {
 }
 
 // The phase's backend work, and nothing else: a Shortcut call in here would
-// lose its deadline and strikes when a later backend call failed, since `guarded`
-// keeps the state the job started from.
+// lose its deadline and strikes when a later backend call failed, since
+// `guarded` keeps the state the job started from.
 async function perform(state: SessionState, phase: ActPhase, { backend, slug }: Io): Promise<SessionState> {
   switch (phase.kind) {
     case 'start': {
@@ -331,15 +331,15 @@ async function link(state: SessionState, url: string, { shortcut }: Io): Promise
 }
 
 async function haltStop(state: SessionState, phase: StopPhase, backend: Backend<Memo>): Promise<SessionState> {
-  const halted: Halted = phase.target ? await backend.halt(phase.target) : { kind: 'ended', url: null };
-  const done = succeeded(state, 'backend');
   const { target } = phase;
+  const halted: Halted = target ? await backend.halt(target) : { kind: 'ended', url: null };
+  const done = succeeded(state, 'backend');
   // Nothing under the key yet may be read-after-write lag, so retirement looks again.
   const next = halted.kind === 'unseen' && target?.kind === 'unresolved' ? wait({ ...done, retire: [...done.retire, { ...target, lookups: 1 }] }, 'retire', backoffMs(1)) : done;
   return stopped(next, phase, halted);
 }
 
-// Sessions the bridge gave up are halted here, one per run, on their own
+// Conversations the bridge gave up are halted here, one per run, on their own
 // budget. A halt the backend refuses spends that budget like an outage.
 async function retire(state: SessionState, backend: Backend<Memo>): Promise<SessionState> {
   const [target, ...rest] = state.retire;
