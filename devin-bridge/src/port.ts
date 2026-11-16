@@ -1,0 +1,96 @@
+import { retryAfterMs } from './http';
+
+export type Identity = {
+  /** Prefix of every activity key: `{slug}:{turn}:{suffix}`. */
+  slug: string;
+  /** Log label. */
+  title: string;
+  /** How activities name the agent. */
+  name: string;
+  /** The name with its article, which depends on the name. */
+  aSession: string;
+  /** The label of the card link. */
+  linkLabel: string;
+};
+
+/** A backend session the bridge knows. `memo` is the adapter's own durable state: the core saves it with the phase and hands it back, and never reads it. */
+export type Conversation<M> = { id: string; url: string; memo: M };
+
+/** What a stop or a retirement acts on: a conversation, or whatever an interrupted open made under a key. */
+export type Target<M> =
+  | { kind: 'live'; conversation: Conversation<M> }
+  | { kind: 'unresolved'; key: string; lookups: number };
+
+export type OpenRequest = {
+  /** The same for every attempt of one generation of one Shortcut session, so an adapter finds its own earlier attempt by it. */
+  key: string;
+  title: string;
+  /** The introduction and the opening request, ready to send. */
+  text: string;
+};
+
+/** `duplicates` are other conversations found under the key. The core retires them. */
+export type Opened<M> = { conversation: Conversation<M>; duplicates: Conversation<M>[] };
+
+/** `gone`: the conversation cannot take a message any more, so the core opens a new one with the reply. */
+export type Prepared<M> = { kind: 'ready'; memo: M } | { kind: 'gone' };
+
+export type Outgoing = { text: string };
+
+/** One thing the agent said this turn. `id` is stable across reads: it becomes part of an activity key. */
+export type Said = { id: string; text: string };
+
+export type Status =
+  /** The last send is not picked up yet. The core waits, and gives up after the pickup timeout. */
+  | { kind: 'pending' }
+  | { kind: 'working' }
+  /** `user`: the turn is handed back. `approval`: the answer is given in the backend's own app, so the core keeps polling. */
+  | { kind: 'asked'; on: 'user' | 'approval' }
+  /** `footer` goes above the link in the response. */
+  | { kind: 'finished'; footer?: string }
+  /** `keep`: the conversation can still take the next reply. */
+  | { kind: 'failed'; body: string; keep: boolean };
+
+export type Observed<M> = {
+  memo: M;
+  /** What the agent said since the last send, oldest first. Empty when the list could not be read whole. A question is the last entry. */
+  said: Said[];
+  status: Status;
+};
+
+export type Halted =
+  /** The conversation is over. The next reply opens a new one. */
+  | { kind: 'ended'; url: string | null }
+  /** An unresolved key found nothing. It may be read-after-write lag, so the core looks again. */
+  | { kind: 'unseen' };
+
+export type BackendFailure =
+  /** Wait for `retryAfterMs` without spending a strike. */
+  | { kind: 'hold'; retryAfterMs: number }
+  | { kind: 'transient' }
+  | { kind: 'rejected'; status: number };
+
+/** The only error an adapter throws. Anything else is a bug and reaches the alarm's catch. */
+export class BackendError extends Error {
+  constructor(readonly failure: BackendFailure) {
+    super('Backend request failed');
+  }
+}
+
+export function failureOf(status: number, retryAfter: string | null, now: number): BackendFailure {
+  if (status === 429) return { kind: 'hold', retryAfterMs: retryAfterMs(retryAfter, now) };
+  if (status >= 400 && status < 500) return { kind: 'rejected', status };
+  return { kind: 'transient' };
+}
+
+export interface Backend<M> {
+  open(request: OpenRequest): Promise<Opened<M>>;
+  /** Reads what the next send depends on. The core saves the memo before the send goes out. */
+  prepare(conversation: Conversation<M>): Promise<Prepared<M>>;
+  /** `conversation.memo` is the prepared memo. Returns the memo that places the agent's answer. */
+  send(conversation: Conversation<M>, message: Outgoing): Promise<M>;
+  /** Read-only at the backend. The same memo and the same backend state give the same answer. */
+  observe(conversation: Conversation<M>): Promise<Observed<M>>;
+  /** Stops the work. A session that is already stopped or gone is a success. */
+  halt(target: Target<M>): Promise<Halted>;
+}

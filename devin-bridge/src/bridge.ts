@@ -1,4 +1,5 @@
 import type { ShortcutSessionEventPayload, ShortcutSessionPromptedPayload } from '@shortcut/client/webhooks';
+import type { DevinMessage, DevinState } from './devin';
 
 export type Activity = {
   key: string;
@@ -71,15 +72,6 @@ export type SessionState = {
   /** The highest inbox sequence applied, so a step that dies before clearing the inbox applies nothing twice. */
   applied: number;
 };
-
-export type DevinState =
-  | { kind: 'working' }
-  | { kind: 'waiting'; on: 'user' | 'approval' }
-  | { kind: 'finished' }
-  | { kind: 'failed'; cause: 'error' | 'exit' }
-  | { kind: 'failed'; cause: 'suspended'; reason: string };
-
-export type DevinMessage = { id: string; source: string; body: string };
 
 export type DevinSnapshot = { state: DevinState; url: string; pullRequests: string[]; messages: DevinMessage[]; complete: boolean };
 

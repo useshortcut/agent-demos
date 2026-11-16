@@ -36,7 +36,8 @@ import {
   type StopPhase,
   type Target,
 } from './bridge';
-import { DevinError, devinClient, type DevinClient, type DevinFailure } from './devin';
+import { devinClient, type DevinClient } from './devin';
+import { BackendError, type BackendFailure } from './port';
 import type { Env } from './index';
 import { loadCredentials, shortcutSessions, workspaceAllowed, type Outcome, type ShortcutSessions } from './shortcut';
 
@@ -185,8 +186,8 @@ async function execute(state: SessionState, due: Due, devin: DevinClient, connec
 // What a Devin failure costs. A 429 holds every Devin call until Retry-After.
 // A failure the job may retry spends one of its strikes and backs the job off
 // alone. Null once the budget is spent.
-function held(state: SessionState, failure: DevinFailure, job: 'devin' | 'retire', retry: boolean): SessionState | null {
-  if (failure.kind === 'rate_limited') return wait(state, 'devin', failure.retryAfterMs);
+function held(state: SessionState, failure: BackendFailure, job: 'devin' | 'retire', retry: boolean): SessionState | null {
+  if (failure.kind === 'hold') return wait(state, 'devin', failure.retryAfterMs);
   const strikes = state.failures[job] + 1;
   return retry && strikes < MAX_FAILURES ? wait(strike(state, job, strikes), job, backoffMs(strikes)) : null;
 }
@@ -196,7 +197,7 @@ async function guarded(state: SessionState, run: () => Promise<SessionState>): P
   try {
     return await run();
   } catch (error) {
-    if (!(error instanceof DevinError)) throw error;
+    if (!(error instanceof BackendError)) throw error;
     const { failure } = error;
     const waiting = held(state, failure, 'devin', failure.kind === 'transient');
     if (waiting) return waiting;
@@ -342,7 +343,7 @@ async function retire(state: SessionState, devin: DevinClient): Promise<SessionS
     if (lookups >= MAX_LOOKUPS) return done;
     return wait({ ...done, retire: [{ ...target, lookups }, ...rest] }, 'retire', backoffMs(lookups));
   } catch (error) {
-    if (!(error instanceof DevinError)) throw error;
+    if (!(error instanceof BackendError)) throw error;
     const waiting = held(state, error.failure, 'retire', true);
     if (waiting) return waiting;
     console.warn('Devin Bridge gave up terminating a Devin session', { sessionId: state.shortcutSessionId, target: target.kind === 'live' ? target.id : target.tag });
@@ -362,7 +363,7 @@ async function terminate(devin: DevinClient, id: string): Promise<void> {
   try {
     await devin.terminate(id);
   } catch (error) {
-    if (!(error instanceof DevinError && error.failure.kind === 'rejected' && GONE.has(error.failure.status))) throw error;
+    if (!(error instanceof BackendError && error.failure.kind === 'rejected' && GONE.has(error.failure.status))) throw error;
   }
 }
 

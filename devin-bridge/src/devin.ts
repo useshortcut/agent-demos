@@ -1,17 +1,17 @@
-import type { DevinMessage, DevinState } from './bridge';
-import { retryAfterMs } from './http';
+import { BackendError, failureOf } from './port';
 
 export type DevinConfig = { apiKey: string; orgId: string; baseUrl?: string };
 
+export type DevinState =
+  | { kind: 'working' }
+  | { kind: 'waiting'; on: 'user' | 'approval' }
+  | { kind: 'finished' }
+  | { kind: 'failed'; cause: 'error' | 'exit' }
+  | { kind: 'failed'; cause: 'suspended'; reason: string };
+
+export type DevinMessage = { id: string; source: string; body: string };
+
 export type DevinSession = { id: string; url: string; state: DevinState; pullRequests: string[] };
-
-export type DevinFailure = { kind: 'rate_limited'; retryAfterMs: number } | { kind: 'transient' } | { kind: 'rejected'; status: number };
-
-export class DevinError extends Error {
-  constructor(readonly failure: DevinFailure) {
-    super('Devin request failed');
-  }
-}
 
 const REQUEST_TIMEOUT_MS = 15_000;
 const MESSAGE_PAGE_SIZE = 200;
@@ -48,7 +48,7 @@ function createdAt(value: unknown): number {
 
 function parseSession(value: unknown): DevinSession & { tags: string[]; createdAt: number } {
   if (!isRecord(value) || typeof value.session_id !== 'string' || typeof value.url !== 'string' || typeof value.status !== 'string') {
-    throw new DevinError({ kind: 'transient' });
+    throw new BackendError({ kind: 'transient' });
   }
   const detail = typeof value.status_detail === 'string' ? value.status_detail : null;
   const pulls = Array.isArray(value.pull_requests) ? value.pull_requests : [];
@@ -60,12 +60,6 @@ function parseSession(value: unknown): DevinSession & { tags: string[]; createdA
     tags: Array.isArray(value.tags) ? value.tags.filter((tag): tag is string => typeof tag === 'string') : [],
     createdAt: createdAt(value.created_at),
   };
-}
-
-function classify(response: Response): DevinFailure {
-  if (response.status === 429) return { kind: 'rate_limited', retryAfterMs: retryAfterMs(response.headers.get('Retry-After'), Date.now()) };
-  if (response.status >= 400 && response.status < 500) return { kind: 'rejected', status: response.status };
-  return { kind: 'transient' };
 }
 
 export function devinClient({ apiKey, orgId, baseUrl = 'https://api.devin.ai' }: DevinConfig) {
@@ -83,15 +77,15 @@ export function devinClient({ apiKey, orgId, baseUrl = 'https://api.devin.ai' }:
       if (!response.ok) {
         await response.body?.cancel();
         console.error('Devin request rejected', { method, path, status: response.status });
-        throw new DevinError(classify(response));
+        throw new BackendError(failureOf(response.status, response.headers.get('Retry-After'), Date.now()));
       }
       if (reply) return await response.json();
       await response.body?.cancel();
       return undefined;
     } catch (error) {
-      if (error instanceof DevinError) throw error;
+      if (error instanceof BackendError) throw error;
       console.error('Devin request failed', { method, path, timeoutMs: REQUEST_TIMEOUT_MS });
-      throw new DevinError({ kind: 'transient' });
+      throw new BackendError({ kind: 'transient' });
     }
   }
 
@@ -111,10 +105,10 @@ export function devinClient({ apiKey, orgId, baseUrl = 'https://api.devin.ai' }:
       for (let page = 0; page < MAX_SESSION_PAGES; page++) {
         const query = new URLSearchParams([['tags', tag], ['first', String(SESSION_PAGE_SIZE)], ...(after ? [['after', after]] : [])]);
         const result = await call('GET', '/sessions', { query });
-        if (!isRecord(result) || !Array.isArray(result.items) || typeof result.has_next_page !== 'boolean') throw new DevinError({ kind: 'transient' });
+        if (!isRecord(result) || !Array.isArray(result.items) || typeof result.has_next_page !== 'boolean') throw new BackendError({ kind: 'transient' });
         for (const item of result.items) if (isRecord(item) && Array.isArray(item.tags) && item.tags.includes(tag)) found.push(parseSession(item));
         if (!result.has_next_page) return found.sort((a, b) => a.createdAt - b.createdAt);
-        if (typeof result.end_cursor !== 'string') throw new DevinError({ kind: 'transient' });
+        if (typeof result.end_cursor !== 'string') throw new BackendError({ kind: 'transient' });
         after = result.end_cursor;
       }
       if (found.length === 0) console.warn('Devin Bridge found no tagged session within 5 pages and will create one', { tag });
@@ -137,7 +131,7 @@ export function devinClient({ apiKey, orgId, baseUrl = 'https://api.devin.ai' }:
       for (let page = 0; page < MAX_MESSAGE_PAGES; page++) {
         const query = new URLSearchParams({ first: String(MESSAGE_PAGE_SIZE), ...(after ? { after } : {}) });
         const result = await call('GET', `/sessions/${encodeURIComponent(id)}/messages`, { query });
-        if (!isRecord(result) || !Array.isArray(result.items)) throw new DevinError({ kind: 'transient' });
+        if (!isRecord(result) || !Array.isArray(result.items)) throw new BackendError({ kind: 'transient' });
         for (const item of result.items) {
           if (isRecord(item) && typeof item.event_id === 'string' && typeof item.source === 'string') {
             messages.push({ id: item.event_id, source: item.source, body: typeof item.message === 'string' ? item.message : '' });
