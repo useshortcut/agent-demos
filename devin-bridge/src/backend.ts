@@ -73,7 +73,7 @@ export function connect(env: BackendEnv): Backend<Memo> {
     async open({ key, title, text }) {
       const [adopted, ...duplicates] = await devin.findSessionsByTag(key);
       const session = adopted ?? (await devin.createSession(text, title, key));
-      return { conversation: conversation(session), duplicates: duplicates.map(conversation) };
+      return { conversation: conversation(session), delivered: true, duplicates: duplicates.map(conversation) };
     },
 
     async prepare({ id }) {

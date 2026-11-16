@@ -29,8 +29,13 @@ export type OpenRequest = {
   text: string;
 };
 
-/** `duplicates` are other conversations found under the key. The core retires them. */
-export type Opened<M> = { conversation: Conversation<M>; duplicates: Conversation<M>[] };
+export type Opened<M> = {
+  conversation: Conversation<M>;
+  /** False when the conversation was created empty. The core then sends `text` as its first message, through `prepare` and `send`. */
+  delivered: boolean;
+  /** Other conversations found under the key. The core retires them. */
+  duplicates: Conversation<M>[];
+};
 
 /** `gone`: the conversation cannot take a message any more, so the core opens a new one with the reply. */
 export type Prepared<M> = { kind: 'ready'; memo: M } | { kind: 'gone' };
@@ -87,6 +92,12 @@ export function failureOf(status: number, retryAfter: string | null, now: number
 }
 
 export interface Backend<M> {
+  /**
+   * Safe to repeat for one `key`: either the adapter finds what an earlier
+   * attempt created under the key, or the open carries no text and starts no
+   * work, so one lost to a crash is inert. Halting an unresolved key of the
+   * second kind answers `ended` without a call.
+   */
   open(request: OpenRequest): Promise<Opened<M>>;
   /** Reads what the next send depends on. The core saves the memo before the send goes out. */
   prepare(conversation: Conversation<M>): Promise<Prepared<M>>;

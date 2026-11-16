@@ -9,7 +9,8 @@ export type Activity = {
   ephemeral?: true;
 };
 
-type Live = Conversation<Memo>;
+/** `empty`: opened without the opening text, and no send to it is confirmed, so the next relay to it carries the introduction. */
+type Live = Conversation<Memo> & { empty?: true };
 
 type Held = Target<Memo>;
 
@@ -376,22 +377,32 @@ export const linked = (state: SessionState, url: string): SessionState => ({ ...
 
 const newest = (sent: number, replies: Pending[]) => Math.max(sent, ...replies.map((reply) => reply.turn));
 
-export function started(state: SessionState, phase: StartPhase, { conversation: on }: Opened<Memo>, now: number): SessionState {
+export function started(state: SessionState, phase: StartPhase, { conversation: on, delivered }: Opened<Memo>, now: number): SessionState {
   const { extra } = phase;
+  // Nothing reached the agent, so the opening prompt and the replies that arrived since wait together for the relay that introduces the conversation.
+  if (!delivered) return { ...state, phase: { kind: 'relay', on: { ...on, empty: true }, prompt: [...phase.prompt, ...extra], send: null } };
   return { ...state, sent: newest(state.sent, phase.prompt), phase: extra.length ? { kind: 'relay', on, prompt: extra, send: null } : polling(on, now) };
 }
 
-/** The memo, the text, and the key are fixed together, before the send, so a retried send is the same send and places the agent's answer the same way. The text is a late context first, then the replies in turn order. */
-export function prepared(state: SessionState, phase: RelayPhase, memo: Memo): SessionState {
+/**
+ * The memo, the text, and the key are fixed together, before the send, so a
+ * retried send is the same send and places the agent's answer the same way.
+ * The text is a late context first, then the replies in turn order. For an
+ * empty conversation it is the introduction instead, which carries Shortcut's
+ * context itself, so a late context is spent on it.
+ */
+export function prepared(state: SessionState, phase: RelayPhase, memo: Memo, slug: string): SessionState {
   const { prompt } = phase;
-  const { late } = state;
-  return { ...state, late: null, phase: { ...phase, prompt: [], send: { prompt, late, text: promptText(late ? [late, ...prompt] : prompt), key: sendKey(state), memo } } };
+  const late = phase.on.empty ? null : state.late;
+  const text = phase.on.empty ? introduction(state, promptText(prompt), slug) : promptText(late ? [late, ...prompt] : prompt);
+  return { ...state, late: null, phase: { ...phase, prompt: [], send: { prompt, late, text, key: sendKey(state), memo } } };
 }
 
 /** The send went through now, so the pickup clock starts here, not at the prepare. A reply that arrived after the prepare is relayed next. */
 export function relayed(state: SessionState, phase: RelayPhase, send: Send, memo: Memo, now: number): SessionState {
   const sent = newest(state.sent, send.prompt);
-  const on = { ...phase.on, memo };
+  // Rebuilt without `empty`: the conversation holds a message now.
+  const on: Live = { id: phase.on.id, url: phase.on.url, memo };
   const waiting = phase.prompt.filter((reply) => reply.opening || reply.turn > sent);
   const next: Phase = waiting.length ? { ...phase, on, prompt: waiting, send: null } : polling(on, now);
   return { ...state, sent, phase: next };

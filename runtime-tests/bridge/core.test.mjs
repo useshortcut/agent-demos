@@ -18,6 +18,12 @@ const bridge = await bridgeHarness({
 });
 const { BackendError } = bridge.mod;
 
+const REQUEST = 'Please fix the Safari login bug (private-prompt)';
+const CONTEXT = 'Story 123: Fix login\n\nRequested in comment:\nplease fix (private-prompt)\n\nLogin fails on Safari.';
+const STORY = 'Shortcut story: https://app.shortcut.com/acme/story/123';
+/** The opening text for what the user asked: the request, the story link, and Shortcut's context, once each. */
+const introduction = (asked, context = CONTEXT) => [asked ? `A Shortcut user asked:\n\n${asked}` : 'Work on this Shortcut story.', STORY, ...(context ? [`Context from Shortcut:\n\n${context}`] : [])].join('\n\n');
+
 function setup(t) {
   const h = bridge.setup(t);
   h.env.FAKE = h.vendor;
@@ -52,7 +58,7 @@ it('opens one conversation for a session, however often its event is delivered, 
   await h.accept(created);
   await h.tick();
   const chat = h.fake.only();
-  assert.match(chat.opened, /A Shortcut user asked:\n\nPlease fix the Safari login bug/);
+  assert.equal(chat.opened, introduction(REQUEST));
   assert.equal(chat.key, 'shortcut-session-sess-1-1');
 
   h.fake.say(chat, 'Looking into it');
@@ -267,4 +273,104 @@ it('sends a reply again under a new key after a stop interrupted the conversatio
   assert.deepEqual(h.requests.filter((r) => r.origin === 'fake').map((r) => r.method).slice(-3), ['halt', 'prepare', 'send']);
   assert.notEqual(chat.sends[1].key, chat.sends[0].key, 'the send after the halt is a new send, though its text is the same');
   assert.deepEqual(chat.received, ['Try Chrome instead', 'Try Chrome instead'], 'so the reply reaches the agent after the interrupt');
+});
+
+it('introduces a conversation opened empty with its first send, and sends later replies as they are', async (t) => {
+  const h = setup(t);
+  h.fake.facts.empty = true;
+  const chat = await h.started();
+  assert.equal(chat.opened, null);
+  assert.deepEqual(chat.received, [introduction(REQUEST)], 'the first message is the opening text an open would have carried');
+  assert.deepEqual(h.requests.filter((r) => r.origin === 'fake').map((r) => r.method), ['open', 'prepare', 'send']);
+  assert.deepEqual(h.shortcut.sessions.get(SID).external_urls, [{ label: 'Open in Fake', url: chat.url }]);
+  h.fake.say(chat, 'Fixed it');
+  chat.status = { kind: 'finished' };
+  await h.tick();
+  await h.accept(h.shortcut.prompt(SID, 'Also fix Firefox'));
+  await h.tick();
+  assert.deepEqual(chat.received, [introduction(REQUEST), 'Also fix Firefox'], 'only the first message introduces');
+  assert.deepEqual(h.bodies('response').map((body) => body.split('\n')[0]), ['Fixed it']);
+  h.assertCleanLogs();
+
+  const bare = setup(t);
+  bare.fake.facts.empty = true;
+  await bare.connect();
+  await bare.accept(bare.shortcut.open(SID, { body: { type: 'attachment' } }));
+  await bare.tick();
+  assert.deepEqual(bare.fake.only().received, [introduction('')], 'a session opened without text is introduced by the story alone');
+});
+
+it('puts the replies that arrived during an empty open into the introduction, in turn order', async (t) => {
+  const h = setup(t);
+  h.fake.facts.empty = true;
+  await h.connect();
+  await h.accept(h.shortcut.open());
+  h.fake.failNext('open', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  await h.accept(h.shortcut.prompt(SID, 'Also fix Firefox'));
+  await h.ticks(2);
+  const chat = h.fake.only();
+  assert.deepEqual(chat.received, [introduction(`${REQUEST}\n\nAlso fix Firefox`)]);
+  h.fake.say(chat, 'Fixed both');
+  chat.status = { kind: 'finished' };
+  await h.tick();
+  assert.deepEqual(h.shortcut.activities().filter((a) => a.content.type === 'response').map((a) => [a.turn, a.content.body.split('\n')[0]]), [[2, 'Fixed both']]);
+});
+
+it('opens again when the step dies after an empty open, and introduces only the conversation it kept', async (t) => {
+  const h = setup(t);
+  h.fake.facts.empty = true;
+  await h.connect();
+  await h.accept(h.shortcut.open());
+  const died = dieAtSaveAfter(h, () => h.calls('open').length === 1);
+  await h.tick();
+  assert.ok(died(), 'the step died at its save after the open');
+  await h.tick();
+  assert.deepEqual(h.fake.chats.map((chat) => chat.received), [[], [introduction(REQUEST)]], 'the conversation the lost open made was told nothing, so it runs nothing');
+  assert.equal(h.calls('halt').length, 0);
+});
+
+it('answers a stop while an empty open is unresolved without halting anything, and the next reply opens and introduces a new conversation', async (t) => {
+  const h = setup(t);
+  h.fake.facts.empty = true;
+  await h.connect();
+  await h.accept(h.shortcut.open());
+  h.fake.failNext('open', new BackendError({ kind: 'transient' }), { landed: true });
+  await h.tick();
+  await h.accept(h.shortcut.stop(SID));
+  await h.ticks(2);
+  assert.deepEqual(h.bodies('response'), ['Stopped.']);
+  assert.deepEqual(h.fake.chats.map((chat) => [chat.halted, chat.received]), [[false, []]]);
+  assert.equal(await h.alarmIn(), null, 'nothing is looked up again');
+
+  await h.accept(h.shortcut.prompt(SID, 'Try Chrome instead'));
+  await h.tick();
+  assert.deepEqual(h.fake.chats.map((chat) => [chat.key, chat.received]), [
+    ['shortcut-session-sess-1-1', []],
+    ['shortcut-session-sess-1-2', [introduction('Try Chrome instead')]],
+  ]);
+  h.assertCleanLogs();
+});
+
+it('still introduces a kept conversation whose first send was stopped before it went out', async (t) => {
+  const h = setup(t);
+  Object.assign(h.fake.facts, { empty: true, keeps: true });
+  await h.connect();
+  await h.accept(h.shortcut.open());
+  h.fake.failNext('prepare', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  await h.accept(h.shortcut.stop(SID));
+  await h.ticks(2);
+  assert.deepEqual(h.bodies('response'), ['Stopped.']);
+  const chat = h.fake.only();
+  assert.deepEqual(chat.received, [], 'the stopped request never went out');
+
+  await h.accept(h.shortcut.prompt(SID, 'Try Chrome instead'));
+  await h.tick();
+  assert.deepEqual(chat.received, [introduction('Try Chrome instead')], 'the first message the conversation gets is an introduction, whichever relay sends it');
+  chat.status = { kind: 'finished' };
+  await h.tick();
+  await h.accept(h.shortcut.prompt(SID, 'And Edge'));
+  await h.tick();
+  assert.deepEqual(chat.received, [introduction('Try Chrome instead'), 'And Edge']);
 });

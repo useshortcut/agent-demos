@@ -23,8 +23,8 @@ export type Chat = {
   id: string;
   url: string | null;
   key: string;
-  /** The text the open carried. */
-  opened: string;
+  /** The text the open carried, or null for a chat opened empty. */
+  opened: string | null;
   /** The messages delivered after the open, oldest first. A send repeated under its key delivers nothing new. */
   received: string[];
   /** Every send that reached the chat, repeats included. */
@@ -50,6 +50,8 @@ export function script(log: unknown[]) {
     linked: true,
     /** A halt stops the work and the chat still takes messages. */
     keeps: false,
+    /** An open creates a chat with no message in it and cannot find it again, so each open makes another. */
+    empty: false,
   };
   let ids = 0;
 
@@ -71,13 +73,14 @@ export function script(log: unknown[]) {
   const conversation = ({ id, url }: Chat): Conversation<Memo> => ({ id, url, memo: { heard: 0 } });
 
   const backend: Backend<Memo> = {
-    // A retried open finds the chat an interrupted one made under the same key.
+    // Unless it opens empty, a retried open finds the chat an interrupted one made under the same key.
     async open({ key, text }) {
       return attempt('open', key, () => {
         const n = chats.length + 1;
-        const chat = chats.find((candidate) => candidate.key === key) ?? { id: `chat-${n}`, url: facts.linked ? `https://fake.example/chats/${n}` : null, key, opened: text, received: [], sends: [], said: [], status: { kind: 'working' }, gone: false, halted: false };
-        if (!chats.includes(chat)) chats.push(chat);
-        return { conversation: conversation(chat), duplicates: [] };
+        const made: Chat = { id: `chat-${n}`, url: facts.linked ? `https://fake.example/chats/${n}` : null, key, opened: facts.empty ? null : text, received: [], sends: [], said: [], status: facts.empty ? { kind: 'pending' } : { kind: 'working' }, gone: false, halted: false };
+        const chat = (!facts.empty && chats.find((candidate) => candidate.key === key)) || made;
+        if (chat === made) chats.push(chat);
+        return { conversation: conversation(chat), delivered: chat.opened !== null, duplicates: [] };
       });
     },
 
@@ -111,6 +114,8 @@ export function script(log: unknown[]) {
 
     async halt(target) {
       return attempt('halt', target.kind === 'live' ? target.conversation.id : target.key, () => {
+        // An empty chat that was never told anything runs nothing, so there is nothing to look for.
+        if (target.kind === 'unresolved' && facts.empty) return { kind: 'ended', url: null };
         const found = target.kind === 'live' ? [known(target.conversation.id)] : chats.filter((chat) => chat.key === target.key);
         const kept = target.kind === 'live' && facts.keeps;
         for (const chat of found) Object.assign(chat, { halted: true, gone: !kept });
