@@ -750,6 +750,19 @@ for (const [fate, landed] of [['never arrived', false], ['arrived with its answe
   });
 }
 
+it('opens the next conversation with a late opening request by its own words when the first is gone, so the opening text carries the context once', async (t) => {
+  const h = setup(t);
+  await h.connect();
+  const created = h.shortcut.open();
+  await h.accept(h.shortcut.prompt(SID, 'Pick this up'));
+  await h.tick();
+  h.fake.only().gone = true;
+  await h.accept(created);
+  await h.tick();
+  assert.deepEqual(h.fake.chats.map((chat) => [chat.key, chat.received]), [['shortcut-session-sess-1-1', []], ['shortcut-session-sess-1-2', []]]);
+  assert.equal(h.fake.chats[1].opened, openingText(REQUEST), 'the request is not carried over with the context still under it');
+});
+
 // The conformance scenarios, for the kinds of backend no bridge here has yet.
 for (const [label, facts] of [
   ['a backend that keeps its session, opens it empty, and has no link', { keeps: true, opensEmpty: true, linked: false }],

@@ -490,11 +490,13 @@ export function relayed(state: SessionState, phase: RelayPhase, send: Send, memo
  * one. A conversation that is gone while still empty is not replaced: the next
  * one would stand where it stood, and a backend whose new conversations are
  * all gone would have the bridge open them without a wait or an end. The turn
- * fails, and the next reply opens one.
+ * fails, and the next reply opens one. The conversation that is gone held a
+ * message, so a superseded request stays behind with it.
  */
 export function restarted(state: SessionState, phase: RelayPhase, empty: boolean): SessionState {
   if (empty) return fail(state, `The ${identity.name} session ended before it took your message. Reply to start a new one.`, false);
-  return enqueue(fresh(retiring(state), unsent(phase)), activity(state, 'restart', 'thought', `The last ${identity.name} session ended. Starting a new one.`));
+  const waiting = plain(unsent(phase).filter((reply) => !reply.superseded));
+  return enqueue(fresh(retiring(state), waiting), activity(state, 'restart', 'thought', `The last ${identity.name} session ended. Starting a new one.`));
 }
 
 /**
