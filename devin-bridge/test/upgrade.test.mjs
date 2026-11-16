@@ -393,7 +393,9 @@ if (RECORD_FROM) {
       });
     }
     assert.deepEqual(Object.keys(recorded), scenarios.map((s) => s.name), 'every scenario reaches its outcome on the code before the port');
-    await writeFile(FIXTURES, `${JSON.stringify(recorded, null, 2)}\n`);
+    // One state per line, so the file stays short enough to review and a changed state shows as one changed line.
+    const lines = Object.entries(recorded).map(([name, states]) => `${JSON.stringify(name)}: [\n${states.map((s) => `  ${JSON.stringify(s)}`).join(',\n')}\n]`);
+    await writeFile(FIXTURES, `{\n${lines.join(',\n')}\n}\n`);
   });
 } else {
   const fixtures = JSON.parse(await readFile(FIXTURES, 'utf8'));
