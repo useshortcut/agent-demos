@@ -32,16 +32,14 @@ import {
   type PollPhase,
   type SessionState,
   type StopPhase,
-  type Held,
 } from './bridge';
-import { connect as backendOf, isFinal, type Memo } from './backend';
-import { devinClient, type DevinClient } from './devin';
-import { BackendError, type BackendFailure } from './port';
+import { connect as backendOf, type Memo } from './backend';
+import { BackendError, type Backend, type BackendFailure, type Halted } from './port';
 import type { Env } from './index';
 import { loadCredentials, shortcutSessions, workspaceAllowed, type Outcome, type ShortcutSessions } from './shortcut';
 
 type Save = (state: SessionState) => Promise<void>;
-type Io = { shortcut: ShortcutSessions; devin: DevinClient; backend: ReturnType<typeof backendOf>; slug: string };
+type Io = { shortcut: ShortcutSessions; backend: Backend<Memo>; slug: string };
 
 const UNEXPECTED_RETRY_MS = 60_000;
 const INBOX = 'inbox:';
@@ -134,15 +132,14 @@ export class Session {
   // that dies mid-publish does not redo a Devin call. A stop's terminate and
   // retirement run before the Shortcut credentials are loaded.
   private async run(state: SessionState, save: Save): Promise<SessionState> {
-    const devin = devinClient({ apiKey: this.env.DEVIN_API_KEY, orgId: this.env.DEVIN_ORG_ID, baseUrl: this.env.DEVIN_API_BASE });
     const backend = backendOf(this.env);
     let io: Io | null | undefined;
-    const connect = async (current: SessionState) => (io ??= await this.connect(current, devin, backend));
+    const connect = async (current: SessionState) => (io ??= await this.connect(current, backend));
     let current = state;
     let now = Date.now();
     for (let due = dueNow(current, now); due !== null; due = dueNow(current, now)) {
       const before = besidesDeadlines(current);
-      current = await execute(current, due, devin, connect);
+      current = await execute(current, due, backend, connect);
       // The clock the job returned on judges it, so a slow save cannot age a
       // wait. Every wait is at least MIN_WAIT_MS, so a job that is due again
       // at once after changing only a deadline is a bug. The alarm's catch
@@ -154,7 +151,7 @@ export class Session {
     return current;
   }
 
-  private async connect(state: SessionState, devin: DevinClient, backend: ReturnType<typeof backendOf>): Promise<Io | null> {
+  private async connect(state: SessionState, backend: Backend<Memo>): Promise<Io | null> {
     if (!workspaceAllowed(this.env, state.workspaceId)) {
       console.warn('Devin Bridge closed a session from a workspace that is not in ALLOWED_WORKSPACE_IDS', { workspaceId: state.workspaceId, sessionId: state.shortcutSessionId });
       return null;
@@ -164,14 +161,14 @@ export class Session {
       console.error('Devin Bridge has no credentials for the workspace', { workspaceId: state.workspaceId, sessionId: state.shortcutSessionId });
       return null;
     }
-    return { shortcut: shortcutSessions(this.env, state.workspaceId, credentials), devin, backend, slug: credentials.slug };
+    return { shortcut: shortcutSessions(this.env, state.workspaceId, credentials), backend, slug: credentials.slug };
   }
 }
 
-async function execute(state: SessionState, due: Due, devin: DevinClient, connect: (state: SessionState) => Promise<Io | null>): Promise<SessionState> {
+async function execute(state: SessionState, due: Due, backend: Backend<Memo>, connect: (state: SessionState) => Promise<Io | null>): Promise<SessionState> {
   switch (due.effect) {
-    case 'halt': return guarded(state, () => terminateStop(state, due.phase, devin));
-    case 'retire': return retire(state, devin);
+    case 'halt': return guarded(state, () => haltStop(state, due.phase, backend));
+    case 'retire': return retire(state, backend);
   }
   const io = await connect(state);
   if (io === null) return close(state);
@@ -245,32 +242,30 @@ function shortcutFailed(state: SessionState): SessionState {
 // The phase's Devin work, and nothing else: a Shortcut call in here would lose
 // its deadline and strikes when a later Devin call failed, since `guarded`
 // keeps the state the job started from.
-async function perform(state: SessionState, phase: ActPhase, { devin, backend, slug }: Io): Promise<SessionState> {
+async function perform(state: SessionState, phase: ActPhase, { backend, slug }: Io): Promise<SessionState> {
   switch (phase.kind) {
     case 'start': {
-      // Saved as attempted before the create goes out, so a stop or close that
-      // follows resolves the tag instead of trusting that nothing exists.
+      // Saved as attempted before the open goes out, so a stop or close that
+      // follows resolves the key instead of trusting that nothing exists.
       if (!phase.attempted) return { ...state, phase: { ...phase, attempted: true } };
-      // Devin has no idempotency key; the tag lets a retried start adopt the
-      // session an interrupted one created, so replies that arrived meanwhile
-      // are relayed rather than folded into the create prompt.
-      const tag = devinTag(state.shortcutSessionId, state.generation);
-      const [adopted, ...duplicates] = await devin.findSessionsByTag(tag);
-      const session = adopted ?? (await devin.createSession(devinPrompt(state, promptText(phase.prompt), slug), `Shortcut ${state.entity.type} ${state.entity.id}`, tag));
-      const conversation = ({ id, url }: { id: string; url: string }) => ({ id, url, memo: null });
-      const known = succeeded({ ...state, retire: [...state.retire, ...duplicates.map((d) => live(conversation(d)))] }, 'backend');
-      return started(known, phase, { conversation: conversation(session), duplicates: [] }, Date.now());
+      // A retried open finds what an interrupted one made under the same key,
+      // so replies that arrived meanwhile are relayed rather than folded into
+      // the opening text.
+      const opened = await backend.open({
+        key: devinTag(state.shortcutSessionId, state.generation),
+        title: `Shortcut ${state.entity.type} ${state.entity.id}`,
+        text: devinPrompt(state, promptText(phase.prompt), slug),
+      });
+      const known = succeeded({ ...state, retire: [...state.retire, ...opened.duplicates.map(live)] }, 'backend');
+      return started(known, phase, opened, Date.now());
     }
     case 'relay': {
       if (phase.send === null) {
-        const session = await devin.getSession(phase.on.id);
-        if (isFinal(session.state)) return restarted(succeeded(state, 'backend'), phase);
-        const { messages } = await devin.listMessages(phase.on.id);
-        return prepared(succeeded(state, 'backend'), phase, { baseline: { last: messages[messages.length - 1]?.id ?? null, status: session.state }, prompt: null, heard: false });
+        const ready = await backend.prepare(phase.on);
+        if (ready.kind === 'gone') return restarted(succeeded(state, 'backend'), phase);
+        return prepared(succeeded(state, 'backend'), phase, ready.memo);
       }
-      const { text, memo } = phase.send;
-      await devin.sendMessage(phase.on.id, text);
-      const sent: Memo = memo && { ...memo, prompt: text };
+      const sent = await backend.send({ ...phase.on, memo: phase.send.memo }, { text: phase.send.text });
       return relayed(succeeded(state, 'backend'), phase, phase.send, sent, Date.now());
     }
     case 'poll':
@@ -319,25 +314,23 @@ async function link(state: SessionState, url: string, { shortcut }: Io): Promise
   }
 }
 
-async function terminateStop(state: SessionState, phase: StopPhase, devin: DevinClient): Promise<SessionState> {
-  const found = await resolve(devin, phase.target);
-  for (const session of found) await terminate(devin, session.id);
+async function haltStop(state: SessionState, phase: StopPhase, backend: Backend<Memo>): Promise<SessionState> {
+  const halted: Halted = phase.target ? await backend.halt(phase.target) : { kind: 'ended', url: null };
   const done = succeeded(state, 'backend');
   const { target } = phase;
-  // Nothing under the tag yet may be read-after-write lag, so retirement looks again.
-  const next = found.length === 0 && target?.kind === 'unresolved' ? wait({ ...done, retire: [...done.retire, { ...target, lookups: 1 }] }, 'retire', backoffMs(1)) : done;
-  return stopped(next, phase, found.length ? { kind: 'ended', url: found[0].url } : target ? { kind: 'unseen' } : { kind: 'ended', url: null });
+  // Nothing under the key yet may be read-after-write lag, so retirement looks again.
+  const next = halted.kind === 'unseen' && target?.kind === 'unresolved' ? wait({ ...done, retire: [...done.retire, { ...target, lookups: 1 }] }, 'retire', backoffMs(1)) : done;
+  return stopped(next, phase, halted);
 }
 
-// Sessions the bridge gave up are terminated here, one per run, on their own
-// budget. A terminate Devin refuses spends that budget like an outage.
-async function retire(state: SessionState, devin: DevinClient): Promise<SessionState> {
+// Sessions the bridge gave up are halted here, one per run, on their own
+// budget. A halt the backend refuses spends that budget like an outage.
+async function retire(state: SessionState, backend: Backend<Memo>): Promise<SessionState> {
   const [target, ...rest] = state.retire;
   const done = succeeded({ ...state, retire: rest }, 'retire');
   try {
-    const found = await resolve(devin, target);
-    for (const session of found) await terminate(devin, session.id);
-    if (found.length || target.kind === 'live') return done;
+    const halted = await backend.halt(target);
+    if (halted.kind === 'ended' || target.kind === 'live') return done;
     const lookups = target.lookups + 1;
     if (lookups >= MAX_LOOKUPS) return done;
     return wait({ ...done, retire: [{ ...target, lookups }, ...rest] }, 'retire', backoffMs(lookups));
@@ -347,22 +340,6 @@ async function retire(state: SessionState, devin: DevinClient): Promise<SessionS
     if (waiting) return waiting;
     console.warn('Devin Bridge gave up terminating a Devin session', { sessionId: state.shortcutSessionId, target: target.kind === 'live' ? target.conversation.id : target.key });
     return done;
-  }
-}
-
-async function resolve(devin: DevinClient, target: Held | null): Promise<{ id: string; url: string }[]> {
-  if (target === null) return [];
-  if (target.kind === 'live') return [target.conversation];
-  return devin.findSessionsByTag(target.key);
-}
-
-// Only a session that is already gone answers one of these.
-const GONE = new Set([404, 409, 410]);
-async function terminate(devin: DevinClient, id: string): Promise<void> {
-  try {
-    await devin.terminate(id);
-  } catch (error) {
-    if (!(error instanceof BackendError && error.failure.kind === 'rejected' && GONE.has(error.failure.status))) throw error;
   }
 }
 

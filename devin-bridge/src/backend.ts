@@ -1,5 +1,5 @@
 import { devinClient, type DevinMessage, type DevinSession, type DevinState } from './devin';
-import type { Backend, Status } from './port';
+import { BackendError, type Backend, type Conversation, type Said, type Status } from './port';
 
 export type BackendEnv = { DEVIN_API_KEY: string; DEVIN_ORG_ID: string; DEVIN_API_BASE?: string };
 
@@ -9,7 +9,7 @@ type Baseline = { last: string | null; status: DevinState };
 /** Null until a reply is relayed: everything a new session says is fresh. `prompt` is the text sent, null between `prepare` and `send`. */
 export type Memo = { baseline: Baseline; prompt: string | null; heard: boolean } | null;
 
-export const isFinal = (state: DevinState) => state.kind === 'failed' && state.cause !== 'suspended';
+const isFinal = (state: DevinState) => state.kind === 'failed' && state.cause !== 'suspended';
 
 const sameState = (a: DevinState, b: DevinState) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -22,8 +22,8 @@ function unmarked(text: string): string {
 }
 
 // What Devin said after the relayed reply, so the previous turn's answer never becomes this turn's.
-function spoken(messages: DevinMessage[], memo: Memo): DevinMessage[] {
-  const devins = (list: DevinMessage[]) => list.filter((m) => m.source === 'devin').map((m) => ({ ...m, body: unmarked(m.body) }));
+function spoken(messages: DevinMessage[], memo: Memo): Said[] {
+  const devins = (list: DevinMessage[]) => list.filter((m) => m.source === 'devin').map((m) => ({ id: m.id, text: unmarked(m.body) }));
   if (memo === null) return devins(messages);
   const { last } = memo.baseline;
   const at = last === null ? -1 : messages.findIndex((m) => m.id === last);
@@ -45,19 +45,62 @@ function statusOf({ state, pullRequests }: DevinSession): Status {
   }
 }
 
-export function connect(env: BackendEnv): Pick<Backend<Memo>, 'observe'> {
+const conversation = ({ id, url }: DevinSession): Conversation<Memo> => ({ id, url, memo: null });
+
+// Only a session that is already gone answers one of these.
+const GONE = new Set([404, 409, 410]);
+
+export function connect(env: BackendEnv): Backend<Memo> {
   const devin = devinClient({ apiKey: env.DEVIN_API_KEY, orgId: env.DEVIN_ORG_ID, baseUrl: env.DEVIN_API_BASE });
+
+  async function terminate(id: string): Promise<void> {
+    try {
+      await devin.terminate(id);
+    } catch (error) {
+      if (!(error instanceof BackendError && error.failure.kind === 'rejected' && GONE.has(error.failure.status))) throw error;
+    }
+  }
+
   return {
+    // Devin has no idempotency key, so the key is a tag: a retried open adopts the session an interrupted one created.
+    async open({ key, title, text }) {
+      const [adopted, ...duplicates] = await devin.findSessionsByTag(key);
+      const session = adopted ?? (await devin.createSession(text, title, key));
+      return { conversation: conversation(session), duplicates: duplicates.map(conversation) };
+    },
+
+    async prepare({ id }) {
+      const session = await devin.getSession(id);
+      if (isFinal(session.state)) return { kind: 'gone' };
+      const { messages } = await devin.listMessages(id);
+      return { kind: 'ready', memo: { baseline: { last: messages[messages.length - 1]?.id ?? null, status: session.state }, prompt: null, heard: false } };
+    },
+
+    async send({ id, memo }, { text }) {
+      await devin.sendMessage(id, text);
+      return memo && { ...memo, prompt: text };
+    },
+
     async observe({ id, memo }) {
       const session = await devin.getSession(id);
       const { messages, complete } = await devin.listMessages(id);
       if (!complete) console.warn('Devin Bridge read a cut-short Devin message list', { devinSessionId: id });
-      const said = (complete ? spoken(messages, memo) : []).map(({ id, body }) => ({ id, text: body }));
+      const said = complete ? spoken(messages, memo) : [];
       // Until Devin says something or its status moves, the status still describes the turn before the reply.
       if (memo && !memo.heard && said.length === 0 && sameState(memo.baseline.status, session.state)) {
         return { memo, said, status: session.state.kind === 'working' ? { kind: 'working' } : { kind: 'pending' } };
       }
       return { memo: memo && { ...memo, heard: true }, said, status: statusOf(session) };
+    },
+
+    async halt(target) {
+      if (target.kind === 'live') {
+        await terminate(target.conversation.id);
+        return { kind: 'ended', url: target.conversation.url };
+      }
+      const found = await devin.findSessionsByTag(target.key);
+      for (const session of found) await terminate(session.id);
+      return found.length ? { kind: 'ended', url: found[0].url } : { kind: 'unseen' };
     },
   };
 }
