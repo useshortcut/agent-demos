@@ -119,13 +119,13 @@ bundled into whichever bridge runs the test, so it imports only types.
 `FAKE` binding:
 
 - `facts`: what kind of backend this is. `linked` gives each chat a URL,
-  `keeps` makes a halt answer `kept`, and `empty` makes an open create a chat
-  with no message that a later open cannot find again. A test sets one before
-  the call it bears on.
+  `keeps` makes a halt answer `kept`, `empty` makes an open create a chat
+  with no message that a later open cannot find again, and `dedupes`, which
+  is on unless a test turns it off, makes a send repeated under its key
+  deliver nothing new. A test sets one before the call it bears on.
 - `chats`: the conversations opened, oldest first, and `only()` for the one.
   A chat holds `opened` (the text the open carried, or null), `received` (the
-  messages delivered, once per send key), `sends` (every send, repeats
-  included), and `halted`. A test sets its `status` to what the next `observe`
+  messages delivered), `sends` (every send, repeats included), and `halted`. A test sets its `status` to what the next `observe`
   reports, and `gone` to make `prepare` answer `gone`. `prepare` answers
   `empty` from the chat itself: nothing in `opened` and nothing in `received`.
 - `say(chat, text)`: the agent says something.
@@ -135,36 +135,74 @@ bundled into whichever bridge runs the test, so it imports only types.
 - `misuse`: what the bridge did that no backend should see, such as one send
   key on two different sends. Each test in `core.test.mjs` expects it empty.
 
-### The seeded fuzz
+### The ledger and the exhaustive run
 
-`bridge/fuzz.test.mjs` runs 1,000 seeded walks through the webhook and the
-alarm loop against the fake backend, in every bridge's `npm test`. A walk
-delivers a `session.created`, replies, and stops in any order and more than
-once. It fails any of the five backend calls, with and without the call
-landing, kills a step at its save, changes what the agent reports, and picks
-a random mix of `keeps`, `empty`, and `linked`. Then the bridge comes to rest
-and the walk checks what the core owes in any order:
+`bridge/ledger.mjs` states what a bridge owes the agent, whatever order
+Shortcut's events arrive in and whichever backend calls fail. Its `RULES` are
+the specification, written once and in plain words, and each bridge's README
+has to agree with them. The file shares nothing with `src/core`. It is told
+which events arrived, what each backend call carried, what landed at the
+backend, and whether the bridge learned of it, and it names each rule the
+bridge broke.
 
-- A retried send repeats its key and its text, and no two sends share a key.
-- No step stalls, and the alarms run out.
-- At most one conversation is left working.
-- A backend without links gets no card link and no link text.
-- The context reaches a conversation at most once. A send that landed with
-  its answer lost, and whose relay a stop or a failed turn then dropped, is
-  the one exception: its context goes again with the next reply, as the reply
-  itself would. An introduction is never an exception.
-- The first conversation is told the context in the first text that is fixed
-  after the `session.created` arrived.
-- Nothing a stop cancelled reaches the agent after the stop: not the opening
-  request, and no reply up to the stop's turn.
-- The opening request is in the first text the agent is told when the
-  `session.created` arrived before that text was fixed, unless a stop, a
-  write Shortcut refused, or a failed turn dropped it first.
+`bridge/exhaust.mjs` runs scripts through the real webhook and alarm loop
+against the fake backend and reports every step to the ledger. A script is a
+list of steps such as `'reply 2'`, `'stop 1'`, `'tick'`, `'tick: send lost'`,
+`'gone'`, and `'rest'`. The head of the file lists them all. Shortcut holds
+every event from the start and delivers each when the script says, so an
+event can arrive in any order. Shortcut's own turn follows what it has
+delivered. A fault makes one backend call of a step fail before it reaches
+the backend (`fails`), fail after the backend took it (`lost`), or answer and
+then have the step die before its save (`dies`). `'rest'` lets every agent
+finish and runs the alarms out, and only then does the ledger ask what is
+still owed.
 
-Each walk is its own Shortcut session on one connected bridge. `FUZZ_RUNS`
-and `FUZZ_SEED` set the number of walks and the first seed. `FUZZ_SHOW=<seed>`
-prints a failing seed's trail: each delivery, failure, and send, and the
-stored phase after each alarm.
+`bridge/exhaust.test.mjs` runs in every bridge's `npm test`. `explore` runs
+every script of a scope, shortest first, on each of the eight kinds of backend
+the port allows: one that keeps or ends its conversation on a stop, opens it
+empty or with the request, and deduplicates a repeated send or repeats it.
+Devin is the kind that ends, opens with the request, and repeats. The default
+scope is every script that holds at most four of these together: the events
+`created`, `reply 2`, `reply 3`, `stop 1`, `stop 2`, and `close`, one backend
+fault, one agent that finishes, and one conversation that ends on its own.
+Alarms are free. After every alarm the search also lets the bridge come to
+rest, and wherever nothing is scheduled it delivers the last event a second
+time and expects nothing to change. The test prints how many scripts it
+covered.
+
+The search does not run each script from the start. Two scripts that reach
+the same stored state, backend, Shortcut session, and ledger have the same
+future, so the second one ends there. Clock readings are left out of that
+comparison. With one fault to a script, a backend that deduplicates sends
+differs from its twin only when the fault is a send that landed, so it runs
+only those faults.
+
+When a script breaks a rule the test fails with the rule, what happened, the
+backend, and the shortest script that does it, as a line to paste into
+`PINNED` in the same file. A pinned script runs on its own in every
+`npm test`, and `replay(w, steps)` runs one from any test. The pinned scripts
+are the defects the search has found so far, the longer ones by wider runs.
+
+`EXHAUST=deep` widens the scope: `reply 4` and `stop 3` join the events, a
+script holds up to five events and two faults, and up to six of everything
+together. It takes minutes and tens of gigabytes of memory, so it is run by
+hand before a change to the core is merged. `EXHAUST_SCOPE` takes a JSON
+object that replaces fields of the scope, for a run in between.
+
+The search cannot reach what its scripts cannot say. Shortcut never refuses a
+write, is never ahead of the bridge, and never fails. No backend call is held
+by a `Retry-After` or refused, apart from a send to a conversation that ended
+on its own. No wait runs out: not the pickup timeout, the failure budget, or
+the heartbeat. The agent never asks a question. `session.created` always has a
+request and a context. The backend is the fake one, so an adapter's own calls
+are covered only by its own suite and by `conform`.
+
+`bridge/broken-cores.test.mjs` keeps the search honest. It copies the bridge's
+`src`, breaks one behavior in the copy, and expects the search to break the
+rule that owns it: a core that drops every send it prepared, one that forgets
+the stop a cancelled request arrives after, one that takes the context as told
+before the send that carries it is confirmed, and one that introduces a
+conversation twice. When you add a rule, add the core that breaks it.
 
 ### Conformance
 
