@@ -149,7 +149,8 @@ export function restored(stored: SessionState | FirstPortState): SessionState {
   const state = (briefing: SessionState['briefing'], current: Phase): SessionState => ({ ...rest, briefing, phase: current });
   switch (phase.kind) {
     case 'start': {
-      const waiting = { kind: 'start' as const, prompt: phase.prompt, extra: requests(phase.extra) };
+      // A start that replaces a conversation that ended took over what waited for it, so its prompt can hold the opening request too.
+      const waiting = { kind: 'start' as const, prompt: unmarked(requests(phase.prompt)), extra: requests(phase.extra) };
       return state('owed', phase.attempted ? { ...waiting, attempted: true, briefs: block !== '' && late === null && !carried(phase.extra) } : { ...waiting, attempted: false });
     }
     case 'relay': {

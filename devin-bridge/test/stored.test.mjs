@@ -140,6 +140,22 @@ const scenarios = [
       assert.deepEqual(devin(h, 1).received, []);
     },
   },
+  {
+    // The first port put the context into the text of the late opening request, so the state that waits to replace the session holds it there.
+    name: 'the session.created arrives after the session a reply opened has ended',
+    steps: [
+      (h) => h.connect(), (h, w) => { w.created = h.shortcut.open(); }, reply('Second (private-prompt)'), tick,
+      status(1, 'exit'), deliver((h, w) => w.created), fails(429, /^DELETE /), tick,
+      tick,
+      status(2, 'running', 'finished'), says(2, 'Did both'), tick, tick,
+    ],
+    outcome(h) {
+      assert.equal(h.devin.sessions.length, 2);
+      assert.deepEqual(devin(h, 2).tags, ['shortcut-session-sess-1-2']);
+      assert.match(devin(h, 2).prompt, /^A Shortcut user asked:\n\nPlease fix the Safari login bug[^]*Login fails on Safari\.$/);
+      assert.deepEqual(responses(h), [[2, 'Did both']]);
+    },
+  },
 ];
 
 const clone = (value) => (value === undefined ? undefined : structuredClone(value));
@@ -204,13 +220,14 @@ function variants(state) {
     case 'closed': found.push('closed'); break;
   }
   if (pendings(state).some((p) => p.opening)) found.push('opening request');
+  if (phase.kind === 'start' && !phase.attempted && phase.prompt.some((p) => p.opening)) found.push('start, replacing a conversation, with an opening request');
   for (const target of retire) found.push(`retire, ${target.kind}`);
   if (late) found.push('late context');
   return found;
 }
 
 const REQUIRED = [
-  'start', 'start, attempted', 'relay', 'relay, prepared', 'relay, prepared with a late context', 'opening request',
+  'start', 'start, attempted', 'start, replacing a conversation, with an opening request', 'relay', 'relay, prepared', 'relay, prepared with a late context', 'opening request',
   'poll, nothing relayed', 'poll, a reply relayed',
   'stop, live target', 'stop, unresolved target', 'stop, no target', 'stop, with replies',
   'idle, with a conversation', 'idle, without one', 'closed', 'retire, live', 'retire, unresolved', 'late context',
