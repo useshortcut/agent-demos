@@ -110,7 +110,8 @@ function phase(value: unknown): Phase {
         asked: nullable(stored.asked, text),
         // With nothing relayed there is no pickup to time, so the last poll's schedule stands in.
         sentAt: relayed ? count(relayed.since) : at - delayMs,
-        heartbeatAt: count(stored.heartbeatAt),
+        // A poll stored before heartbeats existed has none. The code before the port compared the clock with the missing value, so the next quiet poll reported at once.
+        heartbeatAt: stored.heartbeatAt === undefined ? 0 : count(stored.heartbeatAt),
       };
     }
     case 'stop':

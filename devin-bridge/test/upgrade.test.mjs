@@ -432,6 +432,18 @@ if (RECORD_FROM) {
     scenario.outcome(h);
   });
 
+  it('keeps a poll stored before heartbeats existed, and reports a quiet session on its next poll', async (t) => {
+    const [scenario] = scenarios;
+    const poll = fixtures[scenario.name].find(({ state }) => state.phase.kind === 'poll' && state.phase.posted !== null);
+    const { heartbeatAt, ...phase } = poll.state.phase;
+    const { h, trace } = await run(t, scenario, { ...poll, state: { ...poll.state, phase } });
+    assert.deepEqual(trace.flatMap(({ logs }) => logs).filter(([level]) => level === 'warn'), []);
+    const heartbeats = h.shortcut.activities().filter((a) => a.content.type === 'thought' && a.content.body === 'Looking into it');
+    assert.ok(heartbeats.length >= 2, 'the quiet session is reported again without waiting out a heartbeat interval');
+    scenario.outcome(h);
+    h.assertCleanLogs();
+  });
+
   it('drops a stored state it cannot read with one warning that names only the session', async (t) => {
     const [scenario] = scenarios;
     const idle = fixtures[scenario.name].find(({ state }) => state.phase.kind === 'idle');
