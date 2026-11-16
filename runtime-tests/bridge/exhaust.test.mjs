@@ -33,7 +33,7 @@ const explored = (facts) => new Promise((resolve, reject) => {
 
 const pasted = (facts, steps) => `[${JSON.stringify(facts)}, ${JSON.stringify(steps)}]`.replaceAll('"', "'");
 
-it(`keeps the ledger's rules over every script of up to ${scope.total} events, backend faults, and agent endings, on every kind of backend`, { todo: 'the core breaks four of the rules, and the commits that follow fix each' }, async (t) => {
+it(`keeps the ledger's rules over every script of up to ${scope.total} events, backend faults, and agent endings, on every kind of backend`, { todo: 'the core breaks three of the rules, and the commits that follow fix each' }, async (t) => {
   const started = performance.now();
   const results = await Promise.all(BACKENDS.map(explored));
   const total = (field) => results.reduce((sum, result) => sum + BigInt(result[field]), 0n);
@@ -48,7 +48,10 @@ it(`keeps the ledger's rules over every script of up to ${scope.total} events, b
 
 // Scripts that once broke a rule, each named for what it holds now. The deep
 // run found the ones that are longer than the default scope.
-const PINNED = [];
+const DEVIN = { keeps: false, empty: false, dedupes: false };
+const PINNED = [
+  ['ends the turn, and opens no conversation, when the context of a late session.created is all that waits for a conversation that is gone', DEVIN, ['reply 2', 'tick', 'created', 'stop 1', 'gone', 'tick', 'rest']],
+];
 
 const bridge = PINNED.length ? await loadBridge(root) : null;
 for (const [title, facts, steps] of PINNED) {

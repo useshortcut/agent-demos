@@ -503,11 +503,14 @@ export function relayed(state: SessionState, phase: RelayPhase, send: Send, memo
  * one would stand where it stood, and a backend whose new conversations are
  * all gone would have the bridge open them without a wait or an end. The turn
  * fails, and the next reply opens one. The conversation that is gone held a
- * message, so a superseded request stays behind with it.
+ * message, so a superseded request stays behind with it. When no request
+ * waited, only Shortcut's context, there is nothing to open a conversation
+ * for: the turn fails as it would have on the next poll.
  */
 export function restarted(state: SessionState, phase: RelayPhase, empty: boolean): SessionState {
   if (empty) return fail(state, `The ${identity.name} session ended before it took your message. Reply to start a new one.`, false);
   const waiting = plain(unsent(phase).filter((reply) => !reply.superseded));
+  if (waiting.length === 0) return fail(state, `The ${identity.name} session ended. Reply to start a new one.`, false);
   return enqueue(fresh(retiring(state), waiting), activity(state, 'restart', 'thought', `The last ${identity.name} session ended. Starting a new one.`));
 }
 
