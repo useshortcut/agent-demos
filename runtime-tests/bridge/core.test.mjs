@@ -608,6 +608,81 @@ it('sends only the context of a late session.created whose request a stop had ca
   assert.deepEqual(chat.received, [`Context from Shortcut:\n\n${CONTEXT}`], 'the stop still cancelled the request, and the agent learns the context at once');
 });
 
+it('still sends the late context a relay carried when a kept stop came before its send went through', async (t) => {
+  const h = setup(t);
+  h.fake.facts.keeps = true;
+  await h.connect();
+  const created = h.shortcut.open();
+  await h.accept(h.shortcut.prompt(SID, 'Pick this up'));
+  await h.tick();
+  const chat = h.fake.only();
+  chat.status = { kind: 'finished' };
+  await h.tick();
+  await h.accept(created);
+  await h.accept(h.shortcut.prompt(SID, 'Next'));
+  h.fake.failNext('send', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  await h.accept(h.shortcut.stop(SID));
+  await h.ticks(2);
+  await h.accept(h.shortcut.prompt(SID, 'Again'));
+  await h.tick();
+  assert.deepEqual(chat.received, [`Context from Shortcut:\n\n${CONTEXT}\n\nAgain`], 'the conversation is kept, so it is still owed the context');
+});
+
+it('still sends the context of a late opening request that a kept stop cancelled before it went out', async (t) => {
+  const h = setup(t);
+  h.fake.facts.keeps = true;
+  await h.connect();
+  const created = h.shortcut.open();
+  await h.accept(h.shortcut.prompt(SID, 'Pick this up'));
+  await h.tick();
+  const chat = h.fake.only();
+  await h.accept(created);
+  h.fake.failNext('send', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  await h.accept(h.shortcut.stop(SID));
+  await h.ticks(2);
+  await h.accept(h.shortcut.prompt(SID, 'Again'));
+  await h.tick();
+  assert.deepEqual(chat.received, [`Context from Shortcut:\n\n${CONTEXT}\n\nAgain`], 'the request stays stopped, and the context under it goes ahead of the next reply');
+});
+
+it('still sends the context of a late opening request whose relay failed and ended the turn', async (t) => {
+  const h = setup(t);
+  await h.connect();
+  const created = h.shortcut.open();
+  await h.accept(h.shortcut.prompt(SID, 'Pick this up'));
+  await h.tick();
+  const chat = h.fake.only();
+  await h.accept(created);
+  h.fake.failNext('send', new BackendError({ kind: 'rejected', status: 401 }));
+  await h.tick();
+  assert.deepEqual(h.bodies('error'), ['Fake rejected the request (HTTP 401). Reply to try again.']);
+  await h.accept(h.shortcut.prompt(SID, 'Again'));
+  await h.tick();
+  assert.deepEqual(chat.received, [`Context from Shortcut:\n\n${CONTEXT}\n\nAgain`], 'the turn took the request with it, and the conversation is still owed the context');
+});
+
+it('owes no context after a kept stop when the introduction that carried a late opening request reached the conversation', async (t) => {
+  const h = setup(t);
+  Object.assign(h.fake.facts, { empty: true, keeps: true });
+  await h.connect();
+  const created = h.shortcut.open();
+  await h.accept(h.shortcut.prompt(SID, 'Pick this up'));
+  h.fake.failNext('prepare', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  await h.accept(created);
+  h.fake.failNext('send', new BackendError({ kind: 'transient' }), { landed: true });
+  await h.ticks(2);
+  const chat = h.fake.only();
+  assert.deepEqual(chat.received, [openingText(`${REQUEST}\n\nPick this up`)]);
+  await h.accept(h.shortcut.stop(SID));
+  await h.ticks(2);
+  await h.accept(h.shortcut.prompt(SID, 'Try Chrome instead'));
+  await h.ticks(2);
+  assert.deepEqual(chat.received, [openingText(`${REQUEST}\n\nPick this up`), 'Try Chrome instead'], 'the introduction carried the context itself, so the stop leaves none to send');
+});
+
 // The conformance scenarios, for the kinds of backend no bridge here has yet.
 for (const [label, facts] of [
   ['a backend that keeps its session, opens it empty, and has no link', { keeps: true, opensEmpty: true, linked: false }],

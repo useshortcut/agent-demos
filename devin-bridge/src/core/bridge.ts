@@ -165,8 +165,13 @@ const said = (event: ShortcutSessionEventPayload): Pending[] => (text(event) ? [
 /** What the agent reads: the pending replies in turn order. */
 export const promptText = (pending: Pending[]) => [...pending].sort((a, b) => a.turn - b.turn).map((p) => p.text).join('\n\n');
 
-/** The pending replies as an introduction takes them: an opening request without the context under it. */
-const bare = (pending: Pending[]): Pending[] => pending.map((p) => ({ ...p, text: p.bare ?? p.text })).filter((p) => p.text);
+/**
+ * The pending replies as an opening text takes them, in an open or in an
+ * introduction: each by its own words, since that text carries the context
+ * itself. Nothing has reached the conversation it opens, so no request is
+ * special to it, and none still holds context that could be owed later.
+ */
+const plain = (pending: Pending[]): Pending[] => pending.map(({ turn, text, bare }) => ({ turn, text: bare ?? text })).filter((reply) => reply.text);
 
 export const live = (conversation: Live): Held => ({ kind: 'live', conversation });
 
@@ -364,7 +369,7 @@ const startNew = (state: SessionState, prompt: Pending[]): SessionState =>
 const acceptedAfterStop = (activity: Activity) => activity.content.type === 'response' || activity.content.type === 'error';
 function stop(state: SessionState, turn: number, then: Pending[] = []): SessionState {
   const current = Math.max(state.turn, turn);
-  return { ...state, turn: current, cutoff: Math.max(state.cutoff, turn), phase: { kind: 'stop', target: targetOf(state), then }, outbox: state.outbox.filter((a) => acceptedAfterStop(a) && a.turn >= current) };
+  return { ...keepLate(state), turn: current, cutoff: Math.max(state.cutoff, turn), phase: { kind: 'stop', target: targetOf(state), then }, outbox: state.outbox.filter((a) => acceptedAfterStop(a) && a.turn >= current) };
 }
 
 // Shortcut refused the activity itself, so a retry cannot help. An outcome
@@ -393,9 +398,18 @@ export function endTurn(state: SessionState, reason: TurnEnd): SessionState {
   return { ...(on ? keepLate(state) : retiring(state)), phase: { kind: 'idle', on }, outbox: [] };
 }
 
-// A relay that never went through still owes the first conversation the late context it carried.
-const keepLate = (state: SessionState): SessionState =>
-  state.phase.kind === 'relay' && state.phase.send?.late && !state.late ? { ...state, late: state.phase.send.late } : state;
+// A relay that is dropped still owes the first conversation the context it
+// carried: the late context of its prepared send, or the context under an
+// opening request. Whatever drops the relay keeps that debt for the next
+// reply, so it has one place to live. `fresh` clears it, since a new
+// conversation gets the context in its opening text.
+function keepLate(state: SessionState): SessionState {
+  const { phase } = state;
+  if (state.late || phase.kind !== 'relay') return state;
+  if (phase.send?.late) return { ...state, late: phase.send.late };
+  const request = unsent(phase).find((reply) => reply.opening);
+  return request && state.context ? { ...state, late: { turn: request.turn, text: contextBlock(state.context) } } : state;
+}
 
 export const close = (state: SessionState): SessionState => ({ ...retiring(state), phase: { kind: 'closed' }, outbox: [] });
 
@@ -436,9 +450,9 @@ export function started(state: SessionState, phase: StartPhase, { conversation: 
  * the core never learned cannot make it introduce a conversation twice.
  */
 export function prepared(state: SessionState, phase: RelayPhase, { memo, empty }: Extract<Prepared<Memo>, { kind: 'ready' }>, slug: string): SessionState {
-  const prompt = empty ? phase.prompt : phase.prompt.filter((reply) => !reply.superseded);
+  const prompt = empty ? plain(phase.prompt) : phase.prompt.filter((reply) => !reply.superseded);
   const late = empty ? null : state.late;
-  const text = empty ? introduction(state, promptText(bare(prompt)), slug) : promptText(late ? [late, ...prompt] : prompt);
+  const text = empty ? introduction(state, promptText(prompt), slug) : promptText(late ? [late, ...prompt] : prompt);
   return { ...state, late: null, phase: { ...phase, prompt: [], send: { prompt, late, text, key: sendKey(state), memo } } };
 }
 
