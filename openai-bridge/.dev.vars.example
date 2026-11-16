@@ -1,0 +1,27 @@
+# Copy this file to .dev.vars and fill in your values.
+# Never commit .dev.vars: it contains secrets.
+
+# From your agent app on Shortcut's Agents page (in the sidebar)
+CLIENT_ID=
+CLIENT_SECRET=
+WEBHOOK_SECRET=
+
+# Where Shortcut will redirect after OAuth; must match what's set on the agent app
+REDIRECT_URI=http://localhost:8787/oauth/callback
+
+# An OpenAI API key for the project that holds the agent, and the agent id
+# that `npm run setup` prints
+OPENAI_API_KEY=
+OPENAI_AGENT_ID=
+
+# Comma-separated Shortcut workspace ids this bridge serves. Activating from any
+# other workspace shows a page with that workspace's id.
+ALLOWED_WORKSPACE_IDS=
+
+# Optional: run sessions in an OpenAI-hosted environment built from this template.
+# Unset, sessions run with no environment.
+# OPENAI_ENVIRONMENT_TEMPLATE_ID=
+# Optional: override the Shortcut API host. Defaults to https://api.app.shortcut.com
+# SHORTCUT_API_BASE=
+# Optional: override the OpenAI API base. Defaults to https://api.openai.com/v1
+# OPENAI_API_BASE=

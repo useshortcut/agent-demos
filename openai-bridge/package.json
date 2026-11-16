@@ -1,0 +1,25 @@
+{
+  "name": "shortcut-openai-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "deploy": "wrangler deploy",
+    "setup": "node setup.mjs",
+    "test": "node ../runtime-tests/bridge/sync.mjs check && node --test test/*.test.mjs ../runtime-tests/bridge/*.test.mjs",
+    "core:sync": "node ../runtime-tests/bridge/sync.mjs sync",
+    "test:runtime": "node --test ../runtime-tests/smoke.mjs"
+  },
+  "dependencies": {
+    "@shortcut/client": "^3.6.0",
+    "hono": "^4.13.19",
+    "openai": "^7.57.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261116.1",
+    "esbuild": "^0.28.2",
+    "miniflare": "5.20261116.0-beta",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.163.0"
+  }
+}
