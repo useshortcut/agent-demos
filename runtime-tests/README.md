@@ -261,14 +261,19 @@ no link, and one that keeps its session and opens it with the request.
 
 `bridge/mutants.test.mjs` tests the scenarios themselves. `bridge/mutant.mjs`
 is the fake backend with one wrong behavior, named by the `MUTANT` variable:
-an `open` or a `send` that ignores its key, an `observe` that ignores the
+an `open` or a `send` that ignores its key, an `open` that answers
+`delivered` for a session it opened empty, a `prepare` that never reports a
+session empty or reports every session empty, an `observe` that ignores the
 prepared memo, returns only the first of several messages, reports a
 question for the user as an approval, or reports an approval as a question
 for the user, and a `halt` that answers `ended` while the session still takes
-messages. The test runs `conform` against each
-in a child process and expects the scenario that owns the behavior to fail.
-When you add a scenario for something an adapter could get wrong, add its
-mutant.
+messages or `kept` after it ended the session. The test runs `conform` against
+each in a child process and expects the scenario that owns the behavior to
+fail. A wrong behavior shows only on some kinds of backend, so the `FACTS`
+variable sets the kind for each: an `open` that answers `delivered` and a
+`prepare` that never reports empty are wrong only for a backend that opens
+its session empty. When you add a scenario for something an adapter could get
+wrong, add its mutant, on a kind of backend where the scenario fails it.
 
 `harness.mjs` exports `REQUEST` and `CONTEXT`, the prompt and the context of
 the mock's `session.created`, and `openingText(asked, context)`, the text a

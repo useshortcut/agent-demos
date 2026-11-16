@@ -19,6 +19,18 @@ const MUTANTS = {
     let opens = 0;
     backend.open = (request) => open({ ...request, key: `${request.key}#${++opens}` });
   },
+  'open answers delivered for a conversation it opened empty'({ backend }) {
+    const { open } = backend;
+    backend.open = async (request) => ({ ...(await open(request)), delivered: true });
+  },
+  'prepare never reports a conversation empty'({ backend }) {
+    const { prepare } = backend;
+    backend.prepare = async (conversation) => ({ ...(await prepare(conversation)), empty: false });
+  },
+  'prepare reports every conversation empty'({ backend }) {
+    const { prepare } = backend;
+    backend.prepare = async (conversation) => ({ ...(await prepare(conversation)), empty: true });
+  },
   'send ignores its key'({ backend }) {
     const { send } = backend;
     let sends = 0;
@@ -57,6 +69,13 @@ const MUTANTS = {
       return halted;
     };
   },
+  'halt answers kept and ends the conversation'({ backend }) {
+    const { halt } = backend;
+    backend.halt = async (target) => {
+      const halted = await halt(target);
+      return halted.kind === 'ended' ? { kind: 'kept' } : halted;
+    };
+  },
 };
 
 const mutate = MUTANTS[process.env.MUTANT] ?? null;
@@ -64,8 +83,8 @@ if (process.env.MUTANT && !mutate) throw new Error(`no mutant named ${JSON.strin
 
 conformFake({
   label: process.env.MUTANT || 'no mutant',
-  // DEDUPES=declared-off is a backend that cannot pass the send key on and deduplicates by a means of its own. It says so, and it is right.
-  facts: { keeps: false, opensEmpty: false, linked: true, dedupes: process.env.DEDUPES !== 'declared-off' },
+  // FACTS replaces some: the kind of backend on which a mutant's wrong behavior shows. With `dedupes` off it is a backend that cannot pass the send key on and deduplicates by a means of its own. It says so, and it is right.
+  facts: { keeps: false, opensEmpty: false, linked: true, dedupes: true, ...JSON.parse(process.env.FACTS ?? '{}') },
   BackendError: bridge.mod.BackendError,
   setup(t) {
     const h = bridge.setup(t);
