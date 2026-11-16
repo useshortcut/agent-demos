@@ -30,6 +30,19 @@ function setup(t) {
   });
 }
 
+// The session's next save once `reached()` holds fails, and the object restarts, as when it is evicted mid-step.
+function dieAtSaveAfter(h, reached) {
+  const storage = h.env.SESSIONS.storages.get(SID);
+  const put = storage.put;
+  storage.put = async (...args) => {
+    if (!reached()) return put.apply(storage, args);
+    storage.put = put;
+    h.env.SESSIONS.restart();
+    throw new Error('evicted');
+  };
+  return () => storage.put === put;
+}
+
 it('opens one conversation for a session, however often its event is delivered, and posts the agent\'s progress and answer', async (t) => {
   const h = setup(t);
   await h.connect();
@@ -123,5 +136,92 @@ it('writes no link text and sets no card link for a conversation without a URL, 
   assert.deepEqual(h.requests.filter((r) => r.method === 'PATCH'), [], 'the card link is never written');
   assert.deepEqual(h.shortcut.sessions.get(SID).external_urls, []);
   assert.equal(await h.alarmIn(), null);
+  h.assertCleanLogs();
+});
+
+it('answers a stop the backend keeps without claiming termination, and sends the next reply to the same conversation', async (t) => {
+  const h = setup(t);
+  h.fake.facts.keeps = true;
+  const chat = await h.started();
+  h.fake.say(chat, 'Working on it');
+  await h.tick();
+  await h.accept(h.shortcut.stop(SID));
+  await h.tick();
+  assert.equal(chat.halted, true);
+  assert.deepEqual(h.bodies('response'), ['Stopped.'], 'the conversation has a URL, and the response still names nothing terminated');
+  assert.equal(await h.alarmIn(), null, 'a kept conversation is not retired');
+
+  await h.accept(h.shortcut.prompt(SID, 'Try Chrome instead'));
+  await h.tick();
+  assert.equal(h.calls('open').length, 1, 'the reply opens no new conversation');
+  assert.deepEqual(h.fake.only().received, ['Try Chrome instead']);
+  assert.equal(h.shortcut.activities().find((a) => a.key === 'fake-bridge:2:ack').content.body, 'Passing your message to Fake.');
+  h.fake.say(chat, 'Chrome works');
+  chat.status = { kind: 'finished' };
+  await h.tick();
+  assert.deepEqual(h.shortcut.activities().filter((a) => a.content.type === 'response').map((a) => [a.turn, a.content.body.split('\n')[0]]), [[1, 'Stopped.'], [2, 'Chrome works']]);
+  assert.equal(h.calls('halt').length, 1);
+  h.assertCleanLogs();
+});
+
+it('relays the replies that waited on a kept stop to the same conversation, after the halt', async (t) => {
+  const h = setup(t);
+  h.fake.facts.keeps = true;
+  const chat = await h.started();
+  await h.accept(h.shortcut.stop(SID));
+  await h.accept(h.shortcut.prompt(SID, 'Try Chrome instead'));
+  await h.tick();
+  assert.deepEqual(h.fake.only().received, ['Try Chrome instead']);
+  assert.deepEqual(h.requests.filter((r) => r.origin === 'fake').map((r) => r.method), ['open', 'halt', 'prepare', 'send']);
+  assert.deepEqual(h.bodies('response'), [], 'the stop has no answer of its own once a reply replaced its turn');
+  assert.deepEqual(h.shortcut.activities().filter((a) => a.turn === 2).map((a) => a.content.body), ['Passing your message to Fake.'], 'the reply is never said to start a new session');
+  chat.status = { kind: 'finished' };
+  await h.tick();
+  assert.deepEqual(h.shortcut.activities().filter((a) => a.content.type === 'response').map((a) => [a.turn, a.content.body.split('\n')[0]]), [[2, 'Fake finished.']]);
+
+  const slow = setup(t);
+  slow.fake.facts.keeps = true;
+  await slow.started();
+  await slow.accept(slow.shortcut.stop(SID));
+  await slow.accept(slow.shortcut.prompt(SID, 'Try Chrome instead'));
+  slow.fake.failNext('halt', new BackendError({ kind: 'transient' }));
+  await slow.ticks(2);
+  assert.deepEqual(slow.fake.only().received, ['Try Chrome instead']);
+  assert.deepEqual(slow.shortcut.activities().filter((a) => a.turn === 2).map((a) => [a.key, a.content.body]), [
+    ['fake-bridge:2:ack', 'Starting a new Fake session.'],
+    ['fake-bridge:2:ack:kept', 'Passing your message to Fake.'],
+  ], 'an ack posted before the halt was answered is corrected under its own key');
+  slow.assertCleanLogs();
+});
+
+it('halts again and relays the waiting reply once when the step dies after a kept halt', async (t) => {
+  const h = setup(t);
+  h.fake.facts.keeps = true;
+  await h.started();
+  await h.accept(h.shortcut.stop(SID));
+  await h.accept(h.shortcut.prompt(SID, 'Try Chrome instead'));
+  const died = dieAtSaveAfter(h, () => h.calls('halt').length === 1);
+  await h.tick();
+  assert.ok(died(), 'the step died at its save after the halt');
+  assert.deepEqual(h.fake.only().received, []);
+  await h.tick();
+  assert.equal(h.calls('halt').length, 2, 'the halt is repeated, and a conversation already stopped answers kept again');
+  assert.deepEqual(h.fake.only().received, ['Try Chrome instead']);
+});
+
+it('halts a kept conversation once when Shortcut closes the session, and ignores what follows', async (t) => {
+  const h = setup(t);
+  h.fake.facts.keeps = true;
+  const chat = await h.started();
+  h.fake.say(chat, 'Working on it');
+  h.shortcut.sessions.get(SID).closed = true;
+  await h.tick();
+  assert.equal(chat.halted, true);
+  assert.equal(await h.alarmIn(), null, 'a kept answer finishes the retirement');
+  await h.accept(h.shortcut.prompt(SID, 'Anyone there?'));
+  await h.tick();
+  assert.equal(h.calls('halt').length, 1);
+  assert.deepEqual(chat.received, []);
+  assert.equal(h.calls('open').length, 1);
   h.assertCleanLogs();
 });

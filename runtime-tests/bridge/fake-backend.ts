@@ -29,7 +29,7 @@ export type Chat = {
   received: string[];
   said: Said[];
   status: Status;
-  /** `prepare` answers `gone`. */
+  /** `prepare` answers `gone`. A halt that does not keep the chat sets it. */
   gone: boolean;
   halted: boolean;
 };
@@ -44,6 +44,8 @@ export function script(log: unknown[]) {
   const facts = {
     /** A chat has a page of its own to link. */
     linked: true,
+    /** A halt stops the work and the chat still takes messages. */
+    keeps: false,
   };
   let ids = 0;
 
@@ -101,7 +103,9 @@ export function script(log: unknown[]) {
     async halt(target) {
       return attempt('halt', target.kind === 'live' ? target.conversation.id : target.key, () => {
         const found = target.kind === 'live' ? [known(target.conversation.id)] : chats.filter((chat) => chat.key === target.key);
-        for (const chat of found) chat.halted = true;
+        const kept = target.kind === 'live' && facts.keeps;
+        for (const chat of found) Object.assign(chat, { halted: true, gone: !kept });
+        if (kept) return { kind: 'kept' };
         return found.length ? { kind: 'ended', url: found[0].url } : { kind: 'unseen' };
       });
     },

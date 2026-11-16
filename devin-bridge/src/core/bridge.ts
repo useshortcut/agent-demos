@@ -392,11 +392,21 @@ export function restarted(state: SessionState, phase: RelayPhase): SessionState 
   return enqueue(fresh(retiring(state), unsent(phase)), activity(state, 'restart', 'thought', `The last ${identity.name} session ended. Starting a new one.`));
 }
 
+/**
+ * A stop's halt is answered. A conversation the backend kept takes the replies
+ * that waited on the stop, or stays for the next one, and nothing is said to
+ * be terminated. Any other conversation is over: the replies open a new one.
+ */
 export function stopped(state: SessionState, phase: StopPhase, halted: Halted): SessionState {
-  if (phase.then.length) return fresh(state, phase.then);
+  const kept = halted.kind === 'kept' && phase.target?.kind === 'live' ? phase.target.conversation : null;
+  if (phase.then.length) {
+    if (kept === null) return fresh(state, phase.then);
+    // The replies were acknowledged as starting a new session before the halt was answered. This takes that ack's place under its own suffix, since the ack may already be posted.
+    return enqueue({ ...state, phase: { kind: 'relay', on: kept, prompt: phase.then, send: null } }, activity(state, 'ack:kept', 'thought', `Passing your message to ${identity.name}.`));
+  }
   const url = halted.kind === 'ended' ? halted.url : null;
   const body = url ? `Stopped. The ${identity.name} session was terminated: ${url}` : 'Stopped.';
-  return enqueue({ ...state, phase: { kind: 'idle', on: null } }, activity(state, 'stopped', 'response', body));
+  return enqueue({ ...state, phase: { kind: 'idle', on: kept } }, activity(state, 'stopped', 'response', body));
 }
 
 export function observed(state: SessionState, phase: PollPhase, { memo, said, status }: Observed<Memo>, now: number): SessionState {

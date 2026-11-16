@@ -61,6 +61,8 @@ export type Observed<M> = {
 export type Halted =
   /** The conversation is over. The next reply opens a new one. */
   | { kind: 'ended'; url: string | null }
+  /** The work stopped and the conversation still takes replies. */
+  | { kind: 'kept' }
   /** An unresolved key found nothing. It may be read-after-write lag, so the core looks again. */
   | { kind: 'unseen' };
 

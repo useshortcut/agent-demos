@@ -338,13 +338,15 @@ async function haltStop(state: SessionState, phase: StopPhase, backend: Backend<
 }
 
 // Conversations the bridge gave up are halted here, one per run, on their own
-// budget. A halt the backend refuses spends that budget like an outage.
+// budget. A halt the backend refuses spends that budget like an outage. Only
+// a key that finds nothing is looked up again: a conversation the backend
+// kept is halted, which is all retirement asks.
 async function retire(state: SessionState, backend: Backend<Memo>): Promise<SessionState> {
   const [target, ...rest] = state.retire;
   const done = succeeded({ ...state, retire: rest }, 'retire');
   try {
     const halted = await backend.halt(target);
-    if (halted.kind === 'ended' || target.kind === 'live') return done;
+    if (halted.kind !== 'unseen' || target.kind === 'live') return done;
     const lookups = target.lookups + 1;
     if (lookups >= MAX_LOOKUPS) return done;
     return wait({ ...done, retire: [{ ...target, lookups }, ...rest] }, 'retire', backoffMs(lookups));
