@@ -31,6 +31,10 @@ const CALLS = ['open', 'prepare', 'send', 'observe', 'halt'];
 const MODES = ['fails', 'lost', 'dies', 'refused'];
 const READS = ['prepare', 'observe'];
 const REST_ALARMS = 40;
+// The longest script of the default scope has 9 steps. A script this long belongs to a bridge whose alarms never run out, and the search over it would not end.
+const LONGEST = 40;
+// One alarm makes a handful of backend calls. A step that makes this many would go on making them.
+const MOST_CALLS = 30;
 const replyText = (turn) => `reply-${turn}`;
 
 export const BACKENDS = [false, true].flatMap((keeps) => [false, true].flatMap((empty) => [false, true].map((dedupes) => ({ keeps, empty, dedupes }))));
@@ -114,6 +118,7 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
   const faulted = (call, run) => async (...args) => {
     const nth = (step.counts[call] = (step.counts[call] ?? 0) + 1);
     step.calls.push({ call, nth });
+    if (step.calls.length > MOST_CALLS) throw Object.assign(new Error('the step never ends'), { name: 'EndlessStep' });
     led.calling();
     const mode = armed?.call === call && armed.nth === nth ? armed.mode : null;
     if (mode) armed = null;
@@ -204,6 +209,7 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
     for (const [level, message, detail] of h.logs.slice(logged)) {
       if (level !== 'error' || !/step failed/.test(String(message))) continue;
       if (detail?.error === 'StalledError') led.saw('loop', 'a step stalled');
+      else if (detail?.error === 'EndlessStep') led.saw('loop', `one step made more than ${MOST_CALLS} backend calls`);
       else if (fault?.mode !== 'dies') led.saw('loop', `a step threw ${detail?.error}`);
     }
     for (const line of fake.misuse.splice(0)) led.saw('keys', `the backend saw that ${line}`);
@@ -356,7 +362,7 @@ const faultsOn = (calls, scope) => calls.flatMap(({ call, nth }) => MODES
  */
 export async function explore(w, scope) {
   const start = budgetsOf(scope);
-  const nodes = [{ parent: null, via: null, left: start, snapshot: await w.snapshot(), edges: [] }];
+  const nodes = [{ parent: null, via: null, left: start, steps: 0, snapshot: await w.snapshot(), edges: [] }];
   const seen = new Map([[await w.name(), [0]]]);
   const broken = new Map();
   let steps = 0;
@@ -396,10 +402,11 @@ export async function explore(w, scope) {
           node.edges.push({ to: covering, budget });
           return calls;
         }
-        const child = nodes.push({ parent: id, via: label, left, snapshot: await w.snapshot(), edges: [] }) - 1;
+        const child = nodes.push({ parent: id, via: label, left, steps: node.steps + 1, snapshot: await w.snapshot(), edges: [] }) - 1;
         known.push(child);
         node.edges.push({ to: child, budget });
-        next.push(child);
+        if (nodes[child].steps < LONGEST) next.push(child);
+        else record(child, [], [`loop: a script of ${LONGEST} steps still changes what the bridge holds`]);
         if (await w.idle()) {
           await w.act('again');
           await w.act('tick');
@@ -452,14 +459,15 @@ export async function explore(w, scope) {
  */
 export async function runEach(w, scope) {
   let scripts = 0;
-  const from = async (snapshot, name, left) => {
+  const from = async (snapshot, name, left, steps) => {
     scripts++;
+    assert.ok(steps < LONGEST, `a script of ${LONGEST} steps still changes what the bridge holds`);
     const run = async (label, budget) => {
       await w.restore(snapshot);
       const calls = (await w.act(label)) ?? [];
       if (w.broken().length) return void scripts++;
       const reached = await w.name();
-      if (reached !== name) await from(await w.snapshot(), reached, spend(left, budget));
+      if (reached !== name) await from(await w.snapshot(), reached, spend(left, budget), steps + 1);
       return calls;
     };
     await w.restore(snapshot);
@@ -470,6 +478,6 @@ export async function runEach(w, scope) {
       for (const fault of faultsOn(calls ?? [], scope)) await run(fault, 'faults');
     }
   };
-  await from(await w.snapshot(), await w.name(), budgetsOf(scope));
+  await from(await w.snapshot(), await w.name(), budgetsOf(scope), 0);
   return BigInt(scripts);
 }
