@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { it } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { SID, assertAbout, bridgeHarness } from './harness.mjs';
+import { conform } from './conform.mjs';
+import { CONTEXT, REQUEST, SID, assertAbout, bridgeHarness, openingText } from './harness.mjs';
 
 const root = pathToFileURL(`${process.cwd()}/`);
 assert.ok(existsSync(new URL('src/core/port.ts', root)), 'core.test.mjs tests the bridge in the current directory. Run `npm test` inside a bridge.');
@@ -17,12 +18,6 @@ const bridge = await bridgeHarness({
   vendor: { env: {}, mock: (log) => bridge.mod.backend.script(log) },
 });
 const { BackendError } = bridge.mod;
-
-const REQUEST = 'Please fix the Safari login bug (private-prompt)';
-const CONTEXT = 'Story 123: Fix login\n\nRequested in comment:\nplease fix (private-prompt)\n\nLogin fails on Safari.';
-const STORY = 'Shortcut story: https://app.shortcut.com/acme/story/123';
-/** The opening text for what the user asked: the request, the story link, and Shortcut's context, once each. */
-const introduction = (asked, context = CONTEXT) => [asked ? `A Shortcut user asked:\n\n${asked}` : 'Work on this Shortcut story.', STORY, ...(context ? [`Context from Shortcut:\n\n${context}`] : [])].join('\n\n');
 
 function setup(t) {
   const h = bridge.setup(t);
@@ -58,7 +53,7 @@ it('opens one conversation for a session, however often its event is delivered, 
   await h.accept(created);
   await h.tick();
   const chat = h.fake.only();
-  assert.equal(chat.opened, introduction(REQUEST));
+  assert.equal(chat.opened, openingText(REQUEST));
   assert.equal(chat.key, 'shortcut-session-sess-1-1');
 
   h.fake.say(chat, 'Looking into it');
@@ -280,7 +275,7 @@ it('introduces a conversation opened empty with its first send, and sends later 
   h.fake.facts.empty = true;
   const chat = await h.started();
   assert.equal(chat.opened, null);
-  assert.deepEqual(chat.received, [introduction(REQUEST)], 'the first message is the opening text an open would have carried');
+  assert.deepEqual(chat.received, [openingText(REQUEST)], 'the first message is the opening text an open would have carried');
   assert.deepEqual(h.requests.filter((r) => r.origin === 'fake').map((r) => r.method), ['open', 'prepare', 'send']);
   assert.deepEqual(h.shortcut.sessions.get(SID).external_urls, [{ label: 'Open in Fake', url: chat.url }]);
   h.fake.say(chat, 'Fixed it');
@@ -288,7 +283,7 @@ it('introduces a conversation opened empty with its first send, and sends later 
   await h.tick();
   await h.accept(h.shortcut.prompt(SID, 'Also fix Firefox'));
   await h.tick();
-  assert.deepEqual(chat.received, [introduction(REQUEST), 'Also fix Firefox'], 'only the first message introduces');
+  assert.deepEqual(chat.received, [openingText(REQUEST), 'Also fix Firefox'], 'only the first message introduces');
   assert.deepEqual(h.bodies('response').map((body) => body.split('\n')[0]), ['Fixed it']);
   h.assertCleanLogs();
 
@@ -297,7 +292,7 @@ it('introduces a conversation opened empty with its first send, and sends later 
   await bare.connect();
   await bare.accept(bare.shortcut.open(SID, { body: { type: 'attachment' } }));
   await bare.tick();
-  assert.deepEqual(bare.fake.only().received, [introduction('')], 'a session opened without text is introduced by the story alone');
+  assert.deepEqual(bare.fake.only().received, [openingText('')], 'a session opened without text is introduced by the story alone');
 });
 
 it('puts the replies that arrived during an empty open into the introduction, in turn order', async (t) => {
@@ -310,7 +305,7 @@ it('puts the replies that arrived during an empty open into the introduction, in
   await h.accept(h.shortcut.prompt(SID, 'Also fix Firefox'));
   await h.ticks(2);
   const chat = h.fake.only();
-  assert.deepEqual(chat.received, [introduction(`${REQUEST}\n\nAlso fix Firefox`)]);
+  assert.deepEqual(chat.received, [openingText(`${REQUEST}\n\nAlso fix Firefox`)]);
   h.fake.say(chat, 'Fixed both');
   chat.status = { kind: 'finished' };
   await h.tick();
@@ -326,7 +321,7 @@ it('opens again when the step dies after an empty open, and introduces only the 
   await h.tick();
   assert.ok(died(), 'the step died at its save after the open');
   await h.tick();
-  assert.deepEqual(h.fake.chats.map((chat) => chat.received), [[], [introduction(REQUEST)]], 'the conversation the lost open made was told nothing, so it runs nothing');
+  assert.deepEqual(h.fake.chats.map((chat) => chat.received), [[], [openingText(REQUEST)]], 'the conversation the lost open made was told nothing, so it runs nothing');
   assert.equal(h.calls('halt').length, 0);
 });
 
@@ -347,7 +342,7 @@ it('answers a stop while an empty open is unresolved without halting anything, a
   await h.tick();
   assert.deepEqual(h.fake.chats.map((chat) => [chat.key, chat.received]), [
     ['shortcut-session-sess-1-1', []],
-    ['shortcut-session-sess-1-2', [introduction('Try Chrome instead')]],
+    ['shortcut-session-sess-1-2', [openingText('Try Chrome instead')]],
   ]);
   h.assertCleanLogs();
 });
@@ -367,12 +362,12 @@ it('still introduces a kept conversation whose first send was stopped before it 
 
   await h.accept(h.shortcut.prompt(SID, 'Try Chrome instead'));
   await h.tick();
-  assert.deepEqual(chat.received, [introduction('Try Chrome instead')], 'the first message the conversation gets is an introduction, whichever relay sends it');
+  assert.deepEqual(chat.received, [openingText('Try Chrome instead')], 'the first message the conversation gets is an introduction, whichever relay sends it');
   chat.status = { kind: 'finished' };
   await h.tick();
   await h.accept(h.shortcut.prompt(SID, 'And Edge'));
   await h.tick();
-  assert.deepEqual(chat.received, [introduction('Try Chrome instead'), 'And Edge']);
+  assert.deepEqual(chat.received, [openingText('Try Chrome instead'), 'And Edge']);
 });
 
 for (const [window, failing] of [['before the open is attempted', null], ['while the open is unresolved', 'open'], ['before the introduction is prepared', 'prepare']]) {
@@ -388,7 +383,7 @@ for (const [window, failing] of [['before the open is attempted', null], ['while
     }
     await h.accept(created);
     await h.ticks(2);
-    assert.deepEqual(h.fake.only().received, [introduction(`${REQUEST}\n\nPick this up`)], 'the request and the context reach the agent once, in the one introduction');
+    assert.deepEqual(h.fake.only().received, [openingText(`${REQUEST}\n\nPick this up`)], 'the request and the context reach the agent once, in the one introduction');
     h.assertCleanLogs();
   });
 }
@@ -404,7 +399,7 @@ it('relays a session.created that arrives after the introduction was prepared as
   await h.accept(created);
   await h.ticks(2);
   assert.deepEqual(h.fake.only().received, [
-    introduction('Pick this up', ''),
+    openingText('Pick this up', ''),
     `${REQUEST}\n\nContext from Shortcut:\n\n${CONTEXT}`,
   ], 'the introduction goes out as it was prepared, and the request follows it');
 });
@@ -423,7 +418,7 @@ it('sends only the context of a session.created that arrives after the first tur
   await h.tick();
   await h.accept(h.shortcut.prompt(SID, 'Next'));
   await h.tick();
-  assert.deepEqual(chat.received, [introduction('Pick this up', ''), `Context from Shortcut:\n\n${CONTEXT}\n\nNext`]);
+  assert.deepEqual(chat.received, [openingText('Pick this up', ''), `Context from Shortcut:\n\n${CONTEXT}\n\nNext`]);
 });
 
 it('carries the context of a late session.created once, in the introduction, when the conversation is still empty after a stop', async (t) => {
@@ -440,5 +435,36 @@ it('carries the context of a late session.created once, in the introduction, whe
   await h.tick();
   await h.accept(h.shortcut.prompt(SID, 'Try Chrome instead'));
   await h.tick();
-  assert.deepEqual(h.fake.only().received, [introduction('Try Chrome instead')], 'the stopped request does not come back, and the context is not sent a second time ahead of the reply');
+  assert.deepEqual(h.fake.only().received, [openingText('Try Chrome instead')], 'the stopped request does not come back, and the context is not sent a second time ahead of the reply');
 });
+
+// The conformance scenarios, for the kinds of backend no bridge here has yet.
+for (const [label, facts] of [
+  ['a backend that keeps its session, opens it empty, and has no link', { keeps: true, opensEmpty: true, linked: false }],
+  ['a backend that keeps its session and opens it with the request', { keeps: true, opensEmpty: false, linked: true }],
+]) {
+  conform({
+    label,
+    setup(t) {
+      const h = setup(t);
+      Object.assign(h.fake.facts, { keeps: facts.keeps, empty: facts.opensEmpty, linked: facts.linked });
+      return h;
+    },
+    identity: { slug: 'fake-bridge', name: 'Fake', aSession: 'a Fake session', linkLabel: 'Open in Fake' },
+    facts,
+    vendor: {
+      sessions: (h) => h.fake.chats,
+      told: (h, chat) => ({ opened: chat.opened, messages: chat.received }),
+      url: (chat) => chat.url,
+      work: (h, chat) => { chat.status = { kind: 'working' }; },
+      say: (h, chat, text) => h.fake.say(chat, text),
+      finish: (h, chat) => { chat.status = { kind: 'finished' }; },
+      ask(h, chat, question) {
+        h.fake.say(chat, question);
+        chat.status = { kind: 'asked', on: 'user' };
+      },
+      fail: (h, chat) => { chat.status = { kind: 'failed', body: 'The Fake session failed.', keep: false }; },
+      halted: (h, chat) => chat.halted,
+    },
+  });
+}

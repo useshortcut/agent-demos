@@ -7,6 +7,13 @@ import { fileURLToPath } from 'node:url';
 
 const SHORTCUT = 'https://api.example.com';
 export const SID = 'sess-1';
+/** The prompt and the context of the mock's `session.created`. */
+export const REQUEST = 'Please fix the Safari login bug (private-prompt)';
+export const CONTEXT = 'Story 123: Fix login\n\nRequested in comment:\nplease fix (private-prompt)\n\nLogin fails on Safari.';
+
+/** What a backend should be told to open the mock's session: what the user asked, the story link, and Shortcut's context, once each. */
+export const openingText = (asked = REQUEST, context = CONTEXT) =>
+  [asked ? `A Shortcut user asked:\n\n${asked}` : 'Work on this Shortcut story.', 'Shortcut story: https://app.shortcut.com/acme/story/123', ...(context ? [`Context from Shortcut:\n\n${context}`] : [])].join('\n\n');
 
 const clone = (value) => value === undefined ? undefined : structuredClone(value);
 export const json = (body, status = 200, headers = {}) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...headers } });
@@ -53,7 +60,7 @@ function mockShortcut(log) {
   const sessions = new Map();
   const state = { valid: 'token-1', issued: 0, refreshes: 0, subscription: null, subscriptionStatus: 200, rateLimits: [], readRateLimits: [], readFailures: [], serverErrors: 0, rejections: [], patchConflicts: 0, refreshFailure: null, workspaceId: 'workspace' };
   let ids = 0;
-  const context = { text: 'Story 123: Fix login\n\nRequested in comment:\nplease fix (private-prompt)\n\nLogin fails on Safari.', truncated: false, comment_text: 'please fix (private-prompt)' };
+  const context = { text: CONTEXT, truncated: false, comment_text: 'please fix (private-prompt)' };
 
   const snapshot = (s) => ({ id: s.id, workspace_id: 'workspace', installation_id: 'install', agent_member_id: 'bridge-member', created_by: 'ada',
     entity_type: 'story', entity_id: 123, thread_comment_id: null, status: s.status, turn: s.turn, version: s.version, plan: [], external_urls: clone(s.external_urls),
@@ -88,7 +95,7 @@ function mockShortcut(log) {
   return {
     state,
     sessions,
-    open(id = SID, { body = 'Please fix the Safari login bug (private-prompt)', external_urls = [], version = 1 } = {}) {
+    open(id = SID, { body = REQUEST, external_urls = [], version = 1 } = {}) {
       const s = { id, turn: 1, version, status: 'pending', external_urls, stopRequested: false, outcome: null, closed: false, activities: [] };
       sessions.set(id, s);
       return event('session.created', s, prompt(s, body));
