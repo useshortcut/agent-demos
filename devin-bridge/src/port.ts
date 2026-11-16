@@ -3,13 +3,12 @@ import { retryAfterMs } from './http';
 export type Identity = {
   /** Prefix of every activity key: `{slug}:{turn}:{suffix}`. */
   slug: string;
-  /** Log label. */
+  /** Names the bridge in log lines, and in the error it posts when it cannot reach the backend. */
   title: string;
   /** How activities name the agent. */
   name: string;
-  /** The name with its article, which depends on the name. */
+  /** `a {name} session`. The article depends on the name. */
   aSession: string;
-  /** The label of the card link. */
   linkLabel: string;
 };
 

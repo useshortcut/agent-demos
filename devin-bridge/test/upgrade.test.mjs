@@ -303,12 +303,6 @@ const scenarios = [
 
 const clone = (value) => (value === undefined ? undefined : structuredClone(value));
 
-/**
- * Runs a scenario and records, for each step, the requests, the logs, and
- * the alarm left behind, along with every state the session stored at rest
- * and each state it stored on applying its inbox, before any job ran. With
- * `upgrade`, the stored state is replaced by a recorded one at that point.
- */
 async function run(t, scenario, upgrade = null) {
   const h = setup(t);
   t.mock.timers.setTime(EPOCH);
@@ -329,6 +323,7 @@ async function run(t, scenario, upgrade = null) {
     if (store && store !== watched) {
       const put = store.put;
       store.put = async (key, value) => {
+        // A state put while inbox keys remain was stored on applying the inbox, before any job ran.
         if (key === 'state' && [...store.data.keys()].some((k) => k.startsWith('inbox:'))) stored.push({ step: current, at: 'inbox', state: clone(value) });
         return put(key, value);
       };
@@ -346,7 +341,6 @@ async function run(t, scenario, upgrade = null) {
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-// Each distinct state once, at the first point the session stored it.
 function distinct(stored) {
   const seen = [];
   return stored.filter(({ state }) => !seen.some((s) => same(s, state)) && seen.push(state));

@@ -168,8 +168,7 @@ export class Session {
 // A backend whose bridge once stored states of another shape exports `upgradeState` to read them. Any other leaves it out.
 const { upgradeState } = adapter as { upgradeState?: (stored: unknown) => SessionState | null };
 
-// An upgraded state is saved in the current shape by the step's next save. A
-// state the backend cannot upgrade is dropped.
+// An upgraded state is saved in the current shape by the step's next save.
 async function load(storage: DurableObjectStorage, sessionId: string): Promise<SessionState | null> {
   const stored = await storage.get<SessionState | { v?: undefined }>('state');
   if (stored === undefined) return null;

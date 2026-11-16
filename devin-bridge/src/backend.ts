@@ -1,7 +1,6 @@
 import { devinClient, type DevinMessage, type DevinSession, type DevinState } from './devin';
 import { BackendError, type Backend, type Conversation, type Identity, type Said, type Status } from './port';
 
-// Only this bridge stored session states before the backend port, in its own shape.
 export { upgradeState } from './upgrade';
 
 export const identity: Identity = { slug: 'devin-bridge', title: 'Devin Bridge', name: 'Devin', aSession: 'a Devin session', linkLabel: 'Open in Devin' };
@@ -94,7 +93,6 @@ export function connect(env: BackendEnv): Backend<Memo> {
       const { messages, complete } = await devin.listMessages(id);
       if (!complete) console.warn('Devin Bridge read a cut-short Devin message list', { devinSessionId: id });
       const said = complete ? spoken(messages, memo) : [];
-      // Until Devin says something or its status moves, the status still describes the turn before the reply.
       if (memo && !memo.heard && said.length === 0 && sameState(memo.baseline.status, session.state)) {
         return { memo, said, status: session.state.kind === 'working' ? { kind: 'working' } : { kind: 'pending' } };
       }

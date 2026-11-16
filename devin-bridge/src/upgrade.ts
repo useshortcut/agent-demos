@@ -3,10 +3,6 @@ import type { Activity, Pending, Phase, Send, SessionState } from './bridge';
 import type { DevinState } from './devin';
 import type { Conversation, Target } from './port';
 
-// A session state stored before the backend port is the same machine under
-// Devin's names: a link and a baseline where a conversation and its memo are
-// now, and a `devin` job where the backend job is.
-
 type Fields = Record<string, unknown>;
 
 class Unrecognized extends Error {}

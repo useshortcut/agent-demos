@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const BEFORE_PORT = '08489efba3d3ba395a3f11942ebd625f300f19a3';
+const BEFORE_PORT = 'c82857e0d93d10fff7a62e87590f8bdc4bc5f37a';
 const bridge = fileURLToPath(new URL('../..', import.meta.url));
 const old = mkdtempSync(join(tmpdir(), 'devin-bridge-before-port-'));
 try {

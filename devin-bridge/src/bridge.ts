@@ -11,7 +11,6 @@ export type Activity = {
 
 type Live = Conversation<Memo>;
 
-/** A conversation the bridge may still have to halt: one it knows, or any an open may have made under a key. */
 type Held = Target<Memo>;
 
 /** A reply the agent has not received yet. Its turn orders it among the others, whatever order they arrived in. The opening request of a late `session.created` is never superseded by a newer reply. */
@@ -24,7 +23,7 @@ export type Phase =
   | { kind: 'start'; prompt: Pending[]; extra: Pending[]; attempted: boolean }
   /** Until `send` is set, `prompt` is what the next prepare fixes. After, it waits for the relay that follows. */
   | { kind: 'relay'; on: Live; prompt: Pending[]; send: Send | null }
-  /** `check` asks for a Shortcut read of the session with the next poll. `posted` and `asked` are the last message and the key suffix of the elicitation written to Shortcut. `sentAt` starts the pickup clock. `heartbeatAt` is when a quiet, working agent is next reported to Shortcut. */
+  /** `check` asks for a Shortcut read of the session with the next poll. `posted` is the id of the last message written to Shortcut, and `asked` the key suffix of the elicitation. `sentAt` starts the pickup clock. `heartbeatAt` is when a quiet, working agent is next reported to Shortcut. */
   | { kind: 'poll'; on: Live; at: number; delayMs: number; check: boolean; posted: string | null; asked: string | null; sentAt: number; heartbeatAt: number }
   | { kind: 'stop'; target: Held | null; then: Pending[] }
   | { kind: 'idle'; on: Live | null }
@@ -39,7 +38,7 @@ export type StopPhase = Extract<Phase, { kind: 'stop' }>;
 export type Job = 'backend' | 'shortcut' | 'retire' | 'link';
 
 export type SessionState = {
-  /** A stored state without it has an earlier shape: the backend's `upgradeState` reads it, or it is dropped with a warning. */
+  /** A stored state without it has an earlier shape. */
   v: 2;
   shortcutSessionId: string;
   workspaceId: string;
@@ -397,7 +396,6 @@ export function stopped(state: SessionState, phase: StopPhase, halted: Halted): 
   return enqueue({ ...state, phase: { kind: 'idle', on: null } }, activity(state, 'stopped', 'response', body));
 }
 
-/** The one place a backend's report becomes Shortcut activities. */
 export function observed(state: SessionState, phase: PollPhase, { memo, said, status }: Observed<Memo>, now: number): SessionState {
   const unposted = said.slice(said.findIndex((m) => m.id === phase.posted) + 1);
   const last = said[said.length - 1] ?? null;

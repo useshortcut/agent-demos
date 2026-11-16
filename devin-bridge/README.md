@@ -32,7 +32,7 @@ For the platform itself (OAuth, webhooks, app review), see [docs/open-agents.md]
 
 ### The alarm loop
 
-Each alarm applies new inbox events to the session state, then runs the jobs the state calls for. `src/bridge.ts` holds the state machine and the planner with no I/O, and `src/session.ts` performs the I/O. Both reach Devin only through the backend contract in `src/port.ts`, which `src/backend.ts` implements over the Devin HTTP client in `src/devin.ts`.
+Each alarm applies new inbox events to the session state, then runs the jobs the state calls for. `src/bridge.ts` holds the state machine and the planner with no I/O, and `src/session.ts` performs the I/O. `src/session.ts` reaches Devin only through the backend contract in `src/port.ts`, which `src/backend.ts` implements over the Devin HTTP client in `src/devin.ts`.
 
 The phases are `start`, `relay`, `poll`, `stop`, `idle`, and `closed`. A phase that acts on a Devin session carries its link, so no separate link can fall out of step with the phase.
 
