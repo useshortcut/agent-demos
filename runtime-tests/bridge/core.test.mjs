@@ -370,6 +370,24 @@ it('still introduces a kept conversation whose first send was stopped before it 
   assert.deepEqual(chat.received, [openingText('Try Chrome instead'), 'And Edge']);
 });
 
+it('ends the turn when an empty conversation is gone before its first message, and opens another only for the next reply', async (t) => {
+  const h = setup(t);
+  h.fake.facts.empty = true;
+  await h.connect();
+  await h.accept(h.shortcut.open());
+  h.fake.failNext('prepare', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  h.fake.only().gone = true;
+  await h.ticks(2);
+  assert.equal(h.calls('open').length, 1, 'a conversation that was told nothing is not replaced by another in the same position');
+  assert.deepEqual(h.bodies('error'), ['The Fake session ended before it took your message. Reply to start a new one.']);
+  assert.equal(await h.alarmIn(), null);
+
+  await h.accept(h.shortcut.prompt(SID, 'Try again'));
+  await h.tick();
+  assert.deepEqual(h.fake.chats.map((chat) => chat.received), [[], [openingText('Try again')]]);
+});
+
 for (const [window, failing] of [['before the open is attempted', null], ['while the open is unresolved', 'open'], ['before the introduction is prepared', 'prepare']]) {
   it(`puts a session.created delivered after a reply into the introduction of an empty conversation when it arrives ${window}`, async (t) => {
     const h = setup(t);

@@ -430,8 +430,15 @@ export function relayed(state: SessionState, phase: RelayPhase, send: Send, memo
   return { ...state, sent, phase: next };
 }
 
-/** The session a reply was meant for is already over, so the reply opens a new one. */
+/**
+ * The session a reply was meant for is already over, so the reply opens a new
+ * one. A conversation that is gone while still empty is not replaced: the next
+ * one would stand where it stood, and a backend whose new conversations are
+ * all gone would have the bridge open them without a wait or an end. The turn
+ * fails, and the next reply opens one.
+ */
 export function restarted(state: SessionState, phase: RelayPhase): SessionState {
+  if (phase.on.empty) return fail(state, `The ${identity.name} session ended before it took your message. Reply to start a new one.`, false);
   return enqueue(fresh(retiring(state), unsent(phase)), activity(state, 'restart', 'thought', `The last ${identity.name} session ended. Starting a new one.`));
 }
 
