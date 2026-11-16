@@ -388,9 +388,8 @@ function without(phase: Phase, turn: number): Phase {
   }
 }
 
-/** The bridge is still on its first conversation and on the turn it started from, and nothing has answered that turn. */
-const opening = ({ generation, turn, first, phase }: SessionState) =>
-  generation === 1 && turn === first && (phase.kind === 'start' || phase.kind === 'relay' || phase.kind === 'poll');
+/** The bridge is still on the turn it started from, and nothing has answered that turn. A conversation that replaced one that ended can be on it too. */
+const opening = ({ turn, first, phase }: SessionState) => turn === first && (phase.kind === 'start' || phase.kind === 'relay' || phase.kind === 'poll');
 
 // A reply can be delivered before the session.created that opened the session.
 // The event brings Shortcut's context and the opening request, and the two
@@ -401,12 +400,12 @@ const opening = ({ generation, turn, first, phase }: SessionState) =>
 // the context carries it, so this function only stores it.
 //
 // The request is cancelled by a stop for its turn or a later one, whether the
-// stop came first or comes later. One that arrives after the bridge has moved
-// to a later conversation is dropped. Otherwise where it goes depends on what
-// the agent may have been told by now.
+// stop came first or comes later. Otherwise where it goes depends on what the
+// agent may have been told by now.
 //
 // Nothing was told: no open has gone out. The request joins the opening text,
-// whatever replies arrived meanwhile.
+// whatever replies arrived meanwhile. The open of a later conversation takes
+// it only while the bridge is still on the turn it started from.
 //
 // The bridge is still on the turn it started from: the request waits as an
 // `opening` message, which a newer reply never supersedes. A conversation
@@ -427,7 +426,7 @@ function merge(current: SessionState, event: ShortcutSessionEventPayload): Sessi
   const state = { ...current, context: contextOf(event) };
   const { phase } = current;
   const turn = turnOf(event);
-  const asked = current.generation === 1 && turn > current.cutoff ? text(event) : '';
+  const asked = turn > current.cutoff && (current.generation === 1 || current.turn === current.first) ? text(event) : '';
   if (phase.kind === 'start' && !phase.attempted) return asked ? { ...state, phase: { ...phase, prompt: [...phase.prompt, { turn, text: asked }] } } : state;
   const request: Pending[] = asked ? [opening(current) ? { turn, text: asked, opening: true } : { turn, text: asked, superseded: true }] : [];
   switch (phase.kind) {

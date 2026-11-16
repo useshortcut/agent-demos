@@ -24,13 +24,13 @@ export const RULES = {
     'A reply is superseded when it arrives after the bridge learned that a newer reply landed.',
     'A reply that arrives while a newer reply waits in a prepared send is superseded when the bridge learns that the send landed.',
     'A reply that arrives while a newer reply waits in an open that has no answer yet is not superseded. It follows the open.',
-    'The request of a `session.created` is accepted when it arrives before any text is fixed, or while the bridge is still on its first conversation, has received no reply newer than the one it started from, and no turn has an outcome. Otherwise it is superseded. Once accepted it is never superseded.',
+    'The request of a `session.created` is accepted when it arrives before any text is fixed, or while the bridge has received no reply newer than the one it started from and no turn has an outcome. Otherwise it is superseded. Once accepted it is never superseded.',
   ].join(' '),
   once: 'No text carries a request twice, and no request lands twice, unless the bridge never learned that its earlier landing happened. Then it may land once more, as that send\'s retry or in the text that takes its place after a stop halted the conversation.',
   ordered: 'A text carries its requests in turn order.',
   briefed: 'A text that is fixed after `session.created` arrived carries the context when it lands in a conversation that no earlier text told it to. A stop cancels requests and never the context.',
   briefedOnce: 'No text carries the context twice, and no conversation is told it twice, unless the bridge never learned that the earlier text landed. A conversation\'s first text is never such an exception once a prepare has found a message in it.',
-  owed: 'Every open carries a request that is still owed, which is one that arrived, is neither cancelled nor superseded, and has not landed as far as the bridge knows. Every send carries one too, or the context alone. The context goes alone only while the bridge is still on its first conversation, has received no reply newer than the one it started from, and no turn has an outcome.',
+  owed: 'Every open carries a request that is still owed, which is one that arrived, is neither cancelled nor superseded, and has not landed as far as the bridge knows. Every send carries one too, or the context alone. The context goes alone only while the bridge has received no reply newer than the one it started from and no turn has an outcome.',
   rest: 'When the bridge comes to rest, every request that arrived has landed, or is cancelled or superseded, or its turn or a later one ended in an error the user was told about.',
   keys: 'A send is prepared before it first goes out. A retried open or send repeats its text, and no two different sends share a key.',
   single: 'When the bridge comes to rest, at most one conversation is working.',
@@ -50,7 +50,6 @@ export function ledger(tokens, { opensEmpty }) {
     newest: 0,
     outcome: false,
     failedTurn: 0,
-    laterOpen: false,
     fixedAny: false,
     learnedNewest: 0,
     requests: {},
@@ -67,7 +66,7 @@ export function ledger(tokens, { opensEmpty }) {
   const carried = (text) => Object.keys(s.requests).map(Number).filter((turn) => text.includes(tokenOf(turn))).sort((a, b) => a - b);
   const cancelled = (turn) => turn <= s.cutoff;
   const stillOwed = (turn) => !cancelled(turn) && !s.requests[turn].superseded && !(s.requests[turn].landed && s.requests[turn].learned);
-  const onOpening = () => !s.laterOpen && s.newest === s.first && !s.outcome;
+  const onOpening = () => s.newest === s.first && !s.outcome;
 
   function fix(id, text, { conversation, knew, alone, send }) {
     const holds = carried(text);
@@ -159,7 +158,6 @@ export function ledger(tokens, { opensEmpty }) {
     },
 
     opening(key, text) {
-      if (Number(key.match(/-(\d+)$/)?.[1]) > 1) s.laterOpen = true;
       if (!s.texts[key]) fix(key, text, { conversation: null, knew: s.created, alone: false, send: false });
       // Nothing reads the text of an open that delivers none, so it may differ between attempts.
       call(key, opensEmpty ? s.texts[key].text : text);

@@ -28,7 +28,7 @@ const BROKEN = [
     core: 'forgets the stop a cancelled request arrives after',
     replace: [
       ['  if (reply.turn <= Math.max(state.cutoff, state.sent)) return state;', '  if (reply.turn <= state.sent) return state;'],
-      ['  const asked = current.generation === 1 && turn > current.cutoff ? text(event) : \'\';', '  const asked = current.generation === 1 ? text(event) : \'\';'],
+      ['  const asked = turn > current.cutoff && (current.generation === 1 || current.turn === current.first) ? text(event) : \'\';', '  const asked = text(event);'],
     ],
     facts: DEVIN,
     scope: { from: ['created', 'reply 2', 'reply 3', 'stop 1', 'stop 2'], events: 3, faults: 0, finish: 0, gone: 0, total: 3 },

@@ -70,8 +70,8 @@ The opening request is what the user asked on turn 1:
 - Every stop is for turn 1 or a later turn, so a stop cancels the opening request. It does so whether it arrived before the created event or arrives after, and even when the bridge had nothing to terminate for it.
 - If no create has gone out yet, the request goes into the create, whatever replies arrived meanwhile.
 - If the create has gone out and the bridge is still on the turn it started from, the bridge sends the request to that Devin session as a message once the session is known, with the context under it. The bridge is on that turn until a newer reply arrives or the turn has its outcome. A newer reply that arrives after the request does not replace it.
-- Otherwise the agent has moved on, and the bridge drops the request. That is the case once a newer reply has arrived, once the turn has its outcome, and once the bridge has moved to a later Devin session. The context still goes, by the rule above.
-- If the Devin session is gone before a waiting request could be sent, the request opens the next Devin session with whatever else waited, and the create prompt carries the context once. A request that a stop cancelled never comes back.
+- Otherwise the agent has moved on, and the bridge drops the request. That is the case once a newer reply has arrived and once the turn has its outcome. The context still goes, by the rule above.
+- If the Devin session is gone before the request could be sent, the request opens the next Devin session with whatever else waited, and the create prompt carries the context once. The same holds for a request that arrives while the bridge is replacing a session that ended on the turn it started from. A request that a stop cancelled never comes back.
 
 While the bridge is on the turn it started from, a context with no request to go with goes to the Devin session alone, at once. That happens when a stop cancelled the request or the created event had no text. After that turn the context waits for the next reply.
 
