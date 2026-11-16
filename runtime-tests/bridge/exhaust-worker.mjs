@@ -1,4 +1,6 @@
-// One backend's share of exhaust.test.mjs, on a thread of its own.
+// Explores one scope on one kind of backend for the bridge at `root`, on a
+// thread of its own, and posts what `explore` returns. exhaust.test.mjs and
+// broken-cores.test.mjs start it.
 import { mock } from 'node:test';
 import { parentPort, workerData } from 'node:worker_threads';
 import { explore, loadBridge, world } from './exhaust.mjs';

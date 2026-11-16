@@ -1,9 +1,10 @@
 // The exhaustive run is worth trusting only if it fails a core that is wrong.
-// Each case copies the src of the bridge in the current directory, breaks one
-// behavior in the copy, runs the search over the copy, and expects the rule
-// that owns the behavior among the broken ones. When you change the lines a
-// case replaces, change the case with them: a replacement that no longer
-// applies fails the test.
+// Each case copies the src of the bridge in the current directory and
+// replaces lines of core/bridge.ts in the copy. It then explores one scope on
+// one kind of backend, over the bridge as it is and over the copy. The bridge
+// as it is has to break no rule, and the copy has to break the rule the case
+// names. A line that is not in bridge.ts exactly once fails the case, so
+// change the case with the line.
 import assert from 'node:assert/strict';
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

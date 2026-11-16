@@ -293,13 +293,15 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
     },
 
     /**
-     * Names the state for the search: two scripts that reach the same name
-     * have the same future. Send keys are named by the order they were first
-     * used. Of the clock only what decides which jobs the next alarms run is
-     * kept: how long each wait still has, or that it ends after the next
-     * poll. How far off that poll is, and how often the agent was quiet, is
-     * left out, so an agent that stays quiet is polled once and not six
-     * times.
+     * A hash of what the search compares two scripts by: the stored state,
+     * the inbox, whether an alarm is set and due, the backend's chats,
+     * Shortcut's session, the ledger, and which events were delivered. The
+     * search takes two scripts with the same name to have the same future.
+     * Send keys are named by the order they were first used. Of the clock
+     * only what decides which jobs the next alarms run is kept: how long
+     * each wait still has, or that it ends after the next poll. How far off
+     * that poll is, and how often the agent was quiet, is left out, so an
+     * agent that stays quiet is polled once and not six times.
      */
     async name() {
       const state = storage.data.get('state');

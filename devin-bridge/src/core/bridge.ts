@@ -35,7 +35,7 @@ export type Phase =
   /** `check` asks for a Shortcut read of the session with the next poll. `posted` is the id of the last message written to Shortcut, and `asked` the key suffix of the elicitation. `sentAt` starts the pickup clock. `heartbeatAt` is when a quiet, working agent is next reported to Shortcut. */
   | { kind: 'poll'; on: Live; at: number; delayMs: number; check: boolean; posted: string | null; asked: string | null; sentAt: number; heartbeatAt: number }
   | { kind: 'stop'; target: Held | null; then: Pending[] }
-  /** `dropped`: the requests of a turn that ended in an error before they reached the agent, kept until Shortcut takes the error. Until then the user was not told to send them again, so a newer reply takes them along. */
+  /** `dropped`: the requests of a turn that ended in an error before they reached the agent. Set until Shortcut takes that error, and a newer reply that arrives before then takes them along. */
   | { kind: 'idle'; on: Live | null; dropped?: Pending[] }
   | { kind: 'closed' };
 
@@ -59,13 +59,13 @@ export type SessionState = {
   /** The turn the bridge started on. The first conversation's opening request belongs to it. */
   first: number;
   /**
-   * Whether the current conversation was told Shortcut's context. This is the
-   * only record of that debt: no reply, relay, or prepared send holds it, so
-   * dropping one neither loses nor repeats the context. `owed`: not as far
-   * as the bridge knows, so the next text for the conversation carries it.
-   * `introduced`: an introduction that carries it was prepared while the
-   * conversation was empty, and only the backend can say whether it landed.
-   * `given`: a text that carries it was confirmed.
+   * Whether the current conversation was told Shortcut's context. `owed`: not
+   * as far as the bridge knows, so the next text fixed for the conversation
+   * carries it. `introduced`: an introduction that carries it was prepared
+   * while the conversation was empty, and only the backend can say whether it
+   * landed. `given`: a text that carries it was confirmed. A fixed text
+   * records only that it carries the context (`briefs`). The debt changes
+   * when that text is confirmed, so a text that is dropped leaves it owed.
    */
   briefing: 'owed' | 'introduced' | 'given';
   /** Numbers the conversations opened for this Shortcut session; the current one's key carries it. */
@@ -136,7 +136,8 @@ export const sendKey = (state: Pick<SessionState, 'shortcutSessionId' | 'generat
  * a context it knew into every open. A prepared send keeps its text and is
  * marked as carrying the context when it does. The open of an attempted
  * start left the context out when it arrived after the attempt, since it
- * then waited to follow as a message.
+ * then waited to follow as a message. An `opening` request loses the context
+ * that the first shape kept at the end of its text.
  */
 export function restored(stored: SessionState | FirstPortState): SessionState {
   if (stored.v === 3) return stored;
@@ -149,7 +150,7 @@ export function restored(stored: SessionState | FirstPortState): SessionState {
   const state = (briefing: SessionState['briefing'], current: Phase): SessionState => ({ ...rest, v: 3, briefing, phase: current });
   switch (phase.kind) {
     case 'start': {
-      // A start that replaces a conversation that ended took over what waited for it, so its prompt can hold the opening request too.
+      // A start that replaced a conversation that ended took over what waited for it, so its prompt can hold an `opening` request.
       const waiting = { kind: 'start' as const, prompt: unmarked(requests(phase.prompt)), extra: requests(phase.extra) };
       return state('owed', phase.attempted ? { ...waiting, attempted: true, briefs: block !== '' && late === null && !carried(phase.extra) } : { ...waiting, attempted: false });
     }
@@ -176,10 +177,10 @@ function introduction(state: SessionState, message: string, slug: string, briefs
 
 const contextBlock = (context: string) => `Context from Shortcut:\n\n${context}`;
 
-/** There is a context and the current conversation has not been told it. */
+/** There is a context, and `briefing` says the conversation is owed it. An introduction whose answer is unknown does not count as owing. */
 const owes = (state: SessionState) => state.context !== '' && state.briefing === 'owed';
 
-/** The open's text is fixed here, before the open goes out, so every attempt carries the same text. A context that arrives after this follows the open as a message. */
+/** Marks the open as attempted and records whether its text carries the context: it does when one has arrived. `openingText` builds the same text from that for every attempt. */
 export const attempting = (state: SessionState, phase: StartPhase): SessionState => ({ ...state, phase: { ...phase, attempted: true, briefs: state.context !== '' } });
 
 export const openingText = (state: SessionState, phase: Attempted, slug: string): string => introduction(state, promptText(phase.prompt), slug, phase.briefs);
@@ -228,7 +229,7 @@ const turnOf = (event: ShortcutSessionEventPayload) => event.activity?.turn ?? e
 /** The event's reply as a pending prompt, or nothing when it carries no text. */
 const said = (event: ShortcutSessionEventPayload): Pending[] => (text(event) ? [{ turn: turnOf(event), text: text(event) }] : []);
 
-/** What the agent reads: the pending requests in turn order. */
+/** The texts of the pending requests in turn order, a blank line between them. */
 const promptText = (pending: Pending[]) => [...pending].sort((a, b) => a.turn - b.turn).map((p) => p.text).join('\n\n');
 
 /** What a message reads when it carries Shortcut's context: the context under the opening request, or ahead of the replies when it carries none. */
@@ -238,7 +239,7 @@ function briefedText(pending: Pending[], context: string): string {
   return [promptText(ordered.slice(0, under)), contextBlock(context), promptText(ordered.slice(under))].filter(Boolean).join('\n\n');
 }
 
-/** The pending requests as an opening text takes them. Nothing has reached the conversation it opens, so no request is special to it. */
+/** The requests without their `opening` and `superseded` marks, for an opening text or an introduction. Nothing has reached the conversation, so both take every request alike. */
 const unmarked = (pending: Pending[]): Pending[] => pending.map(({ turn, text }) => ({ turn, text }));
 
 export const live = (conversation: Live): Held => ({ kind: 'live', conversation });
@@ -346,7 +347,7 @@ function earlier(state: SessionState, reply: Pending): SessionState {
     case 'start': return phase.attempted ? { ...state, phase: { ...phase, extra: [...phase.extra, reply] } } : { ...state, phase: { ...phase, prompt: [...phase.prompt, reply] } };
     case 'relay': return { ...state, phase: { ...phase, prompt: [...phase.prompt, reply] } };
     case 'stop': return { ...state, phase: { ...phase, then: [...phase.then, reply] } };
-    // The turn failed and the user has not been told, so the reply waits with what the turn dropped.
+    // Shortcut has not taken the failed turn's error, so the reply joins what the turn dropped. After that it is dropped on arrival.
     case 'idle': return phase.dropped ? { ...state, phase: { ...phase, dropped: [...phase.dropped, reply] } } : state;
     default: return state;
   }
@@ -390,40 +391,25 @@ function without(phase: Phase, turn: number): Phase {
   }
 }
 
-/** The bridge is still on the turn it started from, and nothing has answered that turn. A conversation that replaced one that ended can be on it too. */
+/** No reply newer than the one the bridge started from has arrived, and the bridge is opening a conversation, relaying to it, or reading it. That holds for the first conversation and for one that replaced it. */
 const opening = ({ turn, first, phase }: SessionState) => turn === first && (phase.kind === 'start' || phase.kind === 'relay' || phase.kind === 'poll');
 
-// A reply can be delivered before the session.created that opened the session.
-// The event brings Shortcut's context and the opening request, and the two
-// part ways here.
+// A session.created that arrives after the bridge started from a reply. It
+// brings Shortcut's context and the opening request. `RULES.briefed`,
+// `RULES.stopped`, and `RULES.superseded` in
+// runtime-tests/bridge/ledger.mjs say what the agent is owed of each. Here
+// the context is stored, and the request is put where it waits:
 //
-// The context is owed to whichever conversation is current, and `briefing`
-// alone says so. Every text the bridge fixes for a conversation that is owed
-// the context carries it, so this function only stores it.
+// - nowhere, when a stop cancelled it, when the bridge is on a later
+//   conversation and past the turn it started from, when it reads a
+//   conversation and `opening()` no longer holds, or when it is stopping or
+//   idle
+// - in the text of an open that has not gone out
+// - marked `opening` while `opening()` holds, else `superseded`, beside an
+//   attempted open or in a relay
 //
-// The request is cancelled by a stop for its turn or a later one, whether the
-// stop came first or comes later. Otherwise where it goes depends on what the
-// agent may have been told by now.
-//
-// Nothing was told: no open has gone out. The request joins the opening text,
-// whatever replies arrived meanwhile. The open of a later conversation takes
-// it only while the bridge is still on the turn it started from.
-//
-// The bridge is still on the turn it started from: the request waits as an
-// `opening` message, which a newer reply never supersedes. A conversation
-// that is being watched is told at once, the request with the context under
-// it, or the context alone when the request is cancelled.
-//
-// A newer reply has arrived: the agent has moved on if any text reached it,
-// and only the backend can say whether one did. Beside an open or a relay,
-// the request waits as `superseded`. An open that delivered its text drops
-// it, and so does a prepare that finds a message in the conversation. A
-// prepare that finds the conversation empty puts it into the introduction.
-//
-// The turn the bridge started from has its outcome: the request is dropped.
-//
-// A request that still waits when its conversation turns out to be gone opens
-// the next one with whatever else waited.
+// A conversation the bridge is reading is relayed to at once while
+// `opening()` holds, with the request or with the context alone.
 function merge(current: SessionState, event: ShortcutSessionEventPayload): SessionState {
   const state = { ...current, context: contextOf(event) };
   const { phase } = current;
@@ -480,7 +466,7 @@ export type TurnEnd = 'conflict' | 'revoked' | 'ended';
  * nothing reaches the agent that Shortcut cannot see.
  */
 export function endTurn(state: SessionState, reason: TurnEnd): SessionState {
-  // A turn that had already ended keeps what it dropped: a 409 on its error means a newer reply replaced the turn, and that reply is on its way.
+  // A 409 leaves a relay as it is, and leaves an idle phase what its failed turn dropped. Only the outbox is emptied.
   if (reason === 'conflict' && (state.phase.kind === 'relay' || state.phase.kind === 'idle')) return { ...state, outbox: [] };
   const on = conversationOf(state.phase);
   return { ...(on ? state : retiring(state)), phase: { kind: 'idle', on }, outbox: [] };

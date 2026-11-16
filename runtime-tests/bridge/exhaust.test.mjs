@@ -1,7 +1,9 @@
-// Every script of a small scope, through the real webhook and alarm loop of
-// the bridge in the current directory, on every kind of backend the port
-// allows, held to the rules in ledger.mjs. ../README.md says what the scope
-// holds and how to replay a script.
+// Three tests of the bridge in the current directory, each through its real
+// webhook and alarm loop against fake-backend.ts, held to the rules in
+// ledger.mjs. The first explores every script of one scope on each of the
+// eight kinds of backend, one worker thread per kind. The second checks the
+// search's merging on a small scope. The rest replay the scripts in PINNED.
+// ../README.md says what a scope holds.
 //   EXHAUST=deep node --test ../runtime-tests/bridge/exhaust.test.mjs
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
@@ -11,7 +13,7 @@ import { Worker } from 'node:worker_threads';
 import { BACKENDS, describeBackend, explore, loadBridge, replay, runEach, told, world } from './exhaust.mjs';
 import { RULES } from './ledger.mjs';
 
-// EXHAUST_ROOT runs this against a bridge elsewhere, as broken-cores.test.mjs does with a copy it has broken.
+// EXHAUST_ROOT names a bridge directory to test in place of the current one.
 const root = pathToFileURL(`${process.env.EXHAUST_ROOT ?? process.cwd()}/`);
 assert.ok(existsSync(new URL('src/core/port.ts', root)), 'exhaust.test.mjs tests the bridge in the current directory. Run `npm test` inside a bridge.');
 
@@ -33,7 +35,7 @@ const explored = (facts) => new Promise((resolve, reject) => {
 
 const pasted = (facts, steps) => `[${JSON.stringify(facts)}, ${JSON.stringify(steps)}]`.replaceAll('"', "'");
 
-it(`keeps the ledger's rules over every script of up to ${scope.total} events, backend faults, and agent endings, on every kind of backend`, async (t) => {
+it(`keeps the ledger's rules over every script that holds at most ${scope.total} events, backend faults, agents that finish, and conversations that end, on each kind of backend`, async (t) => {
   const started = performance.now();
   const results = await Promise.all(BACKENDS.map(explored));
   const total = (field) => results.reduce((sum, result) => sum + BigInt(result[field]), 0n);
@@ -46,8 +48,8 @@ it(`keeps the ledger's rules over every script of up to ${scope.total} events, b
   assert.ok(report.length === 0, `The shortest script that breaks each rule:\n\n${report.join('\n\n')}\n`);
 });
 
-// Scripts that once broke a rule, each named for what it holds now. The deep
-// run found the ones that are longer than the default scope.
+// Scripts that once broke a rule, each titled with what the bridge does now.
+// Each is replayed from the start and has to break no rule.
 const DEVIN = { keeps: false, empty: false, dedupes: false };
 const PINNED = [
   ['sends an older reply with the next one when it arrives after its turn ended in an error that Shortcut never took', { keeps: false, empty: true, dedupes: false }, ['reply 3', 'tick: send lost', 'gone', 'tick: halt dies', 'reply 2', 'reply 4', 'tick', 'rest']],
