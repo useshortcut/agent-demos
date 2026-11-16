@@ -354,17 +354,19 @@ function earlier(state: SessionState, reply: Pending): SessionState {
 // it, so nothing is halted, and the cancelled replies that still wait are
 // dropped where they wait. An open that was attempted and not answered is
 // the exception. Its text is fixed and may not be out yet, so if it holds a
-// cancelled reply the open is stopped whole, and what it held after the
-// stop's turn opens the next conversation. The ack has its own suffix because
-// the turn's `ack` may already be posted with another body, and Shortcut
-// answers a reused key with a 409.
+// cancelled reply the open is stopped whole. Whenever the open is stopped,
+// what its text held after the stop's turn opens the next conversation with
+// the replies that waited. The ack has its own suffix because the turn's
+// `ack` may already be posted with another body, and Shortcut answers a
+// reused key with a 409.
 function staleStop(state: SessionState, turn: number): SessionState {
   const { phase } = state;
   const cancelled = { ...state, cutoff: Math.max(state.cutoff, turn) };
-  const fixed = phase.kind === 'start' && phase.attempted && phase.prompt.some((reply) => reply.turn <= turn) ? phase.prompt : [];
-  const then = [...fixed, ...unsent(phase)].filter((reply) => reply.turn > turn);
-  if (then.length === 0 && fixed.length === 0) return { ...cancelled, phase: without(phase, turn) };
-  const stopping = stop(cancelled, turn, then);
+  const after = (replies: Pending[]) => replies.filter((reply) => reply.turn > turn);
+  const fixed = phase.kind === 'start' && phase.attempted ? phase.prompt : [];
+  const waiting = after(unsent(phase));
+  if (waiting.length === 0 && after(fixed).length === fixed.length) return { ...cancelled, phase: without(phase, turn) };
+  const stopping = stop(cancelled, turn, [...after(fixed), ...waiting]);
   return enqueue(stopping, activity(stopping, 'ack:restart', 'thought', `Starting a new ${identity.name} session.`));
 }
 

@@ -33,7 +33,7 @@ const explored = (facts) => new Promise((resolve, reject) => {
 
 const pasted = (facts, steps) => `[${JSON.stringify(facts)}, ${JSON.stringify(steps)}]`.replaceAll('"', "'");
 
-it(`keeps the ledger's rules over every script of up to ${scope.total} events, backend faults, and agent endings, on every kind of backend`, { todo: 'the core breaks one of the rules, and the next commit fixes it' }, async (t) => {
+it(`keeps the ledger's rules over every script of up to ${scope.total} events, backend faults, and agent endings, on every kind of backend`, async (t) => {
   const started = performance.now();
   const results = await Promise.all(BACKENDS.map(explored));
   const total = (field) => results.reduce((sum, result) => sum + BigInt(result[field]), 0n);
@@ -50,6 +50,7 @@ it(`keeps the ledger's rules over every script of up to ${scope.total} events, b
 // run found the ones that are longer than the default scope.
 const DEVIN = { keeps: false, empty: false, dedupes: false };
 const PINNED = [
+  ['opens the next conversation with every reply after a stale stop\'s turn, also one inside the text of the open the stop gave up', DEVIN, ['reply 2', 'reply 3', 'tick: open fails', 'stop 1', 'tick', 'rest']],
   ['tells the first conversation the context when a stale stop cancels a late opening request beside an open whose answer was lost', DEVIN, ['reply 2', 'tick: open lost', 'created', 'stop 1', 'tick', 'tick', 'reply 3', 'tick', 'rest']],
   ['tells a conversation the context once when two stale stops pass a send that carries it alone', DEVIN, ['reply 3', 'tick', 'created', 'stop 1', 'tick: send fails', 'stop 2', 'reply 4', 'tick', 'rest']],
   ['tells a conversation opened after a stop the context when it arrives later', DEVIN, ['reply 2', 'stop 1', 'tick', 'created', 'reply 3', 'tick', 'rest']],
