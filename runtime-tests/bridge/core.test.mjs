@@ -339,6 +339,22 @@ it('opens again when the step dies after an empty open, and introduces only the 
   assert.equal(h.calls('halt').length, 0);
 });
 
+it('repeats the introduction under the same key and text when the step dies after sending it', async (t) => {
+  const h = setup(t);
+  h.fake.facts.empty = true;
+  await h.connect();
+  await h.accept(h.shortcut.open());
+  const died = dieAtSaveAfter(h, () => h.calls('send').length === 1);
+  await h.tick();
+  assert.ok(died(), 'the step died at its save after the send');
+  await h.tick();
+  const chat = h.fake.only();
+  assert.equal(chat.sends.length, 2, 'the introduction is sent again');
+  assert.deepEqual(chat.sends[1], chat.sends[0]);
+  assert.deepEqual(chat.received, [openingText(REQUEST)]);
+  assert.equal(h.calls('open').length, 1, 'the conversation it was sent to is kept');
+});
+
 it('answers a stop while an empty open is unresolved without halting anything, and the next reply opens and introduces a new conversation', async (t) => {
   const h = setup(t);
   h.fake.facts.empty = true;
