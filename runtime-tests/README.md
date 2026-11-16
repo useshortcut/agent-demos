@@ -46,6 +46,10 @@ Coverage includes:
   into the same Devin session and answered on turn 2. Its polling deadline is
   20 seconds instead of 10 because the bridge's first Devin poll is 5 seconds
   out.
+- OpenAI Bridge: the same two-turn scenario against an Agents API mock that
+  requires the `OpenAI-Beta: agents=v1` header and an `Idempotency-Key` on
+  each message, and answers each input at once with a completed turn. The
+  card gets no link, so `links` is empty.
 - Team Cop: actual SQLite storage and scheduled alarm processing, completion
   receipts across object eviction, and a new Story event finding an existing
   comment rather than posting another reminder.
@@ -58,7 +62,7 @@ for integration testing against Shortcut's deployed API.
 `esbuild`, `miniflare`, and `wrangler` are explicit dev dependencies of each demo.
 Miniflare is pinned to the version bundled with the current Wrangler release
 because the harness uses its local-runtime and storage-inspection APIs. When
-upgrading Wrangler/Miniflare, run all four runtime suites. CI runs these suites
+upgrading Wrangler/Miniflare, run every runtime suite. CI runs these suites
 and `wrangler deploy --dry-run`; it never uploads a Worker or provisions account
 resources.
 
