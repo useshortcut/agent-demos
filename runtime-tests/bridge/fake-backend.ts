@@ -25,7 +25,7 @@ export type Chat = {
   key: string;
   /** The text the open carried, or null for a chat opened empty. */
   opened: string | null;
-  /** The messages delivered after the open, oldest first. A send repeated under its key delivers nothing new. */
+  /** The messages delivered after the open, oldest first. */
   received: string[];
   /** Every send that reached the chat, repeats included. */
   sends: { key: string; text: string }[];
@@ -52,6 +52,8 @@ export function script(log: unknown[]) {
     keeps: false,
     /** An open creates a chat with no message in it and cannot find it again, so each open makes another. */
     empty: false,
+    /** A send repeated under its key delivers nothing new, like a vendor that takes an idempotency header. Without it the repeat is delivered. */
+    dedupes: true,
   };
   let ids = 0;
 
@@ -92,14 +94,13 @@ export function script(log: unknown[]) {
       });
     },
 
-    // Idempotent per key, like a vendor that takes an idempotency header.
     async send({ id, memo }, { text, key }) {
       return attempt('send', id, () => {
         const chat = known(id);
         const earlier = chats.flatMap((other) => other.sends).find((sent) => sent.key === key);
         if (earlier && (earlier.text !== text || !chat.sends.includes(earlier))) misuse.push(`send key ${key} was used for two different sends`);
         chat.sends.push({ key, text });
-        if (earlier) return memo;
+        if (earlier && facts.dedupes) return memo;
         chat.received.push(text);
         chat.status = { kind: 'working' };
         return memo;

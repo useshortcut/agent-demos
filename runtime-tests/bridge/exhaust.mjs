@@ -1,0 +1,417 @@
+// Runs scripts of events, alarms, and backend faults through a bridge's real
+// webhook and alarm loop against fake-backend.ts, and holds each step to the
+// rules in ledger.mjs. `explore` runs every script a scope allows, shortest
+// first. `replay` runs one. ../README.md describes both.
+//
+// A script is a list of steps:
+//   'created'          Shortcut delivers session.created (turn 1)
+//   'reply 3'          Shortcut delivers the reply of turn 3
+//   'stop 2'           Shortcut delivers the stop of turn 2
+//   'again'            Shortcut delivers the last event a second time
+//   'close'            the session is closed in Shortcut
+//   'finish'           the agent finishes its turn in the newest conversation
+//   'gone'             the newest conversation ends on its own
+//   'tick'             the alarm fires and the step runs
+//   'tick: send fails' the step's first send fails before it reaches the backend
+//   'tick: send lost'  it reaches the backend and its answer is lost
+//   'tick: send dies'  it is answered and the step dies before its save
+//   'tick: send 2 ...' the same for the step's second send, and so on for
+//                      open, prepare, observe, and halt
+//   'rest'             every agent finishes and the alarms run until none is set
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { deserialize, serialize } from 'node:v8';
+import { CONTEXT, REQUEST, bridgeHarness } from './harness.mjs';
+import { ledger } from './ledger.mjs';
+
+const SID = 'exhaust';
+const EPOCH = Date.UTC(2026, 9, 1, 12);
+const CALLS = ['open', 'prepare', 'send', 'observe', 'halt'];
+const MODES = ['fails', 'lost', 'dies'];
+const READS = ['prepare', 'observe'];
+const REST_ALARMS = 40;
+const replyText = (turn) => `reply-${turn}`;
+
+export const BACKENDS = [false, true].flatMap((keeps) => [false, true].flatMap((empty) => [false, true].map((dedupes) => ({ keeps, empty, dedupes }))));
+
+export const describeBackend = ({ keeps, empty, dedupes }) =>
+  `a backend that ${keeps ? 'keeps' : 'ends'} its conversation on a stop, opens it ${empty ? 'empty' : 'with the request'}, and ${dedupes ? 'deduplicates' : 'repeats'} a repeated send`;
+
+export const loadBridge = async (root) => {
+  const bridge = await bridgeHarness({
+    root,
+    secrets: {},
+    sensitive: /private|token-\d|refresh-\d/,
+    backend: new URL('./fake-backend.ts', import.meta.url),
+    vendor: { env: {}, mock: (log) => bridge.mod.backend.script(log) },
+  });
+  return bridge;
+};
+
+const parse = (step) => {
+  const fault = step.match(/^tick: (\w+)(?: (\d+))? (\w+)$/);
+  if (fault) {
+    assert.ok(CALLS.includes(fault[1]) && MODES.includes(fault[3]), `no step ${JSON.stringify(step)}`);
+    return { kind: 'tick', fault: { call: fault[1], nth: Number(fault[2] ?? 1), mode: fault[3] } };
+  }
+  const event = step.match(/^(reply|stop) (\d+)$/);
+  if (event) return { kind: event[1], turn: Number(event[2]) };
+  assert.ok(['created', 'again', 'close', 'finish', 'gone', 'tick', 'rest'].includes(step), `no step ${JSON.stringify(step)}`);
+  return { kind: step, turn: 1 };
+};
+
+/** One Shortcut session on one bridge with one fake backend, which a script drives and a snapshot rewinds. `turns` are the replies Shortcut holds. */
+export async function world(t, bridge, facts, turns = [2, 3, 4]) {
+  const h = bridge.setup(t);
+  const fake = h.vendor;
+  h.env.FAKE = fake;
+  Object.assign(fake.facts, { ...facts, linked: !facts.empty });
+  await h.connect();
+  t.mock.timers.setTime(EPOCH);
+  const led = ledger({ request: REQUEST, context: CONTEXT, reply: replyText }, { opensEmpty: facts.empty });
+  const transient = () => new bridge.mod.BackendError({ kind: 'transient' });
+
+  // Shortcut holds every event from the start. Each is delivered when the script says.
+  const events = { created: h.shortcut.open(SID), 'stop 1': h.shortcut.stop(SID) };
+  for (const turn of turns) {
+    events[`reply ${turn}`] = h.shortcut.prompt(SID, replyText(turn));
+    events[`stop ${turn}`] = h.shortcut.stop(SID);
+  }
+  Object.assign(h.shortcut.sessions.get(SID), { turn: 1, status: 'pending', stopRequested: false, outcome: null });
+  h.env.SESSIONS.get(SID);
+  const storage = h.env.SESSIONS.storages.get(SID);
+  const session = () => h.shortcut.sessions.get(SID);
+
+  let aliases = new Map();
+  let delivered = [];
+  let armed = null;
+  let step = { calls: [], counts: {} };
+  const alias = (key) => aliases.get(key) ?? aliases.set(key, `send-${aliases.size + 1}`).get(key);
+
+  const { handle } = h.shortcut;
+  h.shortcut.handle = async (url, init) => {
+    const response = await handle(url, init);
+    if (response.status === 201 && url.pathname.endsWith('/activities')) {
+      const { turn, content } = JSON.parse(String(init.body));
+      led.posted({ type: content.type, turn });
+    }
+    return response;
+  };
+
+  // The step's next save fails and the object restarts, as when it is evicted after a call and before the save.
+  const { put } = storage;
+  function dieAtSave() {
+    storage.put = async () => {
+      storage.put = put;
+      h.env.SESSIONS.restart();
+      throw new Error('evicted');
+    };
+  }
+
+  const raw = { ...fake.backend };
+  const faulted = (call, run) => async (...args) => {
+    const nth = (step.counts[call] = (step.counts[call] ?? 0) + 1);
+    step.calls.push({ call, nth });
+    const mode = armed?.call === call && armed.nth === nth ? armed.mode : null;
+    if (mode) armed = null;
+    const answer = await run(mode, ...args);
+    if (mode === 'lost') throw transient();
+    if (mode === 'dies') dieAtSave();
+    return answer;
+  };
+  Object.assign(fake.backend, {
+    open: faulted('open', async (mode, request) => {
+      led.opening(request.key, request.text);
+      if (mode === 'fails') throw transient();
+      const before = fake.chats.length;
+      const opened = await raw.open(request);
+      const made = fake.chats[before];
+      led.opened(request.key, { conversation: opened.conversation.id, landed: Boolean(made) && made.opened !== null, learned: mode === null });
+      return opened;
+    }),
+    prepare: faulted('prepare', async (mode, conversation) => {
+      if (mode === 'fails') throw transient();
+      const ready = await raw.prepare(conversation);
+      // Told only what the bridge was: a prepare whose answer is lost teaches nothing.
+      if (mode === null) led.prepared(conversation.id, { ready: ready.kind === 'ready', empty: ready.empty ?? false });
+      return ready;
+    }),
+    send: faulted('send', async (mode, conversation, message) => {
+      const key = alias(message.key);
+      led.sending(conversation.id, key, message.text);
+      if (mode === 'fails') throw transient();
+      const chat = fake.chats.find((candidate) => candidate.id === conversation.id);
+      // The fake scripts `gone` for prepare alone. A conversation that ended on its own takes no message either.
+      if (chat.gone && !chat.halted) throw new bridge.mod.BackendError({ kind: 'rejected', status: 410 });
+      const before = chat.received.length;
+      const memo = await raw.send(conversation, message);
+      led.sent(key, { landed: chat.received.length > before, learned: mode === null });
+      return memo;
+    }),
+    observe: faulted('observe', async (mode, conversation) => {
+      if (mode === 'fails') throw transient();
+      return raw.observe(conversation);
+    }),
+    halt: faulted('halt', async (mode, target) => {
+      if (mode === 'fails') throw transient();
+      return raw.halt(target);
+    }),
+  });
+
+  const newest = () => fake.chats.at(-1);
+  const holdsMessage = (chat) => chat.opened !== null || chat.received.length > 0;
+  const canFinish = () => Boolean(newest()) && newest().status.kind === 'working' && !newest().gone && !newest().halted;
+  const canEnd = () => Boolean(newest()) && holdsMessage(newest()) && !newest().gone && !newest().halted;
+
+  async function deliver(label, { kind, turn }) {
+    const s = session();
+    // Shortcut's own turn follows what it has delivered, so the bridge never writes to a turn Shortcut has moved past unseen.
+    if (kind === 'stop' ? turn >= s.turn : turn > s.turn) Object.assign(s, { turn, stopRequested: kind === 'stop', ...(turn > s.turn ? { outcome: null, status: 'active' } : {}) });
+    assert.equal((await h.deliver(events[label])).status, 200);
+    delivered.push(label);
+    led.arrived({ type: kind, turn });
+  }
+
+  async function tick(fault = null) {
+    armed = fault;
+    step = { calls: [], counts: {} };
+    const logged = h.logs.length;
+    await h.tick(SID);
+    assert.equal(armed, null, `the step made no ${fault?.call} ${fault?.nth} to fail. A call that failed is tried again only after its wait, in a step of its own.`);
+    storage.put = put;
+    for (const [level, message, detail] of h.logs.slice(logged)) {
+      if (level !== 'error' || !/step failed/.test(String(message))) continue;
+      if (detail?.error === 'StalledError') led.saw('loop', 'a step stalled');
+      else if (fault?.mode !== 'dies') led.saw('loop', `a step threw ${detail?.error}`);
+    }
+    for (const line of fake.misuse.splice(0)) led.saw('keys', `the backend saw that ${line}`);
+    return step.calls;
+  }
+
+  async function rest() {
+    const finish = () => fake.chats.forEach((chat) => { if (!chat.gone) chat.status = { kind: 'finished' }; });
+    for (let i = 0; i < REST_ALARMS && (await storage.getAlarm()) !== null; i++) {
+      finish();
+      await tick();
+    }
+    finish();
+    if ((await storage.getAlarm()) !== null) return led.saw('loop', `the alarms did not run out in ${REST_ALARMS} steps after every agent finished`);
+    const s = session();
+    const links = fake.facts.linked ? 0 : s.external_urls.length + h.shortcut.activities(SID).filter((a) => /\]\(/.test(a.content.body)).length;
+    led.rested({ working: fake.chats.filter((chat) => holdsMessage(chat) && !chat.halted && !chat.gone).length, links });
+  }
+
+  const w = {
+    facts,
+    chats: fake.chats,
+    /** What the bridge has stored, for a failing script's report. */
+    stored: () => storage.data.get('state'),
+
+    /** Runs one step and returns the backend calls it made. */
+    async act(label) {
+      const parsed = parse(label);
+      switch (parsed.kind) {
+        case 'created': case 'reply': case 'stop':
+          return void (await deliver(label, parsed));
+        case 'again':
+          return void assert.equal((await h.deliver(events[delivered.findLast((event) => event !== 'close')])).status, 200);
+        case 'close':
+          delivered.push('close');
+          session().closed = true;
+          return void led.arrived({ type: 'close' });
+        case 'finish':
+          return void (newest().status = { kind: 'finished' });
+        case 'gone':
+          return void Object.assign(newest(), { gone: true, status: { kind: 'failed', body: 'The Fake session ended.', keep: false } });
+        case 'tick':
+          return tick(parsed.fault ?? null);
+        case 'rest':
+          return void (await rest());
+      }
+    },
+
+    /** The rules the steps since the last call broke, as `rule: what happened`. */
+    broken: () => led.broken(),
+
+    /** The steps that could change something now, faults aside, each with what it spends of a scope. */
+    async enabled(events) {
+      return [
+        ...events.filter((label) => !delivered.includes(label)).map((label) => [label, 'events']),
+        ...(canFinish() ? [['finish', 'finish']] : []),
+        ...(canEnd() ? [['gone', 'gone']] : []),
+        ...((await storage.getAlarm()) !== null ? [['tick', null]] : []),
+      ];
+    },
+    /** Nothing is scheduled and an event has arrived, so delivering it again should change nothing. */
+    idle: async () => (await storage.getAlarm()) === null && delivered.some((event) => event !== 'close'),
+
+    async snapshot() {
+      return serialize({ data: [...storage.data], alarm: await storage.getAlarm(), chats: fake.chats, session: session(), now: Date.now(), ledger: led.state, aliases: [...aliases], delivered });
+    },
+    async restore(snapshot) {
+      const copy = deserialize(snapshot);
+      storage.data.clear();
+      for (const [key, value] of copy.data) storage.data.set(key, value);
+      if (copy.alarm === null) await storage.deleteAlarm();
+      else await storage.setAlarm(copy.alarm);
+      fake.chats.splice(0, fake.chats.length, ...copy.chats);
+      h.shortcut.sessions.set(SID, copy.session);
+      t.mock.timers.setTime(copy.now);
+      led.state = copy.ledger;
+      aliases = new Map(copy.aliases);
+      ({ delivered } = copy);
+      h.env.SESSIONS.restart();
+      h.requests.length = 0;
+      h.logs.length = 0;
+      // The harness's mocks record every call they take.
+      for (const mocked of [globalThis.fetch, console.log, console.warn, console.error]) mocked.mock.resetCalls();
+    },
+
+    /**
+     * Names the state for the search: two scripts that reach the same name
+     * have the same future. Clock readings are left out, so the search follows
+     * one of the scripts that differ only in how long the bridge waited, and
+     * send keys are named by the order they were first used.
+     */
+    async name() {
+      const state = storage.data.get('state');
+      const timeless = state && { ...state, notBefore: Object.values(state.notBefore).map((deadline) => deadline !== null), phase: { ...state.phase, at: 0, delayMs: 0, check: false, sentAt: 0, heartbeatAt: 0 } };
+      const inbox = [...storage.data].filter(([key]) => key.startsWith('inbox:')).map(([, event]) => event.id);
+      const s = session();
+      let json = JSON.stringify([
+        timeless, inbox, (await storage.getAlarm()) !== null,
+        fake.chats.map((chat) => [chat.key, chat.opened, chat.received, chat.sends, chat.status.kind, chat.gone, chat.halted]),
+        [s.turn, s.stopRequested, s.outcome, s.closed, s.activities.map((a) => `${a.key} ${a.content.body}`).sort(), s.external_urls],
+        led.state, [...delivered].sort(),
+      ]);
+      for (const [key, name] of aliases) json = json.replaceAll(`${key}"`, `${name}"`);
+      return createHash('sha1').update(json).digest('base64');
+    },
+  };
+  return w;
+}
+
+/** Runs one script from the start and returns each rule it broke, as `rule: what happened`. */
+export async function replay(w, steps) {
+  const found = [];
+  for (const label of steps) {
+    await w.act(label);
+    found.push(...w.broken());
+  }
+  return found;
+}
+
+/** What the agent was told in each conversation, oldest first: the open's text, then each message. */
+export const told = (w) => w.chats.map((chat) => [chat.id, ...(chat.opened === null ? [] : [chat.opened]), ...chat.received]);
+
+const ruleOf = (problem) => problem.slice(0, problem.indexOf(':'));
+const BUDGETS = ['events', 'faults', 'finish', 'gone', 'total'];
+const within = (left, most) => BUDGETS.every((budget) => left[budget] <= most[budget]);
+const spend = (left, budget) => (budget ? { ...left, [budget]: left[budget] - 1, total: left.total - 1 } : left);
+const affords = (left, budget) => !budget || (left[budget] > 0 && left.total > 0);
+
+/**
+ * Runs every script the scope allows, shortest first, and stops a script at
+ * the first rule it breaks. `scope` is `{ events, faults, finish, gone }`, how
+ * many of each a script may hold, `total`, how many of them together, `from`,
+ * the events it may deliver, and `only`, the faults it may hold when not all. A
+ * script that reaches a state an earlier one reached with as much of the
+ * scope left ends there, since the earlier one's futures hold all of its own.
+ * Returns the shortest script that breaks each rule, and how much was run:
+ * `states` distinct states, `steps` steps run, and `scripts`, the number of
+ * different scripts within the scope that those states stand for.
+ */
+export async function explore(w, scope) {
+  const start = Object.fromEntries(BUDGETS.map((budget) => [budget, scope[budget] ?? Infinity]));
+  const nodes = [{ parent: null, via: null, left: start, snapshot: await w.snapshot(), edges: [] }];
+  const seen = new Map([[await w.name(), [0]]]);
+  const broken = new Map();
+  let steps = 0;
+  const script = (id, ...last) => {
+    const path = last;
+    for (let at = id; nodes[at].parent !== null; at = nodes[at].parent) path.unshift(nodes[at].via);
+    return path;
+  };
+  const record = (id, last, problems) => {
+    for (const problem of problems) if (!broken.has(ruleOf(problem))) broken.set(ruleOf(problem), { problem, steps: script(id, ...last) });
+  };
+
+  for (let frontier = [0]; frontier.length;) {
+    const next = [];
+    for (const id of frontier) {
+      const node = nodes[id];
+      const from = node.snapshot;
+      node.snapshot = null;
+      // Runs one step from this state. Returns the calls it made, or null when it broke a rule.
+      const run = async (label, budget) => {
+        await w.restore(from);
+        const calls = (await w.act(label)) ?? [];
+        steps++;
+        const problems = w.broken();
+        if (problems.length) {
+          node.edges.push({ to: null, budget });
+          record(id, [label], problems);
+          return null;
+        }
+        const name = await w.name();
+        const left = spend(node.left, budget);
+        const known = seen.get(name) ?? seen.set(name, []).get(name);
+        const covering = known.find((other) => within(left, nodes[other].left));
+        if (covering !== undefined) {
+          if (covering !== id) node.edges.push({ to: covering, budget });
+          return calls;
+        }
+        const child = nodes.push({ parent: id, via: label, left, snapshot: await w.snapshot(), edges: [] }) - 1;
+        known.push(child);
+        node.edges.push({ to: child, budget });
+        next.push(child);
+        if (await w.idle()) {
+          await w.act('again');
+          await w.act('tick');
+          steps += 2;
+          const problems = w.broken();
+          record(child, ['again', 'tick'], (await w.name()) === name || problems.length ? problems : ['loop: an event delivered a second time changed what the bridge holds']);
+          await w.restore(nodes[child].snapshot);
+        }
+        if (label.startsWith('tick')) {
+          await w.act('rest');
+          steps++;
+          record(child, ['rest'], w.broken());
+        }
+        return calls;
+      };
+
+      await w.restore(from);
+      for (const [label, budget] of await w.enabled(scope.from)) {
+        if (!affords(node.left, budget)) continue;
+        const calls = await run(label, budget);
+        if (label !== 'tick' || !affords(node.left, 'faults')) continue;
+        for (const { call, nth } of calls ?? []) {
+          // A read changes nothing at the backend, so one whose answer is lost is one that failed.
+          for (const mode of MODES) {
+            if (mode === 'lost' && READS.includes(call)) continue;
+            if (scope.only && !scope.only.includes(`${call} ${mode}`)) continue;
+            await run(`tick: ${call}${nth > 1 ? ` ${nth}` : ''} ${mode}`, 'faults');
+          }
+        }
+      }
+    }
+    frontier = next;
+  }
+
+  // Every state is where some script ends, so the scripts are the paths from the start that the scope can pay for.
+  const counted = new Map();
+  const count = (id, left) => {
+    const key = `${id}:${BUDGETS.map((budget) => left[budget])}`;
+    if (counted.has(key)) return counted.get(key);
+    counted.set(key, 0n);
+    let total = 1n;
+    for (const { to, budget } of nodes[id].edges) {
+      if (!affords(left, budget)) continue;
+      total += to === null ? 1n : count(to, spend(left, budget));
+    }
+    counted.set(key, total);
+    return total;
+  };
+  return { states: nodes.length, steps, scripts: count(0, start), broken: [...broken].map(([rule, found]) => ({ rule, ...found })) };
+}
