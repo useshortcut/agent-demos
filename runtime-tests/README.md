@@ -97,3 +97,74 @@ pattern no log may match. `setup(t)` gives each test fake Durable Object storage
 and alarms, a Shortcut mock, a mocked clock, and captured requests and logs.
 `vendor` is `{ origin, env, mock(log) }`: the mock answers with
 `handle(url, init)` and returns its one session from `only()`.
+
+### The fake backend
+
+`bridge/core.test.mjs` tests the paths of `src/core` that a bridge's own backend
+may never take: a stop that keeps the session, a session opened empty and
+introduced by its first message, a `session.created` that arrives during that
+introduction, a session with no link, a send repeated under its key after a
+crash, and a hold. It runs in every bridge's `npm test`, against the `src/core`
+of the bridge in the current directory, and makes no backend request.
+
+For it, `bridgeHarness` takes a fifth option. `backend` is the URL of a module
+to bundle in place of the bridge's `src/backend.ts`. The bundle then also
+exports that module as `backend`, and the core's `BackendError` for a test to
+throw.
+
+`bridge/fake-backend.ts` is that module. It sits outside every demo and is
+bundled into whichever bridge runs the test, so it imports only types.
+`devin-bridge`'s `npx tsc --noEmit` checks it against the port. Its
+`script(log)` returns what a test drives, and the fake reads it from the
+`FAKE` binding:
+
+- `facts`: what kind of backend this is. `linked` gives each chat a URL,
+  `keeps` makes a halt answer `kept`, and `empty` makes an open create a chat
+  with no message that a later open cannot find again. A test sets one before
+  the call it bears on.
+- `chats`: the conversations opened, oldest first, and `only()` for the one.
+  A chat holds `opened` (the text the open carried, or null), `received` (the
+  messages delivered, once per send key), `sends` (every send, repeats
+  included), and `halted`. A test sets its `status` to what the next `observe`
+  reports, and `gone` to make `prepare` answer `gone`.
+- `say(chat, text)`: the agent says something.
+- `failNext(call, error, { landed })`: the next `open`, `prepare`, `send`,
+  `observe`, or `halt` throws `error`. With `landed` it does its work first,
+  like a request whose answer was lost.
+- `misuse`: what the bridge did that no backend should see, such as one send
+  key on two different sends. Each test in `core.test.mjs` expects it empty.
+
+### Conformance
+
+`bridge/conform.mjs` exports `conform`, the scenarios every bridge owes
+Shortcut whatever its backend: open, progress, finished, a reply to the same
+session, asked and answered, failed, stop then reply, close, and a redelivered
+event. A bridge calls it from one test file with its own harness, so each
+adapter is held to the same list. `devin-bridge/test/conform.test.mjs` is the
+example. `conform` takes:
+
+- `setup`: the bridge's `setup(t)`.
+- `identity`: the `slug`, `name`, `aSession`, and `linkLabel` the bridge's
+  activities should carry, written out, not imported.
+- `facts`: the three things on which backends differ. `keeps` says a stop
+  leaves the session open, so the next reply goes to it. `opensEmpty` says the
+  session is created with no message and the opening text is its first.
+  `linked` says a session has a URL for the card and the outcomes.
+- `vendor`: what the test can do to the vendor mock. `sessions(h)` lists the
+  sessions the bridge opened, oldest first. `told(h, session)` returns
+  `{ opened, messages }`: the text the create carried, or null, and the texts
+  sent after it. A reply that goes back as a tool result counts as a message.
+  `url(session)` is read only when `linked`. `work`, `finish`, and `fail` take
+  `(h, session)` and set what the vendor reports, `say(h, session, text)` adds
+  an agent message, and `ask(h, session, question)` makes the agent ask the
+  user and wait. `fail` is a failure that ends the turn. `halted(h, session)`
+  says whether the vendor was told to stop the session.
+- `label`: optional, names the tests when one suite calls `conform` twice.
+
+`core.test.mjs` also runs `conform` against the fake as the two kinds of
+backend no bridge has yet: one that keeps its session, opens it empty, and has
+no link, and one that keeps its session and opens it with the request.
+
+`harness.mjs` exports `REQUEST` and `CONTEXT`, the prompt and the context of
+the mock's `session.created`, and `openingText(asked, context)`, the text a
+backend should be told for them.
