@@ -1,8 +1,10 @@
 // What a bridge owes the agent, whatever order Shortcut's events arrive in
-// and whichever backend calls fail. The rules are stated here and nowhere
-// else. This file shares nothing with src/core: it is told which events
-// arrived, what each backend call carried, and what Shortcut accepted, and it
-// names every rule the bridge broke. exhaust.mjs feeds it.
+// and whichever backend calls fail. RULES is the one statement of the rules.
+// The comments in src/core point here, and a bridge's README says what the
+// rules mean for its backend. This file shares nothing with src/core: it is
+// told which events arrived, what each backend call carried, and what
+// Shortcut accepted, and it names every rule the bridge broke. exhaust.mjs
+// feeds it.
 //
 // A request is what the user asked for: the text of `session.created`, on
 // turn 1, or of a reply. The context is what Shortcut says about the story,
@@ -14,9 +16,12 @@
 // later. Until then the landing is one the bridge cannot know about. A
 // prepare that finds a message in a conversation teaches it less. It shows
 // that the conversation's first text landed, and so whether that text told
-// the conversation the context. A turn has its outcome once the bridge has read that the
-// agent finished or failed, once the backend refused a call that served a
-// request, or once Shortcut holds a response, a question, or an error for it.
+// the conversation the context. A turn has its outcome once the bridge has
+// read that the agent finished or failed, once the backend refused a call
+// that served a request, or once Shortcut holds a response, a question, or an
+// error for it. The bridge is on its starting reply while it started from a
+// reply, has received no newer one, and no turn has an outcome. A bridge that
+// started from `session.created` is never on one.
 export const RULES = {
   stopped: 'A stop cancels every request at or below its turn, also one that arrives later. Once the stop has arrived, no call carries a cancelled request.',
   superseded: [
@@ -24,19 +29,20 @@ export const RULES = {
     'A reply is superseded when it arrives after the bridge learned that a newer reply landed.',
     'A reply that arrives while a newer reply waits in a prepared send is superseded when the bridge learns that the send landed.',
     'A reply that arrives while a newer reply waits in an open that has no answer yet is not superseded. It follows the open.',
-    'The request of a `session.created` is accepted when it arrives before any text is fixed, or while the bridge has received no reply newer than the one it started from and no turn has an outcome. Otherwise it is superseded. Once accepted it is never superseded.',
+    'The request of a `session.created` is accepted when it arrives while no text is fixed that may have landed, or while the bridge is on its starting reply. Otherwise it is superseded. Once accepted it is never superseded. A text the backend refused has not landed, and neither has the text of an open that delivers none.',
   ].join(' '),
-  once: 'No text carries a request twice, and no request lands twice, unless the bridge never learned that its earlier landing happened. Then it may land once more, as that send\'s retry or in the text that takes its place after a stop halted the conversation.',
+  once: 'No text carries a request twice, and no request lands twice, unless the bridge never learned that its earlier landing happened. Then it may land once more: as that send\'s retry under its key, or, after a stop halted the conversation, in a new text under a new key. The stop interrupted what the agent did with the first, so the bridge sends the request again, also to a conversation the backend kept.',
   ordered: 'A text carries its requests in turn order.',
   briefed: 'A text that is fixed after `session.created` arrived carries the context when it lands in a conversation that no earlier text told it to. A stop cancels requests and never the context.',
   briefedOnce: 'No text carries the context twice, and no conversation is told it twice, unless the bridge never learned that the earlier text landed. A conversation\'s first text is never such an exception once a prepare has found a message in it.',
-  owed: 'Every open carries a request that is still owed, which is one that arrived, is neither cancelled nor superseded, and has not landed as far as the bridge knows. So does the first text of a conversation that was opened empty. The first conversation of a session created without a request is the exception: its first text asks for work on the story alone. Every other send carries a request that is still owed, or the context alone. The context goes alone only while the bridge has received no reply newer than the one it started from and no turn has an outcome.',
-  rest: 'When the bridge comes to rest, every request that arrived has landed, or is cancelled or superseded, or its turn or a later one ended in an error the user was told about.',
-  keys: 'A send is prepared before it first goes out. A retried open or send repeats its text, and no two different sends share a key.',
-  single: 'When the bridge comes to rest, at most one conversation is working.',
+  owed: 'Every open carries a request that is still owed, which is one that arrived, is neither cancelled nor superseded, and has not landed as far as the bridge knows. So does the first text of a conversation that was opened empty. The first conversation of a session created without a request is the exception: its first text asks for work on the story alone. Every other send carries a request that is still owed, or the context alone. The context goes alone only while the bridge is on its starting reply. After that it waits for the next request, so a conversation that gets none is never told it.',
+  rest: 'When the bridge comes to rest in a session that Shortcut has not closed, every request that arrived has landed, or is cancelled or superseded, or its turn or a later one ended in an error the user was told about.',
+  keys: 'A send is prepared before it first goes out. A retried open or send repeats its text, and no two different sends share a key. An open that delivers no text may change its text between attempts, since nothing reads it.',
+  single: 'When the bridge comes to rest in a session that Shortcut has not closed, at most one conversation is working.',
   links: 'A conversation without a URL gets no card link, and no activity carries link text for it.',
   alone: 'A call that only delivers the context ends no turn when the backend refuses it. That is the send of a text that carries no request, or the prepare for one while no request is still owed. The bridge posts no error before its next backend call.',
-  loop: 'Every step ends without an error of its own, and once no event is waiting and no agent is working the alarms run out.',
+  redelivered: 'An event that Shortcut delivers a second time changes nothing the bridge holds.',
+  loop: 'Every step ends, and without an error of its own. Once no event is waiting and no agent is working the alarms run out.',
 };
 
 const count = (text, part) => text.split(part).length - 1;

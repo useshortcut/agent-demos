@@ -414,7 +414,7 @@ export async function explore(w, scope) {
           await w.act('tick');
           steps += 2;
           const problems = w.broken();
-          record(child, ['again', 'tick'], (await w.name()) === name || problems.length ? problems : ['loop: an event delivered a second time changed what the bridge holds']);
+          record(child, ['again', 'tick'], (await w.name()) === name || problems.length ? problems : ['redelivered: an event delivered a second time changed what the bridge holds']);
           await w.restore(nodes[child].snapshot);
         }
         if (label.startsWith('tick')) {
