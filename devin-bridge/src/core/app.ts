@@ -8,14 +8,17 @@ import {
   isShortcutSessionEventPayload,
   isShortcutValidationPayload,
 } from '@shortcut/client/webhooks';
-import { secrets, type BackendEnv } from '../backend';
+import * as backend from '../backend';
 import { isStop } from './bridge';
+import type { BackendModule } from './port';
 import { credentialsFromTokens, logFailure, oauthClient, shortcutSessions, storeCredentials, workspaceAllowed } from './shortcut';
 
 export { Session } from './session';
 export { Workspace } from './workspace';
 
-export type Env = {
+backend satisfies BackendModule<backend.Memo, backend.BackendEnv>;
+
+type ShortcutEnv = {
   WORKSPACES: DurableObjectNamespace;
   SESSIONS: DurableObjectNamespace;
   CLIENT_ID: string;
@@ -24,11 +27,13 @@ export type Env = {
   WEBHOOK_SECRET: string;
   ALLOWED_WORKSPACE_IDS: string;
   SHORTCUT_API_BASE?: string;
-} & BackendEnv;
+};
+
+export type Env = ShortcutEnv & backend.BackendEnv;
 
 // Deliveries need no allowlist: an empty one allows no workspace, and a stop
 // still reaches the session it names, so clearing the list keeps cleanup working.
-const DELIVERY_SECRETS = ['CLIENT_ID', 'CLIENT_SECRET', 'WEBHOOK_SECRET', 'REDIRECT_URI', ...secrets] as const;
+const DELIVERY_SECRETS = ['CLIENT_ID', 'CLIENT_SECRET', 'WEBHOOK_SECRET', 'REDIRECT_URI', ...backend.secrets] as const;
 const ALL_SECRETS = [...DELIVERY_SECRETS, 'ALLOWED_WORKSPACE_IDS'] as const;
 function configured(env: Env, keys: typeof ALL_SECRETS | typeof DELIVERY_SECRETS): boolean {
   return keys.every((key) => typeof env[key] === 'string' && env[key].trim() !== '');

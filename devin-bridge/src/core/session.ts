@@ -32,9 +32,9 @@ import {
   type SessionState,
   type StopPhase,
 } from './bridge';
-import { connect as backendOf, identity, type Memo } from '../backend';
+import { connect as backendOf, identity, type BackendEnv, type Memo } from '../backend';
 import * as adapter from '../backend';
-import { BackendError, type Backend, type BackendFailure, type Halted } from './port';
+import { BackendError, type Backend, type BackendFailure, type BackendModule, type Halted } from './port';
 import type { Env } from './app';
 import { loadCredentials, shortcutSessions, workspaceAllowed, type Outcome, type ShortcutSessions } from './shortcut';
 
@@ -165,8 +165,7 @@ export class Session {
   }
 }
 
-// A backend whose bridge once stored states of another shape exports `upgradeState` to read them. Any other leaves it out.
-const { upgradeState } = adapter as { upgradeState?: (stored: unknown) => SessionState | null };
+const { upgradeState }: BackendModule<Memo, BackendEnv> = adapter;
 
 // An upgraded state is saved in the current shape by the step's next save.
 async function load(storage: DurableObjectStorage, sessionId: string): Promise<SessionState | null> {

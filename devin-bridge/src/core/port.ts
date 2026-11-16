@@ -1,3 +1,4 @@
+import type { SessionState } from './bridge';
 import { retryAfterMs } from './http';
 
 export type Identity = {
@@ -93,3 +94,13 @@ export interface Backend<M> {
   /** Stops the work. A session that is already stopped or gone is a success. */
   halt(target: Target<M>): Promise<Halted>;
 }
+
+/** What `src/backend.ts` exports. `core/app.ts` checks it with `satisfies`. */
+export type BackendModule<M, E> = {
+  identity: Identity;
+  /** The names `/webhook` and `/oauth/callback` require, on top of the Shortcut ones. */
+  secrets: readonly (keyof E & string)[];
+  connect(env: E): Backend<M>;
+  /** Reads a state this bridge stored in an older shape. A bridge that never stored one leaves it out. */
+  upgradeState?: (stored: unknown) => SessionState | null;
+};
