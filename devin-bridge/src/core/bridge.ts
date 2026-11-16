@@ -294,7 +294,9 @@ const opening = ({ generation, turn, first, phase }: SessionState) =>
 
 // A reply can be delivered before the session.created that opened the session.
 // The opening request reaches only the first conversation, and how depends on
-// what the agent may have been told by then.
+// what the agent may have been told by then. A stop of the request's turn or
+// a later one cancelled it, whether the stop came before it or comes after.
+// Then only its context is left to deliver, by the same rules.
 //
 // Nothing: no open has gone out. The request joins the opening text, whatever
 // replies arrived meanwhile.
@@ -322,8 +324,8 @@ function merge(current: SessionState, event: ShortcutSessionEventPayload): Sessi
   const { phase } = current;
   if (current.generation !== 1) return state;
   const turn = turnOf(event);
-  const asked = text(event);
-  if (phase.kind === 'start' && !phase.attempted) return { ...state, phase: { ...phase, prompt: [...phase.prompt, ...said(event)] } };
+  const asked = turn > current.cutoff ? text(event) : '';
+  if (phase.kind === 'start' && !phase.attempted) return asked ? { ...state, phase: { ...phase, prompt: [...phase.prompt, { turn, text: asked }] } } : state;
   if (!opening(current)) {
     const owed = context ? { ...state, late: { turn, text: contextBlock(context) } } : state;
     return phase.kind === 'relay' && asked ? { ...owed, phase: { ...phase, prompt: [...phase.prompt, { turn, text: asked, superseded: true }] } } : owed;

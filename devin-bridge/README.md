@@ -67,6 +67,7 @@ The step runs the first due job, saves the state, and plans again until nothing 
 - If the create has gone out, the bridge sends the request to that session as a message once the session is known, with the context under a `Context from Shortcut` heading. It does this only while the turn that opened the session is still open.
 - Once that turn has its outcome, or the bridge sent a newer reply, the bridge never sends the request. It sends the context alone, under the same heading, ahead of the next reply to that Devin session, so the session still learns about the story.
 - A later Devin session gets the context only in its create prompt, so a request the user already stopped never comes back.
+- A stop for the request's turn or a later one cancels the request, even when the bridge had nothing to terminate for it. The bridge then sends only the context, by the same rules.
 
 **Replies out of turn order.** The bridge keeps every reply it has not sent to Devin with its turn, and joins them in turn order when it sends them, whatever order they arrived in. The opening request has the lowest turn, so it comes first. Once the bridge sends a newer reply, it drops an older one however late it arrives. That includes a reply that arrived while the newer one was waiting to be resent.
 

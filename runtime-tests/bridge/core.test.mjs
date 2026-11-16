@@ -523,6 +523,62 @@ it('carries the context of a late session.created once, in the introduction, whe
   assert.deepEqual(h.fake.only().received, [openingText('Try Chrome instead')], 'the stopped request does not come back, and the context is not sent a second time ahead of the reply');
 });
 
+it('keeps a stopped opening request cancelled when its session.created arrives before the next reply is introduced', async (t) => {
+  const h = setup(t);
+  Object.assign(h.fake.facts, { empty: true, keeps: true });
+  await h.connect();
+  const created = h.shortcut.open();
+  await h.accept(h.shortcut.prompt(SID, 'Pick this up'));
+  h.fake.failNext('prepare', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  await h.accept(h.shortcut.stop(SID));
+  await h.ticks(2);
+  assert.deepEqual(h.bodies('response'), ['Stopped.']);
+
+  await h.accept(h.shortcut.prompt(SID, 'Try Chrome instead'));
+  h.fake.failNext('prepare', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  await h.accept(created);
+  await h.ticks(2);
+  assert.deepEqual(h.fake.only().received, [openingText('Try Chrome instead')], 'the stop cancelled the request, and its context still reaches the agent once');
+});
+
+it('keeps an opening request cancelled by a stop delivered after the reply that followed it', async (t) => {
+  const h = setup(t);
+  Object.assign(h.fake.facts, { empty: true, keeps: true });
+  await h.connect();
+  const created = h.shortcut.open();
+  await h.accept(h.shortcut.prompt(SID, 'Pick this up'));
+  h.fake.failNext('prepare', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  const stop = h.shortcut.stop(SID);
+  await h.accept(h.shortcut.prompt(SID, 'Also fix Firefox'));
+  await h.accept(stop);
+  h.fake.failNext('prepare', new BackendError({ kind: 'transient' }));
+  await h.ticks(2);
+  assert.equal(h.calls('halt').length, 1, 'the stop halted the conversation, and the backend kept it');
+  await h.accept(created);
+  await h.ticks(2);
+  assert.deepEqual(h.fake.only().received, [openingText('Also fix Firefox')], 'the stop cancelled every turn up to its own, the opening request included');
+});
+
+it('sends only the context of a late session.created whose request a stop had cancelled, while the turn the bridge started on is still open', async (t) => {
+  const h = setup(t);
+  await h.connect();
+  const created = h.shortcut.open();
+  h.shortcut.prompt(SID, 'Pick this up');
+  const stop = h.shortcut.stop(SID);
+  await h.accept(h.shortcut.prompt(SID, 'Also fix Firefox'));
+  await h.tick();
+  const chat = h.fake.only();
+  await h.accept(stop);
+  await h.tick();
+  assert.equal(h.calls('halt').length, 0, 'every reply after the stop was sent, so the stop halts nothing');
+  await h.accept(created);
+  await h.tick();
+  assert.deepEqual(chat.received, [`Context from Shortcut:\n\n${CONTEXT}`], 'the stop still cancelled the request, and the agent learns the context at once');
+});
+
 // The conformance scenarios, for the kinds of backend no bridge here has yet.
 for (const [label, facts] of [
   ['a backend that keeps its session, opens it empty, and has no link', { keeps: true, opensEmpty: true, linked: false }],
