@@ -163,6 +163,8 @@ No deadline holds another job. The bridge records an event that arrives during a
 
 **Devin 4xx.** A Devin 4xx ends the turn with an `error` at once. A 401 or 403 is about the bridge's credentials, not the session, so the bridge keeps the Devin session. Any other 4xx retires the Devin session, and the next reply starts a new one.
 
+**A reply over an error not yet posted.** A turn that ends in an `error` drops the requests that had not reached Devin, because the error tells the user to reply again. The bridge keeps those requests until Shortcut has taken the error. If a newer reply arrives first, Shortcut takes no more writes for the older turn and the user is never told, so the bridge sends the kept requests to Devin with that reply.
+
 **Shortcut 4xx.** The bridge retries a 408 or 425 from Shortcut like a server error. Any other 4xx except 401, 403, 404, 409, and 429 means Shortcut rejected the write itself. The bridge drops a rejected thought. It replaces a rejected outcome once with a short `error` naming the status, so the turn still ends.
 
 **Shortcut 409.** A 409 means the turn is over. Shortcut ended it, a newer prompt replaced it, or the session closed. The bridge stops writing and polling for that turn and leaves the Devin session running for the next reply. A 409 on the ack of a reply not yet sent to Devin drops the ack, and the bridge reads the session:

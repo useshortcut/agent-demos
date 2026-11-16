@@ -35,7 +35,8 @@ export type Phase =
   /** `check` asks for a Shortcut read of the session with the next poll. `posted` is the id of the last message written to Shortcut, and `asked` the key suffix of the elicitation. `sentAt` starts the pickup clock. `heartbeatAt` is when a quiet, working agent is next reported to Shortcut. */
   | { kind: 'poll'; on: Live; at: number; delayMs: number; check: boolean; posted: string | null; asked: string | null; sentAt: number; heartbeatAt: number }
   | { kind: 'stop'; target: Held | null; then: Pending[] }
-  | { kind: 'idle'; on: Live | null }
+  /** `dropped`: the requests of a turn that ended in an error before they reached the agent, kept until Shortcut takes the error. Until then the user was not told to send them again, so a newer reply takes them along. */
+  | { kind: 'idle'; on: Live | null; dropped?: Pending[] }
   | { kind: 'closed' };
 
 export type StartPhase = Extract<Phase, { kind: 'start' }>;
@@ -315,9 +316,11 @@ export function applyEvent(current: SessionState | null, event: ShortcutSessionE
       return enqueue({ ...state, phase: { ...phase, then: [...phase.then, reply] } }, ack(`Starting a new ${identity.name} session.`));
     case 'poll':
       return enqueue({ ...state, phase: relaying(phase.on, [reply]) }, ack(`Passing your message to ${identity.name}.`));
-    case 'idle':
-      if (phase.on === null) return startNew(state, [reply]);
-      return enqueue({ ...state, phase: relaying(phase.on, [reply]) }, ack(`Passing your message to ${identity.name}.`));
+    case 'idle': {
+      const prompt = [...(phase.dropped ?? []).filter((dropped) => dropped.turn > state.cutoff), reply];
+      if (phase.on === null) return startNew(state, prompt);
+      return enqueue({ ...state, phase: relaying(phase.on, prompt) }, ack(`Passing your message to ${identity.name}.`));
+    }
   }
 }
 
@@ -476,7 +479,8 @@ export type TurnEnd = 'conflict' | 'revoked' | 'ended';
  * nothing reaches the agent that Shortcut cannot see.
  */
 export function endTurn(state: SessionState, reason: TurnEnd): SessionState {
-  if (reason === 'conflict' && state.phase.kind === 'relay') return { ...state, outbox: [] };
+  // A turn that had already ended keeps what it dropped: a 409 on its error means a newer reply replaced the turn, and that reply is on its way.
+  if (reason === 'conflict' && (state.phase.kind === 'relay' || state.phase.kind === 'idle')) return { ...state, outbox: [] };
   const on = conversationOf(state.phase);
   return { ...(on ? state : retiring(state)), phase: { kind: 'idle', on }, outbox: [] };
 }
@@ -484,8 +488,18 @@ export function endTurn(state: SessionState, reason: TurnEnd): SessionState {
 export const close = (state: SessionState): SessionState => ({ ...retiring(state), phase: { kind: 'closed' }, outbox: [] });
 
 export function fail(state: SessionState, body: string, keep: boolean): SessionState {
-  const on = keep ? conversationOf(state.phase) : null;
-  return enqueue({ ...(on ? state : retiring(state)), phase: { kind: 'idle', on } }, activity(state, 'error', 'error', body));
+  const { phase } = state;
+  const on = keep ? conversationOf(phase) : null;
+  // A failed open delivered nothing the bridge knows of, so what its text held is dropped with what waited.
+  const dropped = unmarked((phase.kind === 'start' ? [...phase.prompt, ...phase.extra] : unsent(phase)).filter((reply) => !reply.superseded));
+  return enqueue({ ...(on ? state : retiring(state)), phase: { kind: 'idle', on, ...(dropped.length ? { dropped } : {}) } }, activity(state, 'error', 'error', body));
+}
+
+/** Shortcut took the first activity of the outbox. Once it has a turn's error, the user knows to send again what the turn dropped. */
+export function published(state: SessionState): SessionState {
+  const { phase } = state;
+  const [taken, ...outbox] = state.outbox;
+  return { ...state, outbox, phase: taken.content.type === 'error' && phase.kind === 'idle' ? { kind: 'idle', on: phase.on } : phase };
 }
 
 const polling = (on: Live, now: number): PollPhase =>

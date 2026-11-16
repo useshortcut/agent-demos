@@ -18,6 +18,7 @@ import {
   observed,
   openingText,
   prepared,
+  published,
   rejected,
   relayed,
   restarted,
@@ -227,7 +228,7 @@ async function publish(state: SessionState, { shortcut }: Io): Promise<SessionSt
   const outcome = await shortcut.postActivity(state.shortcutSessionId, activity);
   switch (outcome.kind) {
     case 'ok':
-      return succeeded({ ...state, outbox: rest }, 'shortcut');
+      return succeeded(published(state), 'shortcut');
     case 'rejected': {
       const replacement = rejected(activity, outcome.status);
       return succeeded({ ...state, outbox: replacement ? [replacement, ...rest] : rest }, 'shortcut');
