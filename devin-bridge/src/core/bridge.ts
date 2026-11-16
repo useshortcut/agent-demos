@@ -542,8 +542,10 @@ export function prepared(state: SessionState, phase: RelayPhase, { memo, empty }
   const settled: SessionState = !empty && state.briefing === 'introduced' ? { ...state, briefing: 'given' } : state;
   const prompt = empty ? unmarked(phase.prompt) : phase.prompt.filter((reply) => !reply.superseded);
   const briefs = settled.context !== '' && (empty || owes(settled));
-  // A stop cancelled all this relay held, or all it held was superseded. An agent that was told something still works on it, so the bridge goes back to watching it. A conversation that holds nothing replaced one that ended, and nothing is left to open it for.
-  if (prompt.length === 0 && !(opening(settled) && (empty || briefs))) {
+  // A text goes out with no request only on the turn the bridge started from: the introduction of the first conversation, for a session created without a request, or the context alone.
+  const alone = opening(settled) && (empty ? settled.generation === 1 : briefs);
+  if (prompt.length === 0 && !alone) {
+    // A stop cancelled all this relay held, or all it held was superseded. An empty conversation that is not the first replaced one that ended, and nothing is left to open it for. An agent that was told something still works on it, so the bridge goes back to reading it.
     return empty ? fail(settled, `The ${identity.name} session ended. Reply to start a new one.`, false) : { ...settled, phase: polling(phase.on, now) };
   }
   const text = empty ? introduction(settled, promptText(prompt), slug, briefs) : briefs ? briefedText(prompt, settled.context) : promptText(prompt);

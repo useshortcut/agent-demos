@@ -30,7 +30,7 @@ export const RULES = {
   ordered: 'A text carries its requests in turn order.',
   briefed: 'A text that is fixed after `session.created` arrived carries the context when it lands in a conversation that no earlier text told it to. A stop cancels requests and never the context.',
   briefedOnce: 'No text carries the context twice, and no conversation is told it twice, unless the bridge never learned that the earlier text landed. A conversation\'s first text is never such an exception once a prepare has found a message in it.',
-  owed: 'Every open carries a request that is still owed, which is one that arrived, is neither cancelled nor superseded, and has not landed as far as the bridge knows. Every send carries one too, or the context alone. The context goes alone only while the bridge has received no reply newer than the one it started from and no turn has an outcome.',
+  owed: 'Every open carries a request that is still owed, which is one that arrived, is neither cancelled nor superseded, and has not landed as far as the bridge knows. So does the first text of a conversation that was opened empty. The first conversation of a session created without a request is the exception: its first text asks for work on the story alone. Every other send carries a request that is still owed, or the context alone. The context goes alone only while the bridge has received no reply newer than the one it started from and no turn has an outcome.',
   rest: 'When the bridge comes to rest, every request that arrived has landed, or is cancelled or superseded, or its turn or a later one ended in an error the user was told about.',
   keys: 'A send is prepared before it first goes out. A retried open or send repeats its text, and no two different sends share a key.',
   single: 'When the bridge comes to rest, at most one conversation is working.',
@@ -70,7 +70,7 @@ export function ledger(tokens, { opensEmpty }) {
   const stillOwed = (turn) => !cancelled(turn) && !s.requests[turn].superseded && !(s.requests[turn].landed && s.requests[turn].learned);
   const onOpening = () => s.newest === s.first && !s.outcome;
 
-  function fix(id, text, { conversation, knew, alone, send }) {
+  function fix(id, text, { conversation, knew, alone, send, introduces = false }) {
     const holds = carried(text);
     // A newly prepared send means the bridge gave up the one before it, so nothing waits on that one any more.
     if (send) for (const earlier of Object.values(s.texts)) if (earlier.send) earlier.dropped = true;
@@ -85,6 +85,7 @@ export function ledger(tokens, { opensEmpty }) {
     if (count(text, tokens.context) > 1) broke('briefedOnce', 'one text carries the context twice');
     if (holds.some(stillOwed)) return;
     if (!send) broke('owed', 'an open carries no request that is still owed');
+    else if (introduces) broke('owed', 'the first text of a conversation that was opened empty carries no request that is still owed');
     else if (!text.includes(tokens.context)) broke('owed', 'a send carries neither a request that is still owed nor the context');
     else if (!alone) broke('owed', 'a send carries the context alone though the bridge had moved past the turn it started from');
   }
@@ -188,13 +189,13 @@ export function ledger(tokens, { opensEmpty }) {
     prepared(conversation, { ready, empty }) {
       const told = s.told[conversation];
       if (!empty && told && told.last === told.first) told.learned = true;
-      s.preparing = ready ? { conversation, knew: s.created, alone: onOpening() } : null;
+      s.preparing = ready ? { conversation, knew: s.created, alone: onOpening(), introduces: empty } : null;
     },
 
     sending(conversation, key, text) {
       if (!s.texts[key]) {
         if (s.preparing?.conversation !== conversation) broke('keys', 'a send went out under a new key without a prepare');
-        fix(key, text, { conversation, knew: s.preparing?.knew ?? s.created, alone: s.preparing?.alone ?? false, send: true });
+        fix(key, text, { conversation, knew: s.preparing?.knew ?? s.created, alone: s.preparing?.alone ?? false, introduces: s.preparing?.introduces, send: true });
       } else if (s.preparing) {
         broke('keys', 'a newly prepared send reuses a key');
       } else if (s.texts[key].conversation !== conversation) {

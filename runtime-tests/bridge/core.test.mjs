@@ -906,6 +906,29 @@ it('introduces an empty conversation for a session created with neither a reques
   assert.deepEqual(h.bodies('error'), []);
 });
 
+it('ends the turn, and introduces nothing, when a stop cancels all an empty conversation that replaced one that ended was opened for', async (t) => {
+  const h = setup(t);
+  h.fake.facts.empty = true;
+  await h.connect();
+  const created = h.shortcut.open();
+  const stop = h.shortcut.stop(SID);
+  await h.accept(h.shortcut.prompt(SID, 'Pick this up'));
+  await h.tick();
+  const [first] = h.fake.chats;
+  await h.accept(created);
+  Object.assign(first, { gone: true, status: { kind: 'failed', body: 'The Fake session ended.', keep: false } });
+  const { prepare } = h.fake.backend;
+  let prepares = 0;
+  h.fake.backend.prepare = (conversation) => (++prepares === 2 ? Promise.reject(new BackendError({ kind: 'transient' })) : prepare(conversation));
+  await h.tick();
+  assert.equal(h.fake.chats.length, 2, 'the late opening request opens the conversation that replaces the one that is gone');
+  await h.accept(stop);
+  await h.ticks(2);
+  assert.deepEqual(h.fake.chats[1].received, [], 'the stop cancelled the request, so the conversation is told nothing');
+  assert.deepEqual(h.bodies('error'), ['The Fake session ended. Reply to start a new one.']);
+  assert.equal(await h.alarmIn(), null);
+});
+
 it('ends the turn when the backend refuses the read that prepares the introduction of a session created without a request', async (t) => {
   const h = setup(t);
   h.fake.facts.empty = true;

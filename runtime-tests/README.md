@@ -208,8 +208,9 @@ are covered only by its own suite and by `conform`.
 rule that owns it: a core that drops every send it prepared, one that forgets
 the stop a cancelled request arrives after, one that takes the context as told
 before the send that carries it is confirmed, one that introduces a
-conversation twice, and one that ends the turn when the backend refuses a
-send that carried only the context. When you add a rule, add the core that breaks it.
+conversation twice, one that introduces an empty conversation with nothing to
+be asked, and one that ends the turn when the backend refuses a send that
+carried only the context. When you add a rule, add the core that breaks it.
 
 ### Conformance
 

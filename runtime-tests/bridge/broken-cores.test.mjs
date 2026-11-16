@@ -49,6 +49,13 @@ const BROKEN = [
     breaks: 'briefedOnce',
   },
   {
+    core: 'introduces an empty conversation that replaced one that ended, after a stop cancelled all it was opened for',
+    replace: [['  const alone = opening(settled) && (empty ? settled.generation === 1 : briefs);', '  const alone = opening(settled) && (empty || briefs);']],
+    facts: { ...DEVIN, empty: true },
+    scope: { from: ['created', 'reply 2', 'stop 1'], events: 3, faults: 1, only: ['prepare fails'], finish: 0, gone: 1, total: 5 },
+    breaks: 'owed',
+  },
+  {
     core: 'ends the turn when the backend refuses a send that carried only the context',
     replace: [['  if (!phase.working || phase.send?.prompt.length) return null;', '  if (phase.on) return null;']],
     facts: DEVIN,
