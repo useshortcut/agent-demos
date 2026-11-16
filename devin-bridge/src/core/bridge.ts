@@ -345,6 +345,8 @@ function earlier(state: SessionState, reply: Pending): SessionState {
     case 'start': return phase.attempted ? { ...state, phase: { ...phase, extra: [...phase.extra, reply] } } : { ...state, phase: { ...phase, prompt: [...phase.prompt, reply] } };
     case 'relay': return { ...state, phase: { ...phase, prompt: [...phase.prompt, reply] } };
     case 'stop': return { ...state, phase: { ...phase, then: [...phase.then, reply] } };
+    // The turn failed and the user has not been told, so the reply waits with what the turn dropped.
+    case 'idle': return phase.dropped ? { ...state, phase: { ...phase, dropped: [...phase.dropped, reply] } } : state;
     default: return state;
   }
 }

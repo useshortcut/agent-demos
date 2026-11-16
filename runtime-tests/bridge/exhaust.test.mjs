@@ -50,6 +50,7 @@ it(`keeps the ledger's rules over every script of up to ${scope.total} events, b
 // run found the ones that are longer than the default scope.
 const DEVIN = { keeps: false, empty: false, dedupes: false };
 const PINNED = [
+  ['sends an older reply with the next one when it arrives after its turn ended in an error that Shortcut never took', { keeps: false, empty: true, dedupes: false }, ['reply 3', 'tick: send lost', 'gone', 'tick: halt dies', 'reply 2', 'reply 4', 'tick', 'rest']],
   ['opens the conversation that replaces one that is gone with an opening request that arrives before that open goes out', DEVIN, ['reply 3', 'tick: open dies', 'reply 2', 'gone', 'tick: halt dies', 'created', 'tick', 'rest']],
   ['sends a request with the next reply when its turn ended in an error that Shortcut never took', DEVIN, ['created', 'reply 2', 'tick: send fails', 'gone', 'tick: halt dies', 'reply 3', 'tick', 'rest']],
   ['ends the turn, and introduces nothing, when a stale stop cancels all that waited for an empty conversation that replaced one that is gone', { keeps: false, empty: true, dedupes: false }, ['reply 2', 'tick', 'created', 'gone', 'tick: prepare 2 fails', 'stop 1', 'tick', 'rest']],
