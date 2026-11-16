@@ -30,13 +30,19 @@ For the platform itself (OAuth, webhooks, app review), see [docs/open-agents.md]
 
 **Session object.** Each Shortcut session has one, keyed by the session id. The webhook verifies the signature and hands the event to the object. The object stores the event id and the event in an inbox and sets an alarm. It answers 200 only after that write, with no Shortcut or Devin call in between, so it stays inside Shortcut's 5 second delivery timeout. It acknowledges a redelivered event id and ignores it.
 
+### Shared core
+
+`src/core/` holds everything that does not depend on Devin: the Hono app in `src/core/app.ts`, the Workspace and Session objects, the state machine, the Shortcut client, and the backend contract in `src/core/port.ts`. It reaches the backend through one import, `../backend`, so `src/backend.ts` is the one file the core uses that is specific to Devin. `src/core/app.ts` checks at compile time that `src/backend.ts` exports what the contract's `BackendModule` type asks for. `src/index.ts` only re-exports the app.
+
+Every bridge in this repository carries an identical copy of `src/core/`. `npm test` first runs `runtime-tests/bridge/sync.mjs check`, which fails when the copies differ, when the core imports anything outside itself other than `../backend`, or when a bridge is missing from CI. After you edit `src/core/`, run `npm run core:sync` in this directory to copy it to the other bridges.
+
 ### The alarm loop
 
-Each alarm applies new inbox events to the session state, then runs the jobs the state calls for. `src/bridge.ts` holds the state machine and the planner with no I/O, and `src/session.ts` performs the I/O. `src/session.ts` reaches Devin only through the backend contract in `src/port.ts`, which `src/backend.ts` implements over the Devin HTTP client in `src/devin.ts`.
+Each alarm applies new inbox events to the session state, then runs the jobs the state calls for. `src/core/bridge.ts` holds the state machine and the planner with no I/O, and `src/core/session.ts` performs the I/O. `src/core/session.ts` reaches Devin only through the backend contract in `src/core/port.ts`, which `src/backend.ts` implements over the Devin HTTP client in `src/devin.ts`.
 
 The phases are `start`, `relay`, `poll`, `stop`, `idle`, and `closed`. A phase that acts on a Devin session carries its link, so no separate link can fall out of step with the phase.
 
-One pure function, `plan` in `src/bridge.ts`, lists every due job and the earliest time it may run. When several jobs are due together, they run in this order:
+One pure function, `plan` in `src/core/bridge.ts`, lists every due job and the earliest time it may run. When several jobs are due together, they run in this order:
 
 1. A pending stop's terminate.
 2. Retirement of a Devin session the bridge gave up.
