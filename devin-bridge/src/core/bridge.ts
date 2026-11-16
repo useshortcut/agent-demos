@@ -371,10 +371,9 @@ function staleStop(state: SessionState, turn: number): SessionState {
   const fixed = phase.kind === 'start' && phase.attempted ? phase.prompt : [];
   const waiting = after(unsent(phase));
   if (waiting.length === 0 && after(fixed).length === fixed.length) {
-    const left = without(phase, turn);
-    // Only a conversation that replaces one that ended can be left with nothing to open it for. The bridge started from a reply the stop cannot cancel.
-    const nothing = left.kind === 'start' && !left.attempted && left.prompt.length + left.extra.length === 0;
-    return nothing ? fail(cancelled, `The ${identity.name} session ended. Reply to start a new one.`, false) : { ...cancelled, phase: left };
+    // An open that has not gone out held only what the stop cancelled, so nothing is left to open a conversation for. Only a conversation that replaces one that ended is in that place: the bridge started from a reply the stop cannot cancel.
+    const nothing = phase.kind === 'start' && !phase.attempted;
+    return nothing ? fail(cancelled, `The ${identity.name} session ended. Reply to start a new one.`, false) : { ...cancelled, phase: without(phase, turn) };
   }
   const stopping = stop(cancelled, turn, [...after(fixed), ...waiting]);
   return enqueue(stopping, activity(stopping, 'ack:restart', 'thought', `Starting a new ${identity.name} session.`));
@@ -384,7 +383,7 @@ function staleStop(state: SessionState, turn: number): SessionState {
 function without(phase: Phase, turn: number): Phase {
   const after = (replies: Pending[]) => replies.filter((reply) => reply.turn > turn);
   switch (phase.kind) {
-    case 'start': return phase.attempted ? { ...phase, extra: after(phase.extra) } : { ...phase, prompt: after(phase.prompt), extra: after(phase.extra) };
+    case 'start': return { ...phase, extra: after(phase.extra) };
     case 'relay': return { ...phase, prompt: after(phase.prompt), send: phase.send?.prompt.some((reply) => reply.turn <= turn) ? null : phase.send };
     case 'stop': return { ...phase, then: after(phase.then) };
     default: return phase;
