@@ -473,6 +473,35 @@ it('puts a late session.created into an introduction that is not prepared yet, w
   assert.deepEqual(h.fake.only().received, [openingText(`${REQUEST}\n\nPick this up\n\nAlso fix Firefox`)], 'nothing had reached the agent, so the request is not dropped for the newer reply');
 });
 
+it('keeps the opening request of a session.created that arrives while an empty open is unresolved, whatever replies arrived meanwhile', async (t) => {
+  const h = setup(t);
+  h.fake.facts.empty = true;
+  await h.connect();
+  const created = h.shortcut.open();
+  await h.accept(h.shortcut.prompt(SID, 'Pick this up'));
+  h.fake.failNext('open', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  await h.accept(h.shortcut.prompt(SID, 'Also fix Firefox'));
+  await h.accept(created);
+  await h.ticks(2);
+  assert.deepEqual(h.fake.only().received, [openingText(`${REQUEST}\n\nPick this up\n\nAlso fix Firefox`)], 'the open answered that nothing had reached the agent, so the request is in the introduction');
+});
+
+it('drops the opening request of a session.created that arrived while an open was unresolved once the open answers that its text went out', async (t) => {
+  const h = setup(t);
+  await h.connect();
+  const created = h.shortcut.open();
+  await h.accept(h.shortcut.prompt(SID, 'Pick this up'));
+  h.fake.failNext('open', new BackendError({ kind: 'transient' }), { landed: true });
+  await h.tick();
+  await h.accept(h.shortcut.prompt(SID, 'Also fix Firefox'));
+  await h.accept(created);
+  await h.ticks(2);
+  const chat = h.fake.only();
+  assert.equal(chat.opened, openingText('Pick this up', ''));
+  assert.deepEqual(chat.received, [`Context from Shortcut:\n\n${CONTEXT}\n\nAlso fix Firefox`], 'a newer reply had reached the agent, so the request is superseded and only its context follows');
+});
+
 it('relays a session.created that arrives after the introduction was prepared as a message of its own, with the context under it', async (t) => {
   const h = setup(t);
   h.fake.facts.empty = true;

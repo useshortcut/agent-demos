@@ -293,28 +293,29 @@ const opening = ({ generation, turn, first, phase }: SessionState) =>
   generation === 1 && turn === first && (phase.kind === 'start' || phase.kind === 'relay' || phase.kind === 'poll');
 
 // A reply can be delivered before the session.created that opened the session.
-// The opening request reaches only the first conversation, and how depends on
-// what the agent may have been told by then. A stop of the request's turn or
-// a later one cancelled it, whether the stop came before it or comes after.
-// Then only its context is left to deliver, by the same rules.
+// Its request and its context then go to the first conversation only, and how
+// depends on what the agent may have been told by then. A stop for the
+// request's turn or a later one cancels the request, whether the stop came
+// first or comes later, and leaves the context to be delivered by the same
+// rules.
 //
-// Nothing: no open has gone out. The request joins the opening text, whatever
-// replies arrived meanwhile.
+// Nothing was told: no open has gone out. The request joins the opening text,
+// whatever replies arrived meanwhile, and that text carries the context.
 //
-// Anything else is not the core's to know: an open may have delivered its
-// text, and only the backend can say whether a conversation holds a message.
-// So what arrives waits in the form the backend's next answer needs. While
-// the turn the bridge started on is still open, the request waits as a
-// message with the context under it. After a newer reply, the context waits
-// in `late` for the next send, and a request that arrives beside a relay
-// waits with that relay as `superseded`. A prepare that finds the
-// conversation empty then puts all of it into the introduction: each request
-// by its own words, and the context once, since the introduction carries it.
-// A prepare that finds a message sends the rest as messages and drops a
-// superseded request.
+// Otherwise the core cannot know: an open may have delivered its text, and
+// only the backend can say whether a conversation holds a message. So both
+// wait in the form the backend's next answer needs. While the turn the bridge
+// started on is still open, the request waits as a message with the context
+// under it. After a newer reply, the context waits in `late` for the next
+// send, and the request waits as `superseded` with the open or the relay it
+// arrived beside. An open that delivered its text drops a superseded request,
+// and so does a prepare that finds a message in the conversation. Both send
+// the rest as messages. A prepare that finds the conversation empty puts all
+// of it into the introduction: each request by its own words, and the context
+// once, since the introduction carries it.
 //
-// Once the first turn has its outcome, the request is never sent, and the
-// context alone waits in `late`.
+// Once the turn the bridge started on has its outcome, the request is never
+// sent, and the context alone waits in `late`.
 //
 // A later generation gets the context in its open or its introduction, and
 // never the request.
@@ -328,7 +329,12 @@ function merge(current: SessionState, event: ShortcutSessionEventPayload): Sessi
   if (phase.kind === 'start' && !phase.attempted) return asked ? { ...state, phase: { ...phase, prompt: [...phase.prompt, { turn, text: asked }] } } : state;
   if (!opening(current)) {
     const owed = context ? { ...state, late: { turn, text: contextBlock(context) } } : state;
-    return phase.kind === 'relay' && asked ? { ...owed, phase: { ...phase, prompt: [...phase.prompt, { turn, text: asked, superseded: true }] } } : owed;
+    const request: Pending[] = asked ? [{ turn, text: asked, superseded: true }] : [];
+    switch (phase.kind) {
+      case 'start': return { ...owed, phase: { ...phase, extra: [...phase.extra, ...request] } };
+      case 'relay': return { ...owed, phase: { ...phase, prompt: [...phase.prompt, ...request] } };
+      default: return owed;
+    }
   }
   const message = joined(asked, context && contextBlock(context));
   if (!message) return state;
@@ -414,9 +420,9 @@ export const linked = (state: SessionState, url: string): SessionState => ({ ...
 const newest = (sent: number, replies: Pending[]) => Math.max(sent, ...replies.map((reply) => reply.turn));
 
 export function started(state: SessionState, phase: StartPhase, { conversation: on, delivered }: Opened<Memo>, now: number): SessionState {
-  const { extra } = phase;
-  // Nothing reached the agent, so the opening prompt and the replies that arrived since wait together for the relay that introduces the conversation.
-  if (!delivered) return { ...state, phase: { kind: 'relay', on, prompt: [...phase.prompt, ...extra], send: null } };
+  // Nothing reached the agent, so the opening prompt and all that arrived since wait together for the relay that introduces the conversation.
+  if (!delivered) return { ...state, phase: { kind: 'relay', on, prompt: [...phase.prompt, ...phase.extra], send: null } };
+  const extra = phase.extra.filter((reply) => !reply.superseded);
   return { ...state, sent: newest(state.sent, phase.prompt), phase: extra.length ? { kind: 'relay', on, prompt: extra, send: null } : polling(on, now) };
 }
 
