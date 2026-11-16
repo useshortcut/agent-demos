@@ -9,11 +9,11 @@ import { fileURLToPath } from 'node:url';
 
 const SUITE = fileURLToPath(new URL('./mutant.mjs', import.meta.url));
 
-function conformWith(mutant) {
+function conformWith(mutant, declared = {}) {
   // Without NODE_TEST_CONTEXT the child prints its own report instead of streaming events to this run.
   const { NODE_TEST_CONTEXT, ...env } = process.env;
   return new Promise((resolve) => {
-    execFile(process.execPath, ['--test', '--test-reporter=tap', SUITE], { env: { ...env, MUTANT: mutant } }, (error, stdout) => {
+    execFile(process.execPath, ['--test', '--test-reporter=tap', SUITE], { env: { ...env, MUTANT: mutant, ...declared } }, (error, stdout) => {
       const titles = (verdict) => [...stdout.matchAll(new RegExp(`^\\s*${verdict} \\d+ - (.*)$`, 'gm'))].map(([, title]) => title.replace(/^[^:]*: /, ''));
       resolve({ passed: titles('ok'), failed: titles('not ok'), stdout });
     });
@@ -24,6 +24,12 @@ it('passes the fake backend as it is', async () => {
   const { passed, failed, stdout } = await conformWith('');
   assert.deepEqual(failed, [], stdout);
   assert.ok(passed.length >= 11, `every scenario ran: ${stdout}`);
+});
+
+it('passes a backend that says it cannot take the send key and still delivers a repeated send once', async () => {
+  const { passed, failed, stdout } = await conformWith('', { DEDUPES: 'declared-off' });
+  assert.deepEqual(failed, [], stdout);
+  assert.ok(passed.some((title) => /^delivers a reply no more than twice /.test(title)), `the scenario ran: ${stdout}`);
 });
 
 for (const [mutant, scenario] of [

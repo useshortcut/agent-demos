@@ -11,7 +11,7 @@ export function conformFake({ label, facts, setup, BackendError }) {
       return h;
     },
     identity: { slug: 'fake-bridge', name: 'Fake', aSession: 'a Fake session', linkLabel: 'Open in Fake' },
-    facts: { ...facts, dedupes: true },
+    facts: { dedupes: true, ...facts },
     vendor: {
       sessions: (h) => h.vendor.chats,
       told: (h, chat) => ({ opened: chat.opened, messages: chat.received }),

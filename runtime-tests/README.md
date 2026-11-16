@@ -183,8 +183,8 @@ one test file with its own harness, so each adapter is held to the same list.
   session is created with no message and the opening text is its first.
   `linked` says a session has a URL for the card and the outcomes. `dedupes`
   says the backend takes the send key, so a send repeated after a lost answer
-  is delivered once. Without it the repeat is delivered, and the scenario
-  allows exactly that one.
+  is delivered once. Without it the repeat may be delivered, so the scenario
+  allows one or two deliveries and no more.
 - `vendor`: what the test can do to the vendor mock. `sessions(h)` lists the
   sessions the bridge opened, oldest first. `told(h, session)` returns
   `{ opened, messages }`: the text the create carried, or null, and the texts

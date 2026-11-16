@@ -57,7 +57,8 @@ if (process.env.MUTANT && !mutate) throw new Error(`no mutant named ${JSON.strin
 
 conformFake({
   label: process.env.MUTANT || 'no mutant',
-  facts: { keeps: false, opensEmpty: false, linked: true },
+  // DEDUPES=declared-off is a backend that cannot pass the send key on and deduplicates by a means of its own. It says so, and it is right.
+  facts: { keeps: false, opensEmpty: false, linked: true, dedupes: process.env.DEDUPES !== 'declared-off' },
   BackendError: bridge.mod.BackendError,
   setup(t) {
     const h = bridge.setup(t);
