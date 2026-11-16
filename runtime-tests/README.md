@@ -24,10 +24,10 @@ Shortcut workspace, `.dev.vars`, or account namespace is needed. KV and SQLite
 state are isolated to the test instance and disposed afterward. Every outgoing
 Worker request is routed to an in-process mock Worker that rejects unknown
 origins, paths, methods, fields, and pagination parameters instead of forwarding
-to the internet. For Devin Bridge the same mock also answers the Devin API at
-`https://devin.mock` (the Worker's `DEVIN_API_BASE` in this test only), with
-synthetic Devin credentials. Installing dependencies requires access to npm; test requests
-do not contact Shortcut or Cloudflare accounts.
+to the internet. For a bridge the same mock also answers the backend's API
+through the bridge's vendor mock, with synthetic credentials. Installing
+dependencies requires access to npm; test requests do not contact Shortcut or
+Cloudflare accounts.
 
 Coverage includes:
 
@@ -61,3 +61,39 @@ because the harness uses its local-runtime and storage-inspection APIs. When
 upgrading Wrangler/Miniflare, run all four runtime suites. CI runs these suites
 and `wrangler deploy --dry-run`; it never uploads a Worker or provisions account
 resources.
+
+## Bridges
+
+A demo with a `test/smoke.mjs` descriptor runs the bridge scenario. Shortcut
+sends `session.created` for Story 123 in workspace `acme` with the prompt
+"Please fix the login bug", sends it again, then sends `session.prompted` with
+"Also fix Firefox" on turn 2. The descriptor exports:
+
+- `bindings`: the Worker's bindings beyond the OAuth and webhook secrets and
+  `SHORTCUT_API_BASE`, such as the backend's API base and
+  `ALLOWED_WORKSPACE_IDS: 'workspace'`.
+- `eventuallyMs`: how long to poll for each turn's response.
+- `ack`: the idempotency key of the first activity.
+- `links`: the session's `external_urls` after turn 1.
+- `responses`: one pattern per turn that its response body must match.
+
+The smoke prepends the bridge's `test/smoke-vendor.js` to `upstream.mjs`, so
+the mock runs inside workerd and the file has no imports or exports. It
+declares `const vendor` with:
+
+- `origin`: requests to it go to `handle` and are recorded with the Shortcut
+  requests.
+- `handle(request, url, reject)`: answers one request. A request outside the
+  backend's contract returns `reject(request, detail)`, which fails the test.
+- `results()`: `{ sessions, received }`, the backend sessions the bridge
+  created and the follow-up messages it sent. The scenario expects one session
+  and `['Also fix Firefox']`.
+
+A bridge's Node regression tests use `bridge/harness.mjs`.
+`bridgeHarness({ root, secrets, sensitive, vendor })` bundles `src/index.ts`
+with the demo's own esbuild and returns `{ mod, SECRETS, setup }`. `SECRETS`
+adds the backend's `secrets` to the Shortcut ones, and `sensitive` is the
+pattern no log may match. `setup(t)` gives each test fake Durable Object storage
+and alarms, a Shortcut mock, a mocked clock, and captured requests and logs.
+`vendor` is `{ origin, env, mock(log) }`: the mock answers with
+`handle(url, init)` and returns its one session from `only()`.

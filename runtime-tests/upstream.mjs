@@ -1,15 +1,15 @@
 // Runs inside workerd too. Every agent fetch is routed here, including requests
 // to an accidentally configured production URL. Nothing is forwarded online.
+// smoke.mjs prepends a bridge's test/smoke-vendor.js, which declares `vendor`,
+// or `const vendor = null;` for any other demo.
 const posts = [];
 const patches = [];
 const requests = [];
 const unexpected = [];
 const origin = 'https://shortcut.mock';
-const devinOrigin = 'https://devin.mock';
 const session = { id: 'sess-1', turn: 1, version: 1, external_urls: [], outcome: null };
 const activities = [];
 let subscription = null;
-const devin = { sessions: [], received: [] };
 
 function reject(request, detail) {
   unexpected.push({ method: request.method, url: request.url, detail });
@@ -63,54 +63,16 @@ async function agentSessions(request, url) {
   return Response.json(activity, { status: 201 });
 }
 
-const devinView = (item) => ({ session_id: item.id, url: item.url, status: item.status, status_detail: item.status_detail, tags: item.tags,
-  org_id: 'synthetic-org', created_at: 1, updated_at: 1, acus_consumed: 0, pull_requests: [] });
-
-async function devinApi(request, url) {
-  if (request.headers.get('Authorization') !== 'Bearer synthetic-devin-key') return reject(request, 'Missing Devin key');
-  if ([...url.searchParams.keys()].some((key) => !['tags', 'first', 'after'].includes(key))) return reject(request, 'Unknown Devin query parameter');
-  const prefix = '/v3/organizations/synthetic-org/sessions';
-  if (url.pathname === prefix && request.method === 'GET') {
-    const tags = url.searchParams.getAll('tags');
-    return Response.json({ items: devin.sessions.filter((item) => tags.every((tag) => item.tags.includes(tag))).map(devinView), end_cursor: null, has_next_page: false });
-  }
-  if (url.pathname === prefix && request.method === 'POST') {
-    const { prompt, title, tags, ...rest } = await request.json();
-    if (Object.keys(rest).length || typeof prompt !== 'string' || !prompt.includes('Please fix the login bug') ||
-        !prompt.includes('https://app.shortcut.com/acme/story/123') || typeof title !== 'string' || !Array.isArray(tags)) {
-      return reject(request, 'Invalid Devin session');
-    }
-    const n = devin.sessions.length + 1;
-    const item = { id: `devin-${n}`, url: `https://app.devin.ai/sessions/${n}`, status: 'running', status_detail: 'finished', tags,
-      messages: [{ event_id: 'evt-1', source: 'devin', message: 'Fixed the login bug.', created_at: 1 }] };
-    devin.sessions.push(item);
-    return Response.json({ ...devinView(item), status: 'new', status_detail: null });
-  }
-  const [, id, messages] = url.pathname.slice(prefix.length).match(/^\/([^/]+)(\/messages)?$/) ?? [];
-  const item = devin.sessions.find((candidate) => candidate.id === id);
-  if (!item) return reject(request, 'Unmocked Devin resource');
-  if (messages && request.method === 'GET') return Response.json({ items: item.messages, end_cursor: null, has_next_page: false });
-  if (messages && request.method === 'POST') {
-    const { message } = await request.json();
-    devin.received.push(message);
-    item.messages.push({ event_id: `evt-${item.messages.length + 1}`, source: 'user', message, created_at: 2 },
-      { event_id: `evt-${item.messages.length + 2}`, source: 'devin', message: 'Fixed Firefox too.', created_at: 3 });
-    return Response.json(devinView(item));
-  }
-  if (!messages && request.method === 'GET') return Response.json(devinView(item));
-  return reject(request, 'Unexpected Devin method');
-}
-
 export default {
   async fetch(request) {
     const url = new URL(request.url);
-    if (url.origin === devinOrigin) {
+    if (vendor && url.origin === vendor.origin) {
       requests.push({ method: request.method, path: url.pathname, query: url.search });
-      return devinApi(request, url);
+      return vendor.handle(request, url, reject);
     }
     if (url.origin !== origin) return reject(request, 'Unexpected origin');
     if (url.pathname === '/results') {
-      return Response.json({ posts, patches, requests, unexpected, subscription, activities, session, devin });
+      return Response.json({ posts, patches, requests, unexpected, subscription, activities, session, vendor: vendor?.results() });
     }
     if (url.pathname === '/advance-turn' && request.method === 'POST') {
       Object.assign(session, { turn: session.turn + 1, outcome: null });
