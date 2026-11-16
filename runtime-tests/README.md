@@ -88,6 +88,9 @@ declares `const vendor` with:
 - `results()`: `{ sessions, received }`, the backend sessions the bridge
   created and the follow-up messages it sent. The scenario expects one session
   and `['Also fix Firefox']`.
+  A backend whose session opens empty, such as Claude Bridge's, takes the
+  opening request as the session's first message. Its mock counts that one
+  as the opening, not as received.
 
 A bridge's Node regression tests use `bridge/harness.mjs`.
 `bridgeHarness({ root, secrets, sensitive, vendor })` bundles `src/index.ts`

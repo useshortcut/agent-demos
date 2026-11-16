@@ -14,6 +14,7 @@ An agent is a web service you own. Shortcut sends it signed webhooks when someth
 | [Estimate Guardian](./estimate-guardian) | Workers, Hono, Durable Object | Enforcing a rule from observer webhooks. Bounces stories started without an estimate, using the action's `changes` diff and durable recovery. |
 | [Team Cop](./team-cop) | Workers, SQLite Durable Object | The same observer pattern in plain JavaScript. Comments when a story is created or started without a Team, with durable retries. |
 | [Devin Bridge](./devin-bridge) | Workers, Hono, SQLite Durable Objects | A third-party agent on agent sessions. Relays each Shortcut session to a Devin session: progress, questions, answers, follow-ups, and stop. |
+| [Claude Bridge](./claude-bridge) | Workers, Hono, SQLite Durable Objects | Devin Bridge's shared core on Claude Managed Agents. A general agent defined in `agent.json`: questions through an `ask_user` tool, and a stop that keeps the session. |
 
 ## Docs
 
