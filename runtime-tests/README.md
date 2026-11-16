@@ -134,6 +134,37 @@ bundled into whichever bridge runs the test, so it imports only types.
 - `misuse`: what the bridge did that no backend should see, such as one send
   key on two different sends. Each test in `core.test.mjs` expects it empty.
 
+### The seeded fuzz
+
+`bridge/fuzz.test.mjs` runs 1,000 seeded walks through the webhook and the
+alarm loop against the fake backend, in every bridge's `npm test`. A walk
+delivers a `session.created`, replies, and stops in any order and more than
+once. It fails any of the five backend calls, with and without the call
+landing, kills a step at its save, changes what the agent reports, and picks
+a random mix of `keeps`, `empty`, and `linked`. Then the bridge comes to rest
+and the walk checks what the core owes in any order:
+
+- A retried send repeats its key and its text, and no two sends share a key.
+- No step stalls, and the alarms run out.
+- At most one conversation is left working.
+- A backend without links gets no card link and no link text.
+- The context reaches a conversation at most once. A send that landed with
+  its answer lost, and whose relay a stop or a failed turn then dropped, is
+  the one exception: its context goes again with the next reply, as the reply
+  itself would. An introduction is never an exception.
+- The first conversation is told the context in the first text that is fixed
+  after the `session.created` arrived.
+- Nothing a stop cancelled reaches the agent after the stop: not the opening
+  request, and no reply up to the stop's turn.
+- The opening request is in the first text the agent is told when the
+  `session.created` arrived before that text was fixed, unless a stop, a
+  write Shortcut refused, or a failed turn dropped it first.
+
+Each walk is its own Shortcut session on one connected bridge. `FUZZ_RUNS`
+and `FUZZ_SEED` set the number of walks and the first seed. `FUZZ_SHOW=<seed>`
+prints a failing seed's trail: each delivery, failure, and send, and the
+stored phase after each alarm.
+
 ### Conformance
 
 `bridge/conform.mjs` exports `conform`, the scenarios every bridge owes
