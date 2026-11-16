@@ -835,6 +835,188 @@ for (const [arrives, late] of [['while the turn the bridge started on is open', 
   });
 }
 
+const contextBlock = `Context from Shortcut:\n\n${CONTEXT}`;
+
+/** The mock's `session.created` with other texts, not delivered yet. */
+function createdWith(h, { request = REQUEST, context = CONTEXT }) {
+  const created = h.shortcut.open(SID, { body: request });
+  created.prompt_context = { ...created.prompt_context, text: context };
+  return created;
+}
+
+/** Shortcut answers every error the bridge posts with a 503, so the user is never told. */
+function refuseErrors(h) {
+  const { handle } = h.shortcut;
+  h.shortcut.handle = (url, init) => (/"type":"error"/.test(String(init.body)) ? Response.json({ message: 'Unavailable.' }, { status: 503 }) : handle(url, init));
+}
+
+it('halts nothing again for a second stop of a turn it has stopped', async (t) => {
+  const h = setup(t);
+  h.fake.facts.keeps = true;
+  await h.started();
+  const [first, second] = [h.shortcut.stop(SID), h.shortcut.stop(SID)];
+  await h.accept(first);
+  await h.ticks(2);
+  await h.accept(second);
+  await h.ticks(2);
+  assert.equal(h.calls('halt').length, 1);
+  assert.deepEqual(h.bodies('response'), ['Stopped.']);
+});
+
+it('relays a late opening request that brings no context', async (t) => {
+  const h = setup(t);
+  await h.connect();
+  const created = createdWith(h, { context: '' });
+  await h.accept(h.shortcut.prompt(SID, 'Pick this up'));
+  await h.tick();
+  const chat = h.fake.only();
+  await h.accept(created);
+  await h.tick();
+  assert.deepEqual(chat.received, [REQUEST]);
+});
+
+it('goes back to reading the agent when a stop cancels a late opening request that brought no context', async (t) => {
+  const h = setup(t);
+  await h.connect();
+  const created = createdWith(h, { context: '' });
+  const stop = h.shortcut.stop(SID);
+  await h.accept(h.shortcut.prompt(SID, 'Pick this up'));
+  await h.tick();
+  const chat = h.fake.only();
+  await h.accept(created);
+  h.fake.failNext('prepare', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  await h.accept(stop);
+  await h.tick();
+  h.fake.say(chat, 'Picked it up');
+  chat.status = { kind: 'finished' };
+  await h.ticks(2);
+  assert.deepEqual(chat.received, []);
+  assert.deepEqual(h.bodies('error'), [], 'the agent holds the reply and answers it');
+  assert.deepEqual(h.bodies('response').map((body) => body.split('\n')[0]), ['Picked it up']);
+});
+
+it('introduces an empty conversation for a session created with neither a request nor a context', async (t) => {
+  const h = setup(t);
+  h.fake.facts.empty = true;
+  await h.connect();
+  await h.accept(createdWith(h, { request: '', context: '' }));
+  await h.tick();
+  assert.deepEqual(h.fake.only().received, [openingText('', '')]);
+  assert.deepEqual(h.bodies('error'), []);
+});
+
+it('ends the turn when the backend refuses the read that prepares the introduction of a session created without a request', async (t) => {
+  const h = setup(t);
+  h.fake.facts.empty = true;
+  await h.connect();
+  await h.accept(createdWith(h, { request: '' }));
+  h.fake.failNext('prepare', refusal());
+  await h.tick();
+  assert.deepEqual(h.bodies('error'), ['Fake rejected the request (HTTP 401). Reply to try again.'], 'no agent is at work, so there is nothing to go on reading');
+  assert.deepEqual(h.fake.only().received, []);
+});
+
+for (const [backend, empty] of [['opened with the request', false], ['opened empty', true]]) {
+  it(`sends a context that arrives after a text was fixed alone and at once, once that text is confirmed, to a conversation ${backend}`, async (t) => {
+    const h = setup(t);
+    h.fake.facts.empty = empty;
+    await h.connect();
+    const created = createdWith(h, { request: '' });
+    await h.accept(h.shortcut.prompt(SID, 'Pick this up'));
+    h.fake.failNext(empty ? 'send' : 'open', new BackendError({ kind: 'transient' }));
+    await h.tick();
+    await h.accept(created);
+    await h.ticks(2);
+    const chat = h.fake.only();
+    assert.deepEqual([chat.opened, ...chat.received].filter(Boolean), [openingText('Pick this up', ''), contextBlock], 'the retry repeats the text fixed before the context arrived, and the context follows');
+  });
+}
+
+it('repeats a send that carries only the context under its key when a stale stop passes it', async (t) => {
+  const h = setup(t);
+  await h.connect();
+  const created = h.shortcut.open();
+  const first = h.shortcut.stop(SID);
+  h.shortcut.prompt(SID, 'Pick this up');
+  const second = h.shortcut.stop(SID);
+  await h.accept(h.shortcut.prompt(SID, 'Also fix Firefox'));
+  await h.tick();
+  const chat = h.fake.only();
+  await h.accept(first);
+  await h.accept(created);
+  h.fake.failNext('send', new BackendError({ kind: 'transient' }), { landed: true });
+  await h.tick();
+  await h.accept(second);
+  await h.ticks(2);
+  assert.deepEqual(chat.received, [contextBlock], 'the backend takes the send key, so the repeat delivers nothing new');
+  assert.deepEqual([...new Set(chat.sends.map((sent) => sent.key))].length, 1);
+});
+
+it('opens the next conversation with all a refused open held when the next reply arrives before Shortcut takes the error', async (t) => {
+  const h = setup(t);
+  await h.connect();
+  await h.accept(h.shortcut.open());
+  h.fake.failNext('open', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  refuseErrors(h);
+  h.shortcut.state.rateLimits.push('7');
+  await h.accept(h.shortcut.prompt(SID, 'Also fix Firefox'));
+  h.fake.failNext('open', refusal());
+  await h.ticks(3);
+  assert.deepEqual(h.shortcut.activities().map((a) => [a.turn, a.content.type]), [[1, 'thought'], [2, 'thought']], 'Shortcut took the ack that waited behind its rate limit, and not the error');
+  await h.accept(h.shortcut.prompt(SID, 'And Chrome'));
+  await h.tick();
+  assert.equal(h.fake.only().opened, openingText(`${REQUEST}\n\nAlso fix Firefox\n\nAnd Chrome`), 'the user was never told to send them again');
+});
+
+it('puts a superseded opening request into the next introduction too, when the one that held it fails and the next reply arrives before Shortcut takes the error', async (t) => {
+  const h = setup(t);
+  h.fake.facts.empty = true;
+  await h.connect();
+  const created = h.shortcut.open();
+  await h.accept(h.shortcut.prompt(SID, 'Two'));
+  h.fake.failNext('prepare', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  await h.accept(h.shortcut.prompt(SID, 'Three'));
+  await h.accept(created);
+  refuseErrors(h);
+  h.fake.failNext('send', refusal());
+  await h.ticks(2);
+  assert.deepEqual(h.fake.only().received, []);
+  await h.accept(h.shortcut.prompt(SID, 'Four'));
+  await h.tick();
+  assert.deepEqual(h.fake.only().received, [openingText(`${REQUEST}\n\nTwo\n\nThree\n\nFour`)], 'the conversation is still empty, so nothing in it has moved past the request');
+});
+
+it('keeps the requests of a failed turn when Shortcut answers its error with a 409, and sends them with the reply that replaced the turn', async (t) => {
+  const h = setup(t);
+  const chat = await h.started();
+  chat.status = { kind: 'finished' };
+  await h.tick();
+  await h.accept(h.shortcut.prompt(SID, 'Also fix Firefox'));
+  const next = h.shortcut.prompt(SID, 'And Chrome');
+  h.fake.failNext('send', refusal());
+  await h.tick();
+  assert.deepEqual(h.bodies('error'), [], 'Shortcut is a turn ahead and takes no error for the older one');
+  await h.accept(next);
+  await h.tick();
+  assert.deepEqual(chat.received, ['Also fix Firefox\n\nAnd Chrome']);
+});
+
+it('halts what an unanswered open made when the grant is revoked before the open is answered', async (t) => {
+  const h = setup(t);
+  await h.connect();
+  await h.accept(h.shortcut.open());
+  h.fake.failNext('open', new BackendError({ kind: 'transient' }), { landed: true });
+  await h.tick();
+  h.shortcut.state.valid = 'revoked';
+  h.shortcut.state.refreshFailure = { status: 400, error: 'invalid_grant' };
+  await h.accept(h.shortcut.prompt(SID, 'Also fix Firefox'));
+  await h.ticks(3);
+  assert.equal(h.fake.only().halted, true, 'the turn is over, so the conversation the open made is given up');
+});
+
 // The conformance scenarios, for the kinds of backend no bridge here has yet.
 for (const [label, facts] of [
   ['a backend that keeps its session, opens it empty, and has no link', { keeps: true, opensEmpty: true, linked: false }],
