@@ -141,6 +141,20 @@ it('writes no link text and sets no card link for a conversation without a URL, 
   h.assertCleanLogs();
 });
 
+it('writes no card link for a conversation without a URL that follows one with a link', async (t) => {
+  const h = setup(t);
+  const first = await h.started();
+  assert.deepEqual(h.shortcut.sessions.get(SID).external_urls, [{ label: 'Open in Fake', url: first.url }]);
+  h.fake.facts.linked = false;
+  await h.accept(h.shortcut.stop(SID));
+  await h.tick();
+  await h.accept(h.shortcut.prompt(SID, 'Try Chrome instead'));
+  await h.tick();
+  assert.equal(h.fake.chats[1].url, null);
+  assert.equal(h.requests.filter((r) => r.method === 'PATCH').length, 1, 'the only link written is the first conversation\'s');
+  h.assertCleanLogs();
+});
+
 it('answers a stop the backend keeps without claiming termination, and sends the next reply to the same conversation', async (t) => {
   const h = setup(t);
   h.fake.facts.keeps = true;
@@ -405,6 +419,20 @@ for (const [window, failing] of [['before the open is attempted', null], ['while
     h.assertCleanLogs();
   });
 }
+
+it('puts a late session.created into an introduction that is not prepared yet, whatever replies arrived meanwhile', async (t) => {
+  const h = setup(t);
+  h.fake.facts.empty = true;
+  await h.connect();
+  const created = h.shortcut.open();
+  await h.accept(h.shortcut.prompt(SID, 'Pick this up'));
+  h.fake.failNext('prepare', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  await h.accept(h.shortcut.prompt(SID, 'Also fix Firefox'));
+  await h.accept(created);
+  await h.ticks(2);
+  assert.deepEqual(h.fake.only().received, [openingText(`${REQUEST}\n\nPick this up\n\nAlso fix Firefox`)], 'nothing had reached the agent, so the request is not dropped for the newer reply');
+});
 
 it('relays a session.created that arrives after the introduction was prepared as a message of its own, with the context under it', async (t) => {
   const h = setup(t);
