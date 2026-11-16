@@ -14,7 +14,9 @@
 // later. Until then the landing is one the bridge cannot know about. A
 // prepare that finds a message in a conversation teaches it less: that the
 // conversation's first text landed, and so whether the conversation was told
-// the context by it.
+// the context by it. A turn has its outcome once the bridge has read that the
+// agent finished or failed, once a backend call was refused, or once Shortcut
+// holds a response, a question, or an error for it.
 export const RULES = {
   stopped: 'A stop cancels every request at or below its turn, also one that arrives later. Once the stop has arrived, no call carries a cancelled request.',
   superseded: [
@@ -150,6 +152,10 @@ export function ledger(tokens, { opensEmpty }) {
     posted({ type, turn }) {
       if (type === 'response' || type === 'elicitation' || type === 'error') s.outcome = true;
       if (type === 'error') s.failedTurn = Math.max(s.failedTurn, turn);
+    },
+    /** The bridge read the end of a turn from the backend, or a call was refused. */
+    ended() {
+      s.outcome = true;
     },
 
     opening(key, text) {

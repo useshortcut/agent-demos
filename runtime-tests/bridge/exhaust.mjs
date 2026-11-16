@@ -142,7 +142,10 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
       if (mode === 'fails') throw transient();
       const chat = fake.chats.find((candidate) => candidate.id === conversation.id);
       // The fake scripts `gone` for prepare alone. A conversation that ended on its own takes no message either.
-      if (chat.gone && !chat.halted) throw new bridge.mod.BackendError({ kind: 'rejected', status: 410 });
+      if (chat.gone && !chat.halted) {
+        led.ended();
+        throw new bridge.mod.BackendError({ kind: 'rejected', status: 410 });
+      }
       const before = chat.received.length;
       const memo = await raw.send(conversation, message);
       led.sent(key, { landed: chat.received.length > before, learned: mode === null });
@@ -150,7 +153,9 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
     }),
     observe: faulted('observe', async (mode, conversation) => {
       if (mode === 'fails') throw transient();
-      return raw.observe(conversation);
+      const seen = await raw.observe(conversation);
+      if (mode === null && ['finished', 'failed'].includes(seen.status.kind)) led.ended();
+      return seen;
     }),
     halt: faulted('halt', async (mode, target) => {
       if (mode === 'fails') throw transient();

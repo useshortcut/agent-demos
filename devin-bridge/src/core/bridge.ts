@@ -365,7 +365,12 @@ function staleStop(state: SessionState, turn: number): SessionState {
   const after = (replies: Pending[]) => replies.filter((reply) => reply.turn > turn);
   const fixed = phase.kind === 'start' && phase.attempted ? phase.prompt : [];
   const waiting = after(unsent(phase));
-  if (waiting.length === 0 && after(fixed).length === fixed.length) return { ...cancelled, phase: without(phase, turn) };
+  if (waiting.length === 0 && after(fixed).length === fixed.length) {
+    const left = without(phase, turn);
+    // Only a conversation that replaces one that ended can be left with nothing to open it for. The bridge started from a reply the stop cannot cancel.
+    const nothing = left.kind === 'start' && !left.attempted && left.prompt.length + left.extra.length === 0;
+    return nothing ? fail(cancelled, `The ${identity.name} session ended. Reply to start a new one.`, false) : { ...cancelled, phase: left };
+  }
   const stopping = stop(cancelled, turn, [...after(fixed), ...waiting]);
   return enqueue(stopping, activity(stopping, 'ack:restart', 'thought', `Starting a new ${identity.name} session.`));
 }
