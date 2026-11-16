@@ -1,5 +1,8 @@
 import type { Memo } from './backend';
-import type { Activity, Pending, Phase, Send, SessionState } from './core/bridge';
+import type { Activity, FirstPortState, Pending } from './core/bridge';
+
+type Phase = FirstPortState['phase'];
+type Send = NonNullable<Extract<Phase, { kind: 'relay' }>['send']>;
 import type { DevinState } from './devin';
 import type { Conversation, Target } from './core/port';
 
@@ -41,7 +44,8 @@ const nullable = <T>(value: unknown, read: (value: unknown) => T): T | null => (
 function pending(value: unknown): Pending {
   const { turn, text: body, opening } = fields(value);
   check(opening === undefined || opening === true);
-  return { turn: count(turn), text: text(body), ...(opening ? { opening: true as const } : {}) };
+  const reply = { turn: count(turn), text: text(body) };
+  return opening ? { ...reply, opening: true } : reply;
 }
 
 function activity(value: unknown): Activity {
@@ -125,8 +129,8 @@ function jobs<T>(value: unknown, read: (value: unknown) => T) {
   return { backend: read(devin), shortcut: read(shortcut), retire: read(retire), link: read(link) };
 }
 
-/** The current shape of a state stored before the backend port, or null for anything else. */
-export function upgradeState(stored: unknown): SessionState | null {
+/** A state stored before the backend port, in the shape the first port stored, or null for anything else. */
+export function upgradeState(stored: unknown): FirstPortState | null {
   try {
     const state = fields(stored);
     check(state.v === undefined);

@@ -3,6 +3,7 @@ import {
   MAX_FAILURES,
   MAX_LOOKUPS,
   applyEvent,
+  attempting,
   backoffMs,
   checked,
   close,
@@ -20,13 +21,14 @@ import {
   rejected,
   relayed,
   restarted,
+  restored,
   retiring,
-  sendKey,
   started,
   stopped,
   succeeded,
   type ActPhase,
   type Due,
+  type FirstPortState,
   type Job,
   type PollPhase,
   type SessionState,
@@ -167,13 +169,12 @@ export class Session {
 
 const { upgradeState }: BackendModule<Memo, BackendEnv> = adapter;
 
-// An upgraded state is saved in the current shape by the step's next save.
+// A state of an earlier shape is saved in today's by the step's next save.
 async function load(storage: DurableObjectStorage, sessionId: string): Promise<SessionState | null> {
-  const stored = await storage.get<SessionState | { v?: undefined }>('state');
+  const stored = await storage.get<SessionState | FirstPortState | { v?: undefined }>('state');
   if (stored === undefined) return null;
-  if (stored.v === 2) return stored;
-  const upgraded = upgradeState?.(stored) ?? null;
-  if (upgraded !== null) return upgraded;
+  const known = stored.v === 2 ? stored : upgradeState?.(stored) ?? null;
+  if (known !== null) return restored(known);
   console.warn(`${identity.title} dropped a stored session state of an older shape`, { sessionId });
   await storage.delete('state');
   return null;
@@ -261,7 +262,7 @@ async function perform(state: SessionState, phase: ActPhase, { backend, slug }: 
     case 'start': {
       // Saved as attempted before the open goes out, so a stop or close that
       // follows resolves the key instead of trusting that nothing exists.
-      if (!phase.attempted) return { ...state, phase: { ...phase, attempted: true } };
+      if (!phase.attempted) return attempting(state, phase);
       // A retried open finds what an interrupted one made under the same key,
       // so replies that arrived meanwhile are relayed rather than folded into
       // the opening text.
@@ -279,7 +280,7 @@ async function perform(state: SessionState, phase: ActPhase, { backend, slug }: 
         const known = succeeded(state, 'backend');
         return ready.kind === 'gone' ? restarted(known, phase, ready.empty) : prepared(known, phase, ready, slug, Date.now());
       }
-      const { text, key = sendKey(state, 0), memo } = phase.send;
+      const { text, key, memo } = phase.send;
       const sent = await backend.send({ ...phase.on, memo }, { text, key });
       return relayed(succeeded(state, 'backend'), phase, phase.send, sent, Date.now());
     }

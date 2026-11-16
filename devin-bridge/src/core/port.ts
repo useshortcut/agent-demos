@@ -1,4 +1,4 @@
-import type { SessionState } from './bridge';
+import type { FirstPortState } from './bridge';
 import { retryAfterMs } from './http';
 
 export type Identity = {
@@ -121,6 +121,6 @@ export type BackendModule<M, E> = {
   /** The names `/webhook` and `/oauth/callback` require, on top of the Shortcut ones. */
   secrets: readonly (keyof E & string)[];
   connect(env: E): Backend<M>;
-  /** Reads a state this bridge stored in an older shape. A bridge that never stored one leaves it out. */
-  upgradeState?: (stored: unknown) => SessionState | null;
+  /** Reads a state this bridge stored before the backend port, into the shape the first port stored. A bridge that never stored one leaves it out. */
+  upgradeState?: (stored: unknown) => FirstPortState | null;
 };

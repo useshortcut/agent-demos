@@ -33,7 +33,7 @@ const explored = (facts) => new Promise((resolve, reject) => {
 
 const pasted = (facts, steps) => `[${JSON.stringify(facts)}, ${JSON.stringify(steps)}]`.replaceAll('"', "'");
 
-it(`keeps the ledger's rules over every script of up to ${scope.total} events, backend faults, and agent endings, on every kind of backend`, { todo: 'the core breaks three of the rules, and the commits that follow fix each' }, async (t) => {
+it(`keeps the ledger's rules over every script of up to ${scope.total} events, backend faults, and agent endings, on every kind of backend`, { todo: 'the core breaks one of the rules, and the next commit fixes it' }, async (t) => {
   const started = performance.now();
   const results = await Promise.all(BACKENDS.map(explored));
   const total = (field) => results.reduce((sum, result) => sum + BigInt(result[field]), 0n);
@@ -50,6 +50,10 @@ it(`keeps the ledger's rules over every script of up to ${scope.total} events, b
 // run found the ones that are longer than the default scope.
 const DEVIN = { keeps: false, empty: false, dedupes: false };
 const PINNED = [
+  ['tells the first conversation the context when a stale stop cancels a late opening request beside an open whose answer was lost', DEVIN, ['reply 2', 'tick: open lost', 'created', 'stop 1', 'tick', 'tick', 'reply 3', 'tick', 'rest']],
+  ['tells a conversation the context once when two stale stops pass a send that carries it alone', DEVIN, ['reply 3', 'tick', 'created', 'stop 1', 'tick: send fails', 'stop 2', 'reply 4', 'tick', 'rest']],
+  ['tells a conversation opened after a stop the context when it arrives later', DEVIN, ['reply 2', 'stop 1', 'tick', 'created', 'reply 3', 'tick', 'rest']],
+  ['repeats an open\'s text when the context arrives before its retry in a conversation opened after a stop', DEVIN, ['reply 2', 'stop 1', 'tick: open fails', 'created', 'tick', 'rest']],
   ['ends the turn, and opens no conversation, when the context of a late session.created is all that waits for a conversation that is gone', DEVIN, ['reply 2', 'tick', 'created', 'stop 1', 'gone', 'tick', 'rest']],
 ];
 
