@@ -188,7 +188,8 @@ are the defects the search has found so far, the longer ones by wider runs.
 
 `EXHAUST=deep` widens the scope: `reply 4` and `stop 3` join the events, a
 script holds up to five events and two faults, and up to six of everything
-together. It takes minutes and tens of gigabytes of memory, so it is run by
+together. That is about 167 million scripts through 10 million states. On an
+18-core machine it took seven minutes and 25 GB of memory, so it is run by
 hand before a change to the core is merged. `EXHAUST_SCOPE` takes a JSON
 object that replaces fields of the scope, for a run in between.
 
