@@ -517,15 +517,18 @@ export function started(state: SessionState, phase: Attempted, { conversation: o
  * Shortcut's context itself. One that holds a message gets the requests in
  * turn order, with the context if the conversation is still owed it. A
  * message there also settles an introduction whose answer the bridge never
- * got: it landed, so it is not repeated. The context goes alone, with no
- * request, only while the bridge is on the turn it started from.
+ * got: it landed, so it is not repeated. A text goes out with no request
+ * only while the bridge is on the turn it started from: the introduction of a
+ * session created without one, or a context that arrived late.
  */
 export function prepared(state: SessionState, phase: RelayPhase, { memo, empty }: Extract<Prepared<Memo>, { kind: 'ready' }>, slug: string, now: number): SessionState {
   const settled: SessionState = !empty && state.briefing === 'introduced' ? { ...state, briefing: 'given' } : state;
   const prompt = empty ? unmarked(phase.prompt) : phase.prompt.filter((reply) => !reply.superseded);
-  const briefs = settled.context !== '' && (empty || (owes(settled) && (prompt.length > 0 || opening(settled))));
-  // A stop cancelled all this relay held, or all it held was superseded. The agent still works on what it was told, so the bridge goes back to watching it.
-  if (!empty && !briefs && prompt.length === 0) return { ...settled, phase: polling(phase.on, now) };
+  const briefs = settled.context !== '' && (empty || owes(settled));
+  // A stop cancelled all this relay held, or all it held was superseded. An agent that was told something still works on it, so the bridge goes back to watching it. A conversation that holds nothing replaced one that ended, and nothing is left to open it for.
+  if (prompt.length === 0 && !(opening(settled) && (empty || briefs))) {
+    return empty ? fail(settled, `The ${identity.name} session ended. Reply to start a new one.`, false) : { ...settled, phase: polling(phase.on, now) };
+  }
   const text = empty ? introduction(settled, promptText(prompt), slug, briefs) : briefs ? briefedText(prompt, settled.context) : promptText(prompt);
   return { ...settled, briefing: empty && briefs ? 'introduced' : settled.briefing, phase: { ...phase, prompt: [], send: { prompt, briefs, text, key: sendKey(state), memo } } };
 }
