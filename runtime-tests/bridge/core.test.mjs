@@ -683,6 +683,73 @@ it('owes no context after a kept stop when the introduction that carried a late 
   assert.deepEqual(chat.received, [openingText(`${REQUEST}\n\nPick this up`), 'Try Chrome instead'], 'the introduction carried the context itself, so the stop leaves none to send');
 });
 
+for (const [where, held] of [['with an open that is not answered yet', false], ['with the relay that follows the open', true]]) {
+  it(`drops the replies a stop cancelled when they wait ${where} and the stop has nothing to restart`, async (t) => {
+    const h = setup(t);
+    await h.connect();
+    h.shortcut.open();
+    const two = h.shortcut.prompt(SID, 'Two');
+    const three = h.shortcut.prompt(SID, 'Three');
+    const stop = h.shortcut.stop(SID);
+    await h.accept(h.shortcut.prompt(SID, 'Four'));
+    h.fake.failNext('open', new BackendError({ kind: 'transient' }), { landed: true });
+    await h.tick();
+    await h.accept(two);
+    await h.accept(three);
+    if (held) {
+      h.fake.failNext('prepare', new BackendError({ kind: 'transient' }));
+      await h.tick();
+    }
+    await h.accept(stop);
+    await h.ticks(3);
+    const chat = h.fake.only();
+    assert.equal(chat.opened, openingText('Four', ''));
+    assert.deepEqual(chat.received, [], 'the stop was for turn 3, so the replies of turns 2 and 3 are never sent');
+    assert.equal(h.calls('halt').length, 0, 'the agent works on the reply that came after the stop, so nothing is halted');
+    h.fake.say(chat, 'Done');
+    chat.status = { kind: 'finished' };
+    await h.ticks(2);
+    assert.deepEqual(h.shortcut.activities().filter((a) => a.content.type === 'response').map((a) => [a.turn, a.content.body.split('\n')[0]]), [[4, 'Done']], 'the turn that was sent still gets its answer');
+  });
+}
+
+it('sends only the context when a stop cancels a late opening request that waits to be relayed, and the stop has nothing to restart', async (t) => {
+  const h = setup(t);
+  await h.connect();
+  const created = h.shortcut.open();
+  h.shortcut.prompt(SID, 'Two');
+  const stop = h.shortcut.stop(SID);
+  await h.accept(h.shortcut.prompt(SID, 'Three'));
+  await h.tick();
+  const chat = h.fake.only();
+  await h.accept(created);
+  h.fake.failNext('send', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  await h.accept(stop);
+  await h.ticks(2);
+  assert.deepEqual(chat.received, [`Context from Shortcut:\n\n${CONTEXT}`], 'the request was prepared with the context under it, and the stop of turn 2 cancelled the request alone');
+  assert.equal(h.calls('halt').length, 0);
+});
+
+for (const [fate, landed] of [['never arrived', false], ['arrived with its answer lost', true]]) {
+  it(`stops an open whose text holds a reply the stop cancelled, when the open ${fate}, and opens again with the replies after the stop`, async (t) => {
+    const h = setup(t);
+    await h.connect();
+    h.shortcut.open();
+    const two = h.shortcut.prompt(SID, 'Two');
+    const stop = h.shortcut.stop(SID);
+    await h.accept(h.shortcut.prompt(SID, 'Three'));
+    await h.accept(two);
+    h.fake.failNext('open', new BackendError({ kind: 'transient' }), { landed });
+    await h.tick();
+    await h.accept(stop);
+    await h.ticks(3);
+    const working = h.fake.chats.filter((chat) => !chat.halted);
+    assert.deepEqual(working.map((chat) => [chat.key, chat.opened]), [['shortcut-session-sess-1-2', openingText('Three', '')]], 'the only conversation left working was never told the reply of turn 2');
+    assert.equal(h.fake.chats.length, landed ? 2 : 1);
+  });
+}
+
 // The conformance scenarios, for the kinds of backend no bridge here has yet.
 for (const [label, facts] of [
   ['a backend that keeps its session, opens it empty, and has no link', { keeps: true, opensEmpty: true, linked: false }],

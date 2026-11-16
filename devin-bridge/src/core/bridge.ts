@@ -282,15 +282,33 @@ function earlier(state: SessionState, reply: Pending): SessionState {
 // A stop delivered after the replies that followed it still ends the session
 // it meant, and those replies open a new one. The replies up to its turn are
 // cancelled with it, whether they arrived already or arrive later. Once every
-// later reply was sent, the stop is stale. The ack has its own suffix because
+// later reply was sent, the stop is stale: the agent works on what came after
+// it, so nothing is halted, and the cancelled replies that still wait are
+// dropped where they wait. An open that was attempted and not answered is
+// the exception. Its text is fixed and may not be out yet, so if it holds a
+// cancelled reply the open is stopped whole, and what it held after the
+// stop's turn opens the next conversation. The ack has its own suffix because
 // the turn's `ack` may already be posted with another body, and Shortcut
 // answers a reused key with a 409.
 function staleStop(state: SessionState, turn: number): SessionState {
+  const { phase } = state;
   const cancelled = { ...state, cutoff: Math.max(state.cutoff, turn) };
-  const then = unsent(state.phase).filter((reply) => reply.turn > turn);
-  if (then.length === 0) return cancelled;
+  const fixed = phase.kind === 'start' && phase.attempted && phase.prompt.some((reply) => reply.turn <= turn) ? phase.prompt : [];
+  const then = [...fixed, ...unsent(phase)].filter((reply) => reply.turn > turn);
+  if (then.length === 0 && fixed.length === 0) return { ...keepLate(cancelled), phase: without(phase, turn) };
   const stopping = stop(cancelled, turn, then);
   return enqueue(stopping, activity(stopping, 'ack:restart', 'thought', `Starting a new ${identity.name} session.`));
+}
+
+/** The phase without the unsent replies up to `turn`. A prepared send that holds one is dropped whole, since its text is fixed. */
+function without(phase: Phase, turn: number): Phase {
+  const after = (replies: Pending[]) => replies.filter((reply) => reply.turn > turn);
+  switch (phase.kind) {
+    case 'start': return phase.attempted ? { ...phase, extra: after(phase.extra) } : { ...phase, prompt: after(phase.prompt), extra: after(phase.extra) };
+    case 'relay': return { ...phase, prompt: after(phase.prompt), send: phase.send?.prompt.some((reply) => reply.turn <= turn) ? null : phase.send };
+    case 'stop': return { ...phase, then: after(phase.then) };
+    default: return phase;
+  }
 }
 
 /** The first conversation's opening turn is still open: nothing answered it and no newer reply replaced it. */
@@ -449,9 +467,11 @@ export function started(state: SessionState, phase: StartPhase, { conversation: 
  * backend's answer decides, here and nowhere else, so a send whose outcome
  * the core never learned cannot make it introduce a conversation twice.
  */
-export function prepared(state: SessionState, phase: RelayPhase, { memo, empty }: Extract<Prepared<Memo>, { kind: 'ready' }>, slug: string): SessionState {
+export function prepared(state: SessionState, phase: RelayPhase, { memo, empty }: Extract<Prepared<Memo>, { kind: 'ready' }>, slug: string, now: number): SessionState {
   const prompt = empty ? plain(phase.prompt) : phase.prompt.filter((reply) => !reply.superseded);
   const late = empty ? null : state.late;
+  // A stop cancelled all this relay held, or all it held was superseded. The agent still works on what it was told, so the bridge goes back to watching it.
+  if (!empty && !late && prompt.length === 0) return { ...state, phase: polling(phase.on, now) };
   const text = empty ? introduction(state, promptText(prompt), slug) : promptText(late ? [late, ...prompt] : prompt);
   return { ...state, late: null, phase: { ...phase, prompt: [], send: { prompt, late, text, key: sendKey(state), memo } } };
 }
