@@ -608,6 +608,25 @@ it('sends only the context of a late session.created whose request a stop had ca
   assert.deepEqual(chat.received, [`Context from Shortcut:\n\n${CONTEXT}`], 'the stop still cancelled the request, and the agent learns the context at once');
 });
 
+it('ends the turn in the backend\'s own words, with the link, when only the context waited for a conversation that is gone', async (t) => {
+  const h = setup(t);
+  await h.connect();
+  const created = h.shortcut.open();
+  h.shortcut.prompt(SID, 'Pick this up');
+  const stop = h.shortcut.stop(SID);
+  await h.accept(h.shortcut.prompt(SID, 'Also fix Firefox'));
+  await h.tick();
+  const chat = h.fake.only();
+  await h.accept(stop);
+  await h.tick();
+  await h.accept(created);
+  Object.assign(chat, { gone: true, status: { kind: 'failed', body: 'The Fake session was closed in Fake.', keep: false } });
+  await h.ticks(2);
+  assert.deepEqual(h.bodies('error'), [`The Fake session was closed in Fake. [Open in Fake](${chat.url})`], 'the read that follows says why it is gone');
+  assert.equal(h.fake.chats.length, 1, 'no conversation is opened for the context alone');
+  assert.equal(await h.alarmIn(), null);
+});
+
 const refusal = () => new BackendError({ kind: 'rejected', status: 401 });
 for (const [failure, failing, alarms] of [
   ['is refused', (h) => h.fake.failNext('send', refusal()), 1],

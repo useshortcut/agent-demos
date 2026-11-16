@@ -584,12 +584,13 @@ export function abandoned(state: SessionState, phase: RelayPhase, now: number): 
  * fails, and the next reply opens one. The conversation that is gone held a
  * message, so a superseded request stays behind with it. When no request
  * waited, only Shortcut's context, there is nothing to open a conversation
- * for: the turn fails as it would have on the next poll.
+ * for. The bridge reads the conversation instead, and that read ends the turn
+ * with the backend's own reason and the link.
  */
-export function restarted(state: SessionState, phase: RelayPhase, empty: boolean): SessionState {
+export function restarted(state: SessionState, phase: RelayPhase, empty: boolean, now: number): SessionState {
   if (empty) return fail(state, `The ${identity.name} session ended before it took your message. Reply to start a new one.`, false);
   const waiting = unmarked(unsent(phase).filter((reply) => !reply.superseded));
-  if (waiting.length === 0) return fail(state, `The ${identity.name} session ended. Reply to start a new one.`, false);
+  if (waiting.length === 0) return { ...state, phase: polling(phase.on, now) };
   return enqueue(fresh(retiring(state), waiting), activity(state, 'restart', 'thought', `The last ${identity.name} session ended. Starting a new one.`));
 }
 

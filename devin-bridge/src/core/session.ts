@@ -282,7 +282,7 @@ async function perform(state: SessionState, phase: ActPhase, { backend, slug }: 
       if (phase.send === null) {
         const ready = await backend.prepare(phase.on);
         const known = succeeded(state, 'backend');
-        return ready.kind === 'gone' ? restarted(known, phase, ready.empty) : prepared(known, phase, ready, slug, Date.now());
+        return ready.kind === 'gone' ? restarted(known, phase, ready.empty, Date.now()) : prepared(known, phase, ready, slug, Date.now());
       }
       const { text, key, memo } = phase.send;
       const sent = await backend.send({ ...phase.on, memo }, { text, key });
