@@ -42,6 +42,13 @@ const MUTANTS = {
       return seen.status.kind === 'asked' ? { ...seen, status: { kind: 'asked', on: 'approval' } } : seen;
     };
   },
+  'observe reports an approval as a question for the user'({ backend }) {
+    const { observe } = backend;
+    backend.observe = async (conversation) => {
+      const seen = await observe(conversation);
+      return seen.status.kind === 'asked' ? { ...seen, status: { kind: 'asked', on: 'user' } } : seen;
+    };
+  },
   'halt answers ended and ends nothing'({ backend, chats }) {
     const { halt } = backend;
     backend.halt = async (target) => {

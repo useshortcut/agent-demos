@@ -6,10 +6,13 @@ import { it } from 'node:test';
 import { SID, openingText } from './harness.mjs';
 
 const TICKS = 40;
+const FACTS = ['keeps', 'opensEmpty', 'linked', 'dedupes', 'approves'];
 
 export function conform({ label, setup, identity, facts, vendor }) {
   const { slug, name, aSession, linkLabel } = identity;
   const named = label ?? `${name} bridge`;
+  // A fact left out would skip what it guards without a word.
+  for (const fact of FACTS) assert.equal(typeof facts[fact], 'boolean', `${named}: \`facts.${fact}\` is declared true or false`);
 
   /** Everything the session was told, oldest first, whether the open or a message carried it. */
   const heard = (h, session) => {
@@ -44,7 +47,7 @@ export function conform({ label, setup, identity, facts, vendor }) {
     await until(h, () => answers(h).some(([, line]) => line === text), `the bridge posts the answer "${text}"`);
   }
 
-  const scenario = (title, run) => it(`${named}: ${title}`, async (t) => {
+  const scenario = (title, run, skip = false) => it(`${named}: ${title}`, { skip }, async (t) => {
     const h = setup(t);
     await run(h);
     h.assertCleanLogs();
@@ -111,6 +114,20 @@ export function conform({ label, setup, identity, facts, vendor }) {
     await answered(h, session, 'Fixed Safari');
     assert.deepEqual(answers(h), [[2, 'Fixed Safari']]);
   });
+
+  scenario('asks for the approval the agent waits on, keeps reading it, and posts its answer when it finishes', async (h) => {
+    const session = await opened(h);
+    vendor.awaitApproval(h, session, 'Deploy to production?');
+    await until(h, () => activities(h, 'elicitation').length > 0, 'the bridge asks for the approval');
+    await settle(h);
+    const before = backendRequests(h);
+    await settle(h);
+    assert.ok(backendRequests(h) > before, 'the approval is given in the backend\'s own app, so the turn stays open and the bridge keeps reading the agent');
+    assert.deepEqual(activities(h, 'elicitation').map((a) => [a.turn, a.content.body]), [[1, under('Deploy to production?', session)]], 'the approval is asked for once, however long the agent waits');
+    assert.deepEqual(answers(h), [], 'a request for approval is not an answer');
+    await answered(h, session, 'Deployed');
+    assert.deepEqual(answers(h), [[1, 'Deployed']]);
+  }, !facts.approves && 'the backend has no approval state');
 
   scenario('ends the turn with an error when the session fails, and the next reply still reaches an agent', async (h) => {
     const session = await opened(h);

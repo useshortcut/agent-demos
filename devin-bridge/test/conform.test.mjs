@@ -6,7 +6,7 @@ const state = (session, status_detail, status = 'running') => Object.assign(sess
 conform({
   setup,
   identity: { slug: 'devin-bridge', name: 'Devin', aSession: 'a Devin session', linkLabel: 'Open in Devin' },
-  facts: { keeps: false, opensEmpty: false, linked: true, dedupes: false },
+  facts: { keeps: false, opensEmpty: false, linked: true, dedupes: false, approves: true },
   vendor: {
     sessions: (h) => h.devin.sessions,
     told: (h, session) => ({ opened: session.prompt, messages: session.received }),
@@ -17,6 +17,10 @@ conform({
     ask(h, session, question) {
       h.devin.say(session, question);
       state(session, 'waiting_for_user');
+    },
+    awaitApproval(h, session, question) {
+      h.devin.say(session, question);
+      state(session, 'waiting_for_approval');
     },
     fail: (h, session) => state(session, null, 'error'),
     halted: (h, session) => session.terminated === true,

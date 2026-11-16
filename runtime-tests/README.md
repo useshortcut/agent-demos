@@ -215,21 +215,26 @@ send that carried only the context. When you add a rule, add the core that break
 
 `bridge/conform.mjs` exports `conform`, the scenarios every bridge owes
 Shortcut whatever its backend: open, progress, finished, a reply to the same
-session, asked and answered, failed, stop then reply, close, an open and a
-send whose answers are lost, and a redelivered event. A bridge calls it from
+session, asked and answered, an approval awaited and given, failed, stop then
+reply, close, an open and a send whose answers are lost, and a redelivered
+event. A bridge calls it from
 one test file with its own harness, so each adapter is held to the same list.
 `devin-bridge/test/conform.test.mjs` is the example. `conform` takes:
 
 - `setup`: the bridge's `setup(t)`.
 - `identity`: the `slug`, `name`, `aSession`, and `linkLabel` the bridge's
   activities should carry, written out, not imported.
-- `facts`: the four things on which backends differ. `keeps` says a stop
+- `facts`: the five things on which backends differ. Each is declared `true`
+  or `false`, and `conform` fails one that is left out. `keeps` says a stop
   leaves the session open, so the next reply goes to it. `opensEmpty` says the
   session is created with no message and the opening text is its first.
   `linked` says a session has a URL for the card and the outcomes. `dedupes`
   says the backend takes the send key, so a send repeated after a lost answer
   is delivered once. Without it the repeat may be delivered, so the scenario
-  allows one or two deliveries and no more.
+  allows one or two deliveries and no more. `approves` says the agent can wait
+  for an approval that is given in the backend's own app, which the adapter
+  reports as `asked` on `approval`. Without it the approval scenario is
+  skipped, and the test report says so.
 - `vendor`: what the test can do to the vendor mock. `sessions(h)` lists the
   sessions the bridge opened, oldest first. `told(h, session)` returns
   `{ opened, messages }`: the text the create carried, or null, and the texts
@@ -237,7 +242,10 @@ one test file with its own harness, so each adapter is held to the same list.
   `url(session)` is read only when `linked`. `work`, `finish`, and `fail` take
   `(h, session)` and set what the vendor reports, `say(h, session, text)` adds
   an agent message, and `ask(h, session, question)` makes the agent ask the
-  user and wait. `fail` is a failure that ends the turn. `halted(h, session)`
+  user and wait. `awaitApproval(h, session, question)` makes the agent say
+  `question` and wait for an approval in the backend's own app. It is called
+  only when `approves`, and the agent's later `work`, `say`, and `finish`
+  stand for the approval being given. `fail` is a failure that ends the turn. `halted(h, session)`
   says whether the vendor was told to stop the session, and
   `takes(h, session)` whether the mock would still accept a message for it.
   The stop scenario holds `takes` against `facts.keeps`, so the fact is
@@ -254,9 +262,10 @@ no link, and one that keeps its session and opens it with the request.
 `bridge/mutants.test.mjs` tests the scenarios themselves. `bridge/mutant.mjs`
 is the fake backend with one wrong behavior, named by the `MUTANT` variable:
 an `open` or a `send` that ignores its key, an `observe` that ignores the
-prepared memo, returns only the first of several messages, or reports a
-question for the user as an approval, and a `halt` that answers `ended`
-while the session still takes messages. The test runs `conform` against each
+prepared memo, returns only the first of several messages, reports a
+question for the user as an approval, or reports an approval as a question
+for the user, and a `halt` that answers `ended` while the session still takes
+messages. The test runs `conform` against each
 in a child process and expects the scenario that owns the behavior to fail.
 When you add a scenario for something an adapter could get wrong, add its
 mutant.

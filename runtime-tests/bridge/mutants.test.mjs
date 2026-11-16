@@ -38,6 +38,7 @@ for (const [mutant, scenario] of [
   ['observe ignores the prepared memo', /^sends a reply to the same session and answers it on its own turn$/],
   ['observe returns only the first message', /^posts the agent's (newest message as progress while it works|last message as the response when it finishes)$/],
   ['observe reports a question for the user as an approval', /^asks the agent's question, hands the turn back, and passes the answer to the same session$/],
+  ['observe reports an approval as a question for the user', /^asks for the approval the agent waits on, keeps reading it, and posts its answer when it finishes$/],
   ['halt answers ended and ends nothing', /^stops the work, answers "Stopped\.", and sends the next reply to a new session$/],
 ]) {
   it(`fails a backend whose ${mutant}`, async () => {
