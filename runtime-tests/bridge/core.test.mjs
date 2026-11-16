@@ -763,6 +763,23 @@ it('opens the next conversation with a late opening request by its own words whe
   assert.equal(h.fake.chats[1].opened, openingText(REQUEST), 'the request is not carried over with the context still under it');
 });
 
+for (const [arrives, late] of [['while the turn the bridge started on is open', false], ['after a newer reply', true]]) {
+  it(`tells the first conversation the context once when a session.created arrives between a failed open and its retry, ${arrives}`, async (t) => {
+    const h = setup(t);
+    await h.connect();
+    const created = h.shortcut.open();
+    await h.accept(h.shortcut.prompt(SID, 'Pick this up'));
+    h.fake.failNext('open', new BackendError({ kind: 'transient' }));
+    await h.tick();
+    if (late) await h.accept(h.shortcut.prompt(SID, 'Also fix Firefox'));
+    await h.accept(created);
+    await h.ticks(2);
+    const chat = h.fake.only();
+    assert.equal(chat.opened, openingText('Pick this up', ''), 'the retried open repeats the text of the first attempt, which may be the one that arrived');
+    assert.deepEqual(chat.received, [late ? `Context from Shortcut:\n\n${CONTEXT}\n\nAlso fix Firefox` : `${REQUEST}\n\nContext from Shortcut:\n\n${CONTEXT}`], 'the context follows as a message, and nowhere else');
+  });
+}
+
 // The conformance scenarios, for the kinds of backend no bridge here has yet.
 for (const [label, facts] of [
   ['a backend that keeps its session, opens it empty, and has no link', { keeps: true, opensEmpty: true, linked: false }],

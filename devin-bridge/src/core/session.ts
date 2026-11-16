@@ -12,12 +12,11 @@ import {
   dueNow,
   endTurn,
   fail,
-  introduction,
   linked,
   live,
   observed,
+  openingText,
   prepared,
-  promptText,
   rejected,
   relayed,
   restarted,
@@ -269,7 +268,7 @@ async function perform(state: SessionState, phase: ActPhase, { backend, slug }: 
       const opened = await backend.open({
         key: conversationKey(state.shortcutSessionId, state.generation),
         title: `Shortcut ${state.entity.type} ${state.entity.id}`,
-        text: introduction(state, promptText(phase.prompt), slug),
+        text: openingText(state, phase, slug),
       });
       const known = succeeded({ ...state, retire: [...state.retire, ...opened.duplicates.map(live)] }, 'backend');
       return started(known, phase, opened, Date.now());

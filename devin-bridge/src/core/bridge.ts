@@ -107,7 +107,7 @@ export const sendKey = (state: SessionState, sequence = state.applied) => `${con
 export const entityUrl = (slug: string, entity: SessionState['entity']) =>
   `https://app.shortcut.com/${encodeURIComponent(slug)}/${entity.type === 'epic' ? 'epic' : 'story'}/${entity.id}`;
 
-export function introduction(state: SessionState, message: string, slug: string): string {
+function introduction(state: SessionState, message: string, slug: string): string {
   return [
     message.trim() ? `A Shortcut user asked:\n\n${message}` : `Work on this Shortcut ${state.entity.type}.`,
     `Shortcut ${state.entity.type}: ${entityUrl(slug, state.entity)}`,
@@ -116,6 +116,18 @@ export function introduction(state: SessionState, message: string, slug: string)
 }
 
 const contextBlock = (context: string) => `Context from Shortcut:\n\n${context}`;
+
+/**
+ * What an open carries. A context that arrived after the open was first
+ * attempted already waits to follow it as a message, under an opening request
+ * or in `late`. The open leaves it to that message, so a retry repeats the
+ * text of the first attempt and the agent is told the context once whichever
+ * attempt arrived.
+ */
+export function openingText(state: SessionState, phase: StartPhase, slug: string): string {
+  const follows = state.late !== null || phase.extra.some((reply) => reply.opening);
+  return introduction(follows ? { ...state, context: '' } : state, promptText(phase.prompt), slug);
+}
 
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
@@ -163,7 +175,7 @@ const turnOf = (event: ShortcutSessionEventPayload) => event.activity?.turn ?? e
 const said = (event: ShortcutSessionEventPayload): Pending[] => (text(event) ? [{ turn: turnOf(event), text: text(event) }] : []);
 
 /** What the agent reads: the pending replies in turn order. */
-export const promptText = (pending: Pending[]) => [...pending].sort((a, b) => a.turn - b.turn).map((p) => p.text).join('\n\n');
+const promptText = (pending: Pending[]) => [...pending].sort((a, b) => a.turn - b.turn).map((p) => p.text).join('\n\n');
 
 /**
  * The pending replies as an opening text takes them, in an open or in an

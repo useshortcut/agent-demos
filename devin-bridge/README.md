@@ -64,7 +64,7 @@ The step runs the first due job, saves the state, and plans again until nothing 
 **A reply before `session.created`.** Shortcut can deliver a reply before the `session.created` that opened the session. The bridge starts from the reply and keeps the context when the created event arrives. The opening request reaches only the first Devin session:
 
 - If no create has gone out yet, the request goes into the create, whatever replies arrived meanwhile.
-- If the create has gone out, the bridge sends the request to that session as a message once the session is known, with the context under a `Context from Shortcut` heading. It does this only while the turn that opened the session is still open.
+- If the create has gone out, the bridge sends the request to that session as a message once the session is known, with the context under a `Context from Shortcut` heading. It does this only while the turn that opened the session is still open. A create that is retried after that repeats its first prompt, so the context reaches Devin in the message alone.
 - Once that turn has its outcome, or the bridge sent a newer reply, the bridge never sends the request. It sends the context alone, under the same heading, ahead of the next reply to that Devin session, so the session still learns about the story.
 - A later Devin session gets the context only in its create prompt, so a request the user already stopped never comes back.
 - A stop for the request's turn or a later one cancels the request, even when the bridge had nothing to terminate for it. The bridge then sends only the context, by the same rules.
