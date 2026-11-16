@@ -21,6 +21,7 @@ const { BackendError } = bridge.mod;
 function setup(t) {
   const h = bridge.setup(t);
   h.env.FAKE = h.vendor;
+  t.after(() => assert.deepEqual(h.vendor.misuse, []));
   return Object.assign(h, {
     fake: h.vendor,
     calls: (method) => h.requests.filter((r) => r.origin === 'fake' && r.method === method),
@@ -224,4 +225,46 @@ it('halts a kept conversation once when Shortcut closes the session, and ignores
   assert.deepEqual(chat.received, []);
   assert.equal(h.calls('open').length, 1);
   h.assertCleanLogs();
+});
+
+it('repeats a send under the same key and text when the step dies before saving it, and gives the next send another key', async (t) => {
+  const h = setup(t);
+  const chat = await h.started();
+  chat.status = { kind: 'finished' };
+  await h.tick();
+  await h.accept(h.shortcut.prompt(SID, 'Also fix Firefox'));
+  const died = dieAtSaveAfter(h, () => h.calls('send').length === 1);
+  await h.tick();
+  assert.ok(died(), 'the step died at its save after the send');
+  await h.tick();
+  assert.equal(chat.sends.length, 2, 'the send is repeated');
+  assert.deepEqual(chat.sends[1], chat.sends[0], 'under the same key, with the same text');
+  assert.deepEqual(chat.received, ['Also fix Firefox'], 'so a backend with idempotent sends delivers it once');
+  assert.equal(h.calls('prepare').length, 1, 'what the send depends on is not read again');
+
+  chat.status = { kind: 'finished' };
+  await h.tick();
+  await h.accept(h.shortcut.prompt(SID, 'And Edge'));
+  h.fake.failNext('send', new BackendError({ kind: 'transient' }), { landed: true });
+  await h.ticks(2);
+  assert.deepEqual(chat.sends.map((sent) => sent.text), ['Also fix Firefox', 'Also fix Firefox', 'And Edge', 'And Edge']);
+  assert.equal(chat.sends[3].key, chat.sends[2].key, 'a send whose answer was lost is retried under its key');
+  assert.notEqual(chat.sends[2].key, chat.sends[0].key, 'another send has another key');
+  assert.deepEqual(chat.received, ['Also fix Firefox', 'And Edge']);
+});
+
+it('sends a reply again under a new key after a stop interrupted the conversation it was sent to', async (t) => {
+  const h = setup(t);
+  h.fake.facts.keeps = true;
+  const chat = await h.started();
+  const stop = h.shortcut.stop(SID);
+  await h.accept(h.shortcut.prompt(SID, 'Try Chrome instead'));
+  h.fake.failNext('send', new BackendError({ kind: 'transient' }), { landed: true });
+  await h.tick();
+  assert.deepEqual(chat.received, ['Try Chrome instead']);
+  await h.accept(stop);
+  await h.ticks(2);
+  assert.deepEqual(h.requests.filter((r) => r.origin === 'fake').map((r) => r.method).slice(-3), ['halt', 'prepare', 'send']);
+  assert.notEqual(chat.sends[1].key, chat.sends[0].key, 'the send after the halt is a new send, though its text is the same');
+  assert.deepEqual(chat.received, ['Try Chrome instead', 'Try Chrome instead'], 'so the reply reaches the agent after the interrupt');
 });

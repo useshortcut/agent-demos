@@ -35,7 +35,8 @@ export type Opened<M> = { conversation: Conversation<M>; duplicates: Conversatio
 /** `gone`: the conversation cannot take a message any more, so the core opens a new one with the reply. */
 export type Prepared<M> = { kind: 'ready'; memo: M } | { kind: 'gone' };
 
-export type Outgoing = { text: string };
+/** `key` is fixed with `text` when the send is prepared: a retried send repeats both, and no other send of any session carries the key. A backend whose sends are idempotent passes it on. */
+export type Outgoing = { text: string; key: string };
 
 /** One thing the agent said this turn. `id` is stable across reads: it becomes part of an activity key. */
 export type Said = { id: string; text: string };

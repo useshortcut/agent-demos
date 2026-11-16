@@ -16,8 +16,8 @@ type Held = Target<Memo>;
 /** A reply the agent has not received yet. Its turn orders it among the others, whatever order they arrived in. The opening request of a late `session.created` is never superseded by a newer reply. */
 export type Pending = { turn: number; text: string; opening?: true };
 
-/** What one relay sends, fixed when it is prepared, so a retried send repeats the same text and places the answer the same way. */
-export type Send = { prompt: Pending[]; late: Pending | null; text: string; memo: Memo };
+/** What one relay sends, fixed when it is prepared, so a retried send repeats the same text under the same key and places the answer the same way. A send stored before sends had keys has none. */
+export type Send = { prompt: Pending[]; late: Pending | null; text: string; key?: string; memo: Memo };
 
 export type Phase =
   | { kind: 'start'; prompt: Pending[]; extra: Pending[]; attempted: boolean }
@@ -84,6 +84,16 @@ export const MAX_LOOKUPS = 3;
 export const backoffMs = (failures: number) => Math.min(MAX_DELAY_MS, FIRST_POLL_MS * 2 ** (failures - 1));
 
 export const conversationKey = (shortcutSessionId: string, generation: number) => `shortcut-session-${shortcutSessionId}-${generation}`;
+
+/**
+ * Names one prepared send by the inbox sequence applied when it was prepared.
+ * A relay waits to be prepared only after an event that arrived since the
+ * last send was prepared: a reply, a stop, or a late `session.created`. So no
+ * two sends of a session share a sequence, and the count needs no state of
+ * its own. Sequence 0, which no event has, names the one send a session can
+ * hold from before sends had keys.
+ */
+export const sendKey = (state: SessionState, sequence = state.applied) => `${conversationKey(state.shortcutSessionId, state.generation)}:${sequence}`;
 
 export const entityUrl = (slug: string, entity: SessionState['entity']) =>
   `https://app.shortcut.com/${encodeURIComponent(slug)}/${entity.type === 'epic' ? 'epic' : 'story'}/${entity.id}`;
@@ -371,11 +381,11 @@ export function started(state: SessionState, phase: StartPhase, { conversation: 
   return { ...state, sent: newest(state.sent, phase.prompt), phase: extra.length ? { kind: 'relay', on, prompt: extra, send: null } : polling(on, now) };
 }
 
-/** The memo and the text are fixed together, before the send, so a retried send places the agent's answer the same way. The text is a late context first, then the replies in turn order. */
+/** The memo, the text, and the key are fixed together, before the send, so a retried send is the same send and places the agent's answer the same way. The text is a late context first, then the replies in turn order. */
 export function prepared(state: SessionState, phase: RelayPhase, memo: Memo): SessionState {
   const { prompt } = phase;
   const { late } = state;
-  return { ...state, late: null, phase: { ...phase, prompt: [], send: { prompt, late, text: promptText(late ? [late, ...prompt] : prompt), memo } } };
+  return { ...state, late: null, phase: { ...phase, prompt: [], send: { prompt, late, text: promptText(late ? [late, ...prompt] : prompt), key: sendKey(state), memo } } };
 }
 
 /** The send went through now, so the pickup clock starts here, not at the prepare. A reply that arrived after the prepare is relayed next. */

@@ -22,6 +22,7 @@ import {
   relayed,
   restarted,
   retiring,
+  sendKey,
   started,
   stopped,
   succeeded,
@@ -279,7 +280,8 @@ async function perform(state: SessionState, phase: ActPhase, { backend, slug }: 
         if (ready.kind === 'gone') return restarted(succeeded(state, 'backend'), phase);
         return prepared(succeeded(state, 'backend'), phase, ready.memo);
       }
-      const sent = await backend.send({ ...phase.on, memo: phase.send.memo }, { text: phase.send.text });
+      const { text, key = sendKey(state, 0), memo } = phase.send;
+      const sent = await backend.send({ ...phase.on, memo }, { text, key });
       return relayed(succeeded(state, 'backend'), phase, phase.send, sent, Date.now());
     }
     case 'poll':
