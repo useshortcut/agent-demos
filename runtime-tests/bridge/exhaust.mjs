@@ -18,6 +18,11 @@
 //   'tick: send refused' the backend refuses it with a 401
 //   'tick: send 2 ...' the same for the step's second send, and so on for
 //                      open, prepare, observe, and halt
+//   'tick: stop 2 during prepare'
+//                      Shortcut delivers the stop of turn 2 while the step's
+//                      first prepare is out, and has the bridge's answer
+//                      before the backend's reaches the step. Any event, and
+//                      any call, as for a fault
 //   'rest'             every agent finishes and the alarms run until none is set
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -54,10 +59,15 @@ export const loadBridge = async (root) => {
 };
 
 const parse = (step) => {
+  const during = step.match(/^tick: (created|(?:reply|stop) \d+) during (\w+)(?: (\d+))?$/);
+  if (during) {
+    assert.ok(CALLS.includes(during[2]), `no step ${JSON.stringify(step)}`);
+    return { kind: 'tick', at: { call: during[2], nth: Number(during[3] ?? 1), arrives: during[1] } };
+  }
   const fault = step.match(/^tick: (\w+)(?: (\d+))? (\w+)$/);
   if (fault) {
     assert.ok(CALLS.includes(fault[1]) && MODES.includes(fault[3]), `no step ${JSON.stringify(step)}`);
-    return { kind: 'tick', fault: { call: fault[1], nth: Number(fault[2] ?? 1), mode: fault[3] } };
+    return { kind: 'tick', at: { call: fault[1], nth: Number(fault[2] ?? 1), mode: fault[3] } };
   }
   const event = step.match(/^(reply|stop) (\d+)$/);
   if (event) return { kind: event[1], turn: Number(event[2]) };
@@ -120,12 +130,18 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
     step.calls.push({ call, nth });
     if (step.calls.length > MOST_CALLS) throw Object.assign(new Error('the step never ends'), { name: 'EndlessStep' });
     led.calling();
-    const mode = armed?.call === call && armed.nth === nth ? armed.mode : null;
-    if (mode) armed = null;
-    const answer = await run(mode, ...args);
-    if (mode === 'lost') throw transient();
-    if (mode === 'dies') dieAtSave();
-    return answer;
+    const hit = armed?.call === call && armed.nth === nth ? armed : null;
+    if (hit) armed = null;
+    const mode = hit?.mode ?? null;
+    try {
+      const answer = await run(mode, ...args);
+      if (mode === 'lost') throw transient();
+      if (mode === 'dies') dieAtSave();
+      return answer;
+    } finally {
+      // The event arrives while the call is out, whatever the call comes to. The bridge can read it only once the call has answered.
+      if (hit?.arrives) await deliver(hit.arrives, parse(hit.arrives));
+    }
   };
   Object.assign(fake.backend, {
     open: faulted('open', async (mode, request) => {
@@ -199,18 +215,18 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
     led.arrived({ type: kind, turn });
   }
 
-  async function tick(fault = null) {
-    armed = fault;
+  async function tick(at = null) {
+    armed = at;
     step = { calls: [], counts: {} };
     const logged = h.logs.length;
     await h.tick(SID);
-    assert.equal(armed, null, `the step made no ${fault?.call} ${fault?.nth} to fail. A call that failed is tried again only after its wait, in a step of its own.`);
+    assert.equal(armed, null, `the step made no ${at?.call} ${at?.nth}. A call that failed is tried again only after its wait, in a step of its own.`);
     storage.put = put;
     for (const [level, message, detail] of h.logs.slice(logged)) {
       if (level !== 'error' || !/step failed/.test(String(message))) continue;
       if (detail?.error === 'StalledError') led.saw('loop', 'a step stalled');
       else if (detail?.error === 'EndlessStep') led.saw('loop', `one step made more than ${MOST_CALLS} backend calls`);
-      else if (fault?.mode !== 'dies') led.saw('loop', `a step threw ${detail?.error}`);
+      else if (at?.mode !== 'dies') led.saw('loop', `a step threw ${detail?.error}`);
     }
     for (const line of fake.misuse.splice(0)) led.saw('keys', `the backend saw that ${line}`);
     return step.calls;
@@ -249,7 +265,7 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
         case 'gone':
           return void Object.assign(newest(), { gone: true, status: { kind: 'failed', body: 'The Fake session ended.', keep: false } });
         case 'tick':
-          return tick(parsed.fault ?? null);
+          return tick(parsed.at ?? null);
         case 'rest':
           return void (await rest());
       }
@@ -351,10 +367,22 @@ const faultsOn = (calls, scope) => calls.flatMap(({ call, nth }) => MODES
   .map((mode) => `tick: ${call}${nth > 1 ? ` ${nth}` : ''} ${mode}`));
 
 /**
+ * The other ways one alarm can run, given the calls it made with nothing in
+ * its way, each with what it spends of a scope: a fault on one of the calls,
+ * or one of `events`, which Shortcut has not delivered yet, arriving during
+ * one. `scope.during` names the events that may arrive that way.
+ */
+const waysOf = (calls, scope, left, events) => [
+  ...(affords(left, 'faults') ? faultsOn(calls, scope).map((label) => [label, 'faults']) : []),
+  ...(affords(left, 'events') ? calls.flatMap(({ call, nth }) => events.filter((event) => scope.during?.includes(event)).map((event) => [`tick: ${event} during ${call}${nth > 1 ? ` ${nth}` : ''}`, 'events'])) : []),
+];
+
+/**
  * Runs every script the scope allows, shortest first, and stops a script at
  * the first rule it breaks. `scope` is `{ events, faults, finish, gone }`, how
  * many of each a script may hold, `total`, how many of them together, `from`,
- * the events it may deliver, `refuse`, the calls the backend may refuse when
+ * the events it may deliver, `during`, those of them that may also arrive
+ * while a backend call is out, `refuse`, the calls the backend may refuse when
  * not all, and `only`, the faults it may hold when not all. A
  * script that reaches a state an earlier one reached with as much of the
  * scope left ends there, since the earlier one's futures hold all of its own.
@@ -427,11 +455,13 @@ export async function explore(w, scope) {
 
       await w.restore(from);
       const own = await w.name();
-      for (const [label, budget] of await w.enabled(scope.from)) {
+      const enabled = await w.enabled(scope.from);
+      const events = enabled.filter(([, budget]) => budget === 'events').map(([label]) => label);
+      for (const [label, budget] of enabled) {
         if (!affords(node.left, budget)) continue;
         const calls = await run(label, budget);
-        if (label !== 'tick' || !affords(node.left, 'faults')) continue;
-        for (const fault of faultsOn(calls ?? [], scope)) await run(fault, 'faults');
+        if (label !== 'tick') continue;
+        for (const [way, spent] of waysOf(calls ?? [], scope, node.left, events)) await run(way, spent);
       }
     }
     frontier = next;
@@ -473,11 +503,13 @@ export async function runEach(w, scope) {
       return calls;
     };
     await w.restore(snapshot);
-    for (const [label, budget] of await w.enabled(scope.from)) {
+    const enabled = await w.enabled(scope.from);
+    const events = enabled.filter(([, budget]) => budget === 'events').map(([label]) => label);
+    for (const [label, budget] of enabled) {
       if (!affords(left, budget)) continue;
       const calls = await run(label, budget);
-      if (label !== 'tick' || !affords(left, 'faults')) continue;
-      for (const fault of faultsOn(calls ?? [], scope)) await run(fault, 'faults');
+      if (label !== 'tick') continue;
+      for (const [way, spent] of waysOf(calls ?? [], scope, left, events)) await run(way, spent);
     }
   };
   await from(await w.snapshot(), await w.name(), budgetsOf(scope), 0);

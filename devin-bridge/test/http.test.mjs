@@ -102,7 +102,7 @@ it('applies an event that arrives while a step is waiting on Devin', async (t) =
   assert.deepEqual(devin.received, []);
   release();
   await stepping;
-  assertAbout(await h.alarmIn(), 0, 'the step reschedules itself for the event');
+  assert.deepEqual(devin.received, ['More (private-prompt)'], 'the step applies the event before it ends');
   await h.tick();
   assert.deepEqual(devin.received, ['More (private-prompt)']);
 });

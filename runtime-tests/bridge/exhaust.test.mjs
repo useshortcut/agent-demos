@@ -18,8 +18,8 @@ const root = pathToFileURL(`${process.env.EXHAUST_ROOT ?? process.cwd()}/`);
 assert.ok(existsSync(new URL('src/core/port.ts', root)), 'exhaust.test.mjs tests the bridge in the current directory. Run `npm test` inside a bridge.');
 
 const SCOPES = {
-  default: { turns: [2, 3, 4], from: ['created', 'reply 2', 'reply 3', 'stop 1', 'stop 2', 'close'], events: 4, faults: 1, refuse: ['prepare', 'send'], finish: 1, gone: 1, total: 4 },
-  deep: { turns: [2, 3, 4], from: ['created', 'reply 2', 'reply 3', 'reply 4', 'stop 1', 'stop 2', 'stop 3', 'close'], events: 5, faults: 2, finish: 1, gone: 1, total: 6 },
+  default: { turns: [2, 3, 4], from: ['created', 'reply 2', 'reply 3', 'stop 1', 'stop 2', 'close'], during: ['stop 1', 'stop 2'], events: 4, faults: 1, refuse: ['prepare', 'send'], finish: 1, gone: 1, total: 4 },
+  deep: { turns: [2, 3, 4], from: ['created', 'reply 2', 'reply 3', 'reply 4', 'stop 1', 'stop 2', 'stop 3', 'close'], during: ['stop 1', 'stop 2', 'stop 3'], events: 5, faults: 2, finish: 1, gone: 1, total: 6 },
 };
 const scope = { ...SCOPES[process.env.EXHAUST ?? 'default'], ...JSON.parse(process.env.EXHAUST_SCOPE ?? '{}') };
 
@@ -71,6 +71,8 @@ const PINNED = [
   ['drops a late opening request that arrives after a turn failed on a send that had landed', { keeps: false, empty: true, dedupes: false }, ['reply 2', 'tick: send lost', 'gone', 'tick: halt dies', 'created', 'reply 3', 'tick', 'rest']],
   ['goes on reading the agent, and ends no turn, when the backend refuses the send that carries only the context', DEVIN, ['reply 2', 'stop 1', 'tick', 'created', 'tick: send refused', 'finish', 'tick', 'rest']],
   ['goes on reading the agent, and ends no turn, when the backend refuses the prepare of a send that would carry only the context', DEVIN, ['reply 2', 'stop 1', 'tick', 'created', 'tick: prepare refused', 'rest']],
+  ['sends nothing a stop cancelled when the stop arrives while the step that would send it waits on the backend', DEVIN, ['created', 'tick', 'reply 2', 'tick: stop 2 during prepare', 'rest']],
+  ['introduces nothing to a conversation it opened empty when the stop of the request arrives while that open is out', { keeps: false, empty: true, dedupes: false }, ['created', 'tick: stop 1 during open', 'rest']],
 ];
 
 const bridge = await loadBridge(root);

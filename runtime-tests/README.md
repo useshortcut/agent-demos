@@ -161,7 +161,10 @@ event can arrive in any order. Shortcut's own turn follows what it has
 delivered. A fault makes one backend call of a step fail before it reaches
 the backend (`fails`), fail after the backend took it (`lost`), answer and
 then have the step die before its save (`dies`), or be refused by the backend
-with a 401 (`refused`). `'rest'` lets every agent
+with a 401 (`refused`). An event can also arrive while one backend call of a
+step is out, as in `'tick: stop 2 during prepare'`. Shortcut then has the
+bridge's answer before the backend's answer reaches the step, so the bridge
+owes the event to the step's next call. `'rest'` lets every agent
 finish and runs the alarms out, and only then does the ledger ask what is
 still owed.
 
@@ -173,6 +176,7 @@ Devin is the kind that ends, opens with the request, and repeats. The default
 scope is every script that holds at most four of these together: the events
 `created`, `reply 2`, `reply 3`, `stop 1`, `stop 2`, and `close`, one backend
 fault, one agent that finishes, and one conversation that ends on its own.
+Either stop may arrive while a backend call is out.
 The backend refuses only a `prepare` or a `send`, the two calls of a relay.
 Alarms are free. After every alarm the search also lets the bridge come to
 rest, and wherever nothing is scheduled it delivers the last event a second
@@ -201,13 +205,17 @@ are defects found so far: by the search, by wider runs of it, and by review.
 
 `EXHAUST=deep` widens the scope: `reply 4` and `stop 3` join the events, the
 backend may refuse any call, a script holds up to five events and two faults,
-and up to six of everything together. That is about 207 million scripts
-through 13 million states. On an 18-core machine it took ten minutes and
-41 GB of memory, so it is run by hand before a change to the core is merged. `EXHAUST_SCOPE` takes a JSON
+and up to six of everything together. Before a stop could arrive during a
+call, that was about 207 million scripts through 13 million states. On an
+18-core machine it took ten minutes and 41 GB of memory, and it has not been
+measured since. It is run by hand before a change to the core is merged. `EXHAUST_SCOPE` takes a JSON
 object that replaces fields of the scope, for a run in between.
 
 The search cannot reach what its scripts cannot say. Shortcut never refuses a
-write, is never ahead of the bridge, and never fails. No backend call is held
+write, is never ahead of the bridge, and never fails. Only a stop arrives
+while a call is out. The ledger takes a send's text as fixed when the send
+goes out, so it cannot place a reply or a `session.created` that arrives
+between a prepare and its send. No backend call is held
 by a `Retry-After`. A refusal is a 401, apart from the 410 of a send to a
 conversation that ended on its own. No wait runs out: not the pickup timeout, the failure budget, or
 the heartbeat. The agent never asks a question. `session.created` always has a
@@ -220,8 +228,9 @@ rule that owns it: a core that drops every send it prepared, one that forgets
 the stop a cancelled request arrives after, one that takes the context as told
 before the send that carries it is confirmed, one that introduces a
 conversation twice, one that introduces an empty conversation with nothing to
-be asked, and one that ends the turn when the backend refuses a send that
-carried only the context. When you add a rule, add the core that breaks it.
+be asked, one that ends the turn when the backend refuses a send that
+carried only the context, and one that reads its inbox only when a step
+starts. When you add a rule, add the core that breaks it.
 
 ### Conformance
 

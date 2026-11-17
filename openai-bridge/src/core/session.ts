@@ -112,18 +112,8 @@ export class Session {
 
   private async step(): Promise<void> {
     const storage = this.ctx.storage;
-    const inbox = await storage.list<ShortcutSessionEventPayload>({ prefix: INBOX });
-    let state = await load(storage, this.ctx.id.name ?? String(this.ctx.id));
-    for (const [key, event] of inbox) {
-      const seq = Number(key.slice(INBOX.length));
-      if (state !== null && seq <= state.applied) continue;
-      const next = applyEvent(state, event);
-      state = next && { ...next, applied: seq };
-    }
     const save: Save = (current) => storage.put('state', current);
-    if (inbox.size && state !== null) await save(state);
-    const keys = [...inbox.keys()];
-    for (let from = 0; from < keys.length; from += DELETE_BATCH) await storage.delete(keys.slice(from, from + DELETE_BATCH));
+    const state = await this.absorb(await load(storage, this.ctx.id.name ?? String(this.ctx.id)), save);
     if (state === null) return storage.deleteAlarm();
 
     const ran = await this.run(state, save);
@@ -132,25 +122,57 @@ export class Session {
     else await storage.setAlarm(due);
   }
 
+  // Applies the events in the inbox to the state, saves it, and empties the
+  // inbox. An event recorded after this read sets `arrivedMidStep` again.
+  private absorb(state: SessionState, save: Save): Promise<SessionState>;
+  private absorb(state: SessionState | null, save: Save): Promise<SessionState | null>;
+  private async absorb(held: SessionState | null, save: Save): Promise<SessionState | null> {
+    const storage = this.ctx.storage;
+    this.arrivedMidStep = false;
+    const inbox = await storage.list<ShortcutSessionEventPayload>({ prefix: INBOX });
+    let state = held;
+    for (const [key, event] of inbox) {
+      const seq = Number(key.slice(INBOX.length));
+      if (state !== null && seq <= state.applied) continue;
+      const next = applyEvent(state, event);
+      state = next && { ...next, applied: seq };
+    }
+    if (inbox.size && state !== null) await save(state);
+    const keys = [...inbox.keys()];
+    for (let from = 0; from < keys.length; from += DELETE_BATCH) await storage.delete(keys.slice(from, from + DELETE_BATCH));
+    return state;
+  }
+
   // Each job's side effects are saved before the next job runs, so a step
   // that dies mid-publish does not redo a backend call. A stop's halt and
   // retirement run before the Shortcut credentials are loaded.
+  //
+  // Shortcut can deliver an event while a job waits on the backend, on
+  // Shortcut, or on the Workspace object for the credentials. The inbox is
+  // read again after each of those waits and the plan is made from what it
+  // held. So an event the bridge acknowledged before a backend call goes out
+  // is applied before that call, and a stop cancels what the step was about
+  // to send.
   private async run(state: SessionState, save: Save): Promise<SessionState> {
     const backend = backendOf(this.env);
     let io: Io | null | undefined;
-    const connect = async (current: SessionState) => (io ??= await this.connect(current, backend));
     let current = state;
     let now = Date.now();
     for (let due = dueNow(current, now); due !== null; due = dueNow(current, now)) {
-      const before = besidesDeadlines(current);
-      current = await execute(current, due, backend, connect);
-      // The clock the job returned on judges it, so a slow save cannot age a
-      // wait. Every wait is at least MIN_WAIT_MS, so a job that is due again
-      // at once after changing only a deadline is a bug. The alarm's catch
-      // turns it into a logged retry in a minute instead of a spin.
-      now = Date.now();
-      await save(current);
-      if (besidesDeadlines(current) === before && dueNow(current, now)?.effect === due.effect) throw new StalledError();
+      if (io === undefined && usesShortcut(due)) {
+        io = await this.connect(current, backend);
+      } else {
+        const before = besidesDeadlines(current);
+        current = await execute(current, due, backend, io ?? null);
+        // The clock the job returned on judges it, so a slow save cannot age a
+        // wait. Every wait is at least MIN_WAIT_MS, so a job that is due again
+        // at once after changing only a deadline is a bug. The alarm's catch
+        // turns it into a logged retry in a minute instead of a spin.
+        now = Date.now();
+        await save(current);
+        if (besidesDeadlines(current) === before && dueNow(current, now)?.effect === due.effect) throw new StalledError();
+      }
+      current = await this.absorb(current, save);
     }
     return current;
   }
@@ -182,12 +204,15 @@ async function load(storage: DurableObjectStorage, sessionId: string): Promise<S
   return null;
 }
 
-async function execute(state: SessionState, due: Due, backend: Backend<Memo>, connect: (state: SessionState) => Promise<Io | null>): Promise<SessionState> {
+/** Every job but a stop's halt and retirement, which need only the backend. */
+const usesShortcut = (due: Due) => due.effect !== 'halt' && due.effect !== 'retire';
+
+// `io` is null when the workspace has no credentials or is off the allowlist. A job that uses Shortcut then closes the session.
+async function execute(state: SessionState, due: Due, backend: Backend<Memo>, io: Io | null): Promise<SessionState> {
   switch (due.effect) {
     case 'halt': return guarded(state, () => haltStop(state, due.phase, backend));
     case 'retire': return retire(state, backend);
   }
-  const io = await connect(state);
   if (io === null) return close(state);
   switch (due.effect) {
     case 'publish': return publish(state, io);

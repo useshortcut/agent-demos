@@ -6,6 +6,10 @@
 // Shortcut accepted, and it names every rule the bridge broke. exhaust.mjs
 // feeds it.
 //
+// An event has arrived once the bridge has answered Shortcut's delivery of
+// it, which can be while a step runs. One that arrives while a backend call
+// is out counts from that call's answer on.
+//
 // A request is what the user asked for: the text of `session.created`, on
 // turn 1, or of a reply. The context is what Shortcut says about the story,
 // and it arrives with `session.created`. A text is what one open or one send
@@ -23,7 +27,7 @@
 // reply, has received no newer one, and no turn has an outcome. A bridge that
 // started from `session.created` is never on one.
 export const RULES = {
-  stopped: 'A stop cancels every request at or below its turn, also one that arrives later. Once the stop has arrived, no call carries a cancelled request.',
+  stopped: 'A stop cancels every request at or below its turn, also one that arrives later. Once the stop has arrived, no call carries a cancelled request. That holds inside a step too: a stop that arrives while one backend call is out cancels before the step\'s next call.',
   superseded: [
     'A request the agent has moved past is superseded, and no text fixed after that carries it.',
     'A reply is superseded when it arrives after the bridge learned that a newer reply landed.',

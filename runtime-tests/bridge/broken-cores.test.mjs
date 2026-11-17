@@ -1,10 +1,10 @@
 // The exhaustive run is worth trusting only if it fails a core that is wrong.
 // Each case copies the src of the bridge in the current directory and
-// replaces lines of core/bridge.ts in the copy. It then explores one scope on
-// one kind of backend, over the bridge as it is and over the copy. The bridge
-// as it is has to break no rule, and the copy has to break the rule the case
-// names. A line that is not in bridge.ts exactly once fails the case, so
-// change the case with the line.
+// replaces lines of one file of its core in the copy: core/bridge.ts, or the
+// file the case names. It then explores one scope on one kind of backend, over
+// the bridge as it is and over the copy. The bridge as it is has to break no
+// rule, and the copy has to break the rule the case names. A line that is not
+// in the file exactly once fails the case, so change the case with the line.
 import assert from 'node:assert/strict';
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -63,17 +63,25 @@ const BROKEN = [
     scope: { from: ['created', 'reply 2', 'stop 1'], events: 3, faults: 1, only: ['send refused'], finish: 0, gone: 0, total: 4 },
     breaks: 'alone',
   },
+  {
+    core: 'reads its inbox only when a step starts, so a stop that arrives during the step cancels nothing the step sends',
+    file: 'src/core/session.ts',
+    replace: [['      current = await this.absorb(current, save);\n', '']],
+    facts: DEVIN,
+    scope: { from: ['created', 'reply 2', 'stop 2'], during: ['stop 2'], events: 3, faults: 0, finish: 0, gone: 0, total: 3 },
+    breaks: 'stopped',
+  },
 ];
 
-function brokenCopy(replace) {
+function brokenCopy(replace, name = 'src/core/bridge.ts') {
   const root = mkdtempSync(join(tmpdir(), 'bridge-broken-core-'));
   cpSync(join(bridge, 'src'), join(root, 'src'), { recursive: true });
   cpSync(join(bridge, 'package.json'), join(root, 'package.json'));
   symlinkSync(join(bridge, 'node_modules'), join(root, 'node_modules'), 'dir');
-  const file = join(root, 'src/core/bridge.ts');
+  const file = join(root, name);
   let source = readFileSync(file, 'utf8');
   for (const [from, to] of replace) {
-    assert.equal(source.split(from).length - 1, 1, `src/core/bridge.ts holds this line once, to break:\n${from}`);
+    assert.equal(source.split(from).length - 1, 1, `${name} holds this line once, to break:\n${from}`);
     source = source.replace(from, () => to);
   }
   writeFileSync(file, source);
@@ -85,9 +93,9 @@ const explored = (directory, facts, scope) => new Promise((resolve, reject) => {
   worker.once('message', resolve).once('error', reject);
 });
 
-for (const { core, replace, facts, scope, breaks } of BROKEN) {
+for (const { core, file, replace, facts, scope, breaks } of BROKEN) {
   it(`fails a core that ${core}`, async () => {
-    const root = brokenCopy(replace);
+    const root = brokenCopy(replace, file);
     try {
       const [whole, { broken }] = await Promise.all([explored(bridge, facts, scope), explored(root, facts, scope)]);
       assert.deepEqual(whole.broken, [], 'the core as it is keeps every rule over this scope');
