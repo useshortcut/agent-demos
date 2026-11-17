@@ -358,8 +358,8 @@ app.get('/oauth/callback', async (c) => {
   let tokens: ShortcutOAuthTokens;
   try {
     tokens = await oauthClient(c.env).exchangeAuthorizationCode(code);
-  } catch (error) {
-    logFailure(error);
+  } catch (exchangeError) {
+    logFailure(exchangeError);
     return c.text('Token exchange failed. Check worker logs.', 500);
   }
 
