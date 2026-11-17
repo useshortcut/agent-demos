@@ -443,6 +443,8 @@ function couldBreachRule(action: ShortcutObserverAction): boolean {
   );
 }
 
+const isMove = (change: { attribute: string }) => change.attribute === 'workflow_state';
+
 /**
  * The state the story was in before it landed in `currentStateId`.
  *
@@ -461,8 +463,6 @@ async function previousWorkflowStateId(
   storyId: number,
   currentStateId: number,
 ): Promise<number | null> {
-  const isMove = (change: { attribute: string }) => change.attribute === 'workflow_state';
-
   let latest: { adds: ShortcutChangeValue[]; removes: ShortcutChangeValue[] } | undefined = action.changes?.find(isMove);
   if (!latest) {
     const history = await attempt(s, (ws) => ws.getStoryHistory(storyId, { fields: 'workflow_state', limit: 1 }));
