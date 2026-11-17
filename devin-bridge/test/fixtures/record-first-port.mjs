@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const FIRST_PORT = 'e94a92c3e986a09e8c0578e96fff4fd5e10e3658';
+const FIRST_PORT = '9abbcd111ca1baca6353f45df0a85e131f2f4667';
 const bridge = fileURLToPath(new URL('../..', import.meta.url));
 const old = mkdtempSync(join(tmpdir(), 'devin-bridge-first-port-'));
 try {
