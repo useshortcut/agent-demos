@@ -40,7 +40,7 @@ export const RULES = {
   keys: 'A send is prepared before it first goes out. A retried open or send repeats its text, and no two different sends share a key. An open that delivers no text may change its text between attempts, since nothing reads it.',
   single: 'When the bridge comes to rest in a session that Shortcut has not closed, at most one conversation is working.',
   links: 'A conversation without a URL gets no card link, and no activity carries link text for it.',
-  alone: 'A call that only delivers the context ends no turn when the backend refuses it. That is the send of a text that carries no request, or the prepare for one, while no request is still owed, in a conversation that holds a text. The bridge posts no error before its next backend call.',
+  alone: 'A call that only delivers the context ends no turn when the backend refuses it. That is the send of a text that carries no request, or the prepare for one, while no request is still owed, in a conversation the bridge knows to hold a text: it learned that a text landed there, or a prepare found one. The bridge posts no error before its next backend call.',
   redelivered: 'An event that Shortcut delivers a second time changes nothing the bridge holds.',
   loop: 'Every step ends, and without an error of its own. Once no event is waiting and no agent is working the alarms run out.',
 };
@@ -124,6 +124,7 @@ export function ledger(tokens, { opensEmpty }) {
     for (const turn of text.holds) if (s.requests[turn].last === id) Object.assign(s.requests[turn], { learned: true, last: null });
     s.learnedNewest = Math.max(s.learnedNewest, ...text.holds);
     const told = s.told[text.conversation];
+    told.known = true;
     if (told.last === id) Object.assign(told, { learned: true, last: null });
     for (const request of Object.values(s.requests)) if (request.waits === id) Object.assign(request, { waits: null, superseded: !request.landed });
     // Nothing more can happen to a text the bridge knows has landed.
@@ -170,13 +171,13 @@ export function ledger(tokens, { opensEmpty }) {
     calling() {
       s.forgiven = false;
     },
-    /** The backend refused an open or a send under `key`, or with a null `key` a prepare of `conversation`. One that served a request gives the turn its outcome, and so does a prepare of a conversation that holds no text: no agent is at work in it. */
+    /** The backend refused an open or a send under `key`, or with a null `key` a prepare of `conversation`. One that served a request gives the turn its outcome. So does a prepare of a conversation the bridge does not know to hold a text: for all it knows no agent is at work there. */
     refused(key, conversation) {
       const text = s.texts[key];
       // An earlier attempt of the text may have landed with its answer lost. Only a text that never landed stops counting.
       if (text && !text.refused && !text.landed && (text.send || !opensEmpty)) s.mayHaveLanded--;
       if (text) text.refused = true;
-      const served = text ? text.holds.length > 0 : !s.told[conversation] || Object.keys(s.requests).map(Number).some(stillOwed);
+      const served = text ? text.holds.length > 0 : !s.told[conversation]?.known || Object.keys(s.requests).map(Number).some(stillOwed);
       if (served) s.outcome = true;
       else s.forgiven = true;
     },
@@ -195,6 +196,7 @@ export function ledger(tokens, { opensEmpty }) {
     /** `ready`: the conversation takes a message. `empty`: it holds none. */
     prepared(conversation, { ready, empty }) {
       const told = s.told[conversation];
+      if (!empty && told) told.known = true;
       if (!empty && told && told.last === told.first) told.learned = true;
       s.preparing = ready ? { conversation, knew: s.created, alone: onOpening(), introduces: empty } : null;
     },

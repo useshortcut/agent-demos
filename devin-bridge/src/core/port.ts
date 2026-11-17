@@ -42,7 +42,9 @@ export type Opened<M> = {
  * introduces it. The backend is the only record of this. The core keeps none
  * of its own, because a send whose answer was lost would leave it wrong.
  * `gone`: the conversation cannot take a message any more. The core opens a
- * new one with the reply, unless the one that is gone was still empty.
+ * new one with the reply, unless the one that is gone was still empty. With
+ * no reply to carry over, the core calls `observe` next, and the status that
+ * call reports ends the turn.
  */
 export type Prepared<M> = { empty: boolean } & ({ kind: 'ready'; memo: M } | { kind: 'gone' });
 

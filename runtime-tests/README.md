@@ -182,17 +182,21 @@ one fault to a script, a backend that deduplicates sends differs from its
 twin only when the fault is a send that landed, so it runs only those
 faults.
 
+A bridge that never comes to rest would keep the search from ending. So a
+step that makes more than 30 backend calls is ended, and a script that still
+finds a new state after 40 steps is not followed further. Both break `loop`.
+
 When a script breaks a rule the test fails with the rule, what happened, the
 backend, and the shortest script that does it, as a line to paste into
 `PINNED` in the same file. A pinned script runs on its own in every
 `npm test`, and `replay(w, steps)` runs one from any test. The pinned scripts
-are the defects the search has found so far, the longer ones by wider runs.
+are defects found so far: by the search, by wider runs of it, and by review.
 
 `EXHAUST=deep` widens the scope: `reply 4` and `stop 3` join the events, the
 backend may refuse any call, a script holds up to five events and two faults,
-and up to six of everything together. That is about 167 million scripts through 10 million states. On an
-18-core machine it took seven minutes and 25 GB of memory, so it is run by
-hand before a change to the core is merged. `EXHAUST_SCOPE` takes a JSON
+and up to six of everything together. That is about 207 million scripts
+through 13 million states. On an 18-core machine it took ten minutes and
+41 GB of memory, so it is run by hand before a change to the core is merged. `EXHAUST_SCOPE` takes a JSON
 object that replaces fields of the scope, for a run in between.
 
 The search cannot reach what its scripts cannot say. Shortcut never refuses a
