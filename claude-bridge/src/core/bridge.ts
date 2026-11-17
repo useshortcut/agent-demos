@@ -169,7 +169,10 @@ export function restored(stored: StoredState | FirstPortState): SessionState {
       const owed = late !== null || carried(phase.prompt) || send?.briefs;
       return state(owed || !block ? 'owed' : 'given', { ...phase, prompt: requests(phase.prompt), send, working: false });
     }
-    default:
+    case 'poll':
+    case 'stop':
+    case 'idle':
+    case 'closed':
       return state(late !== null || !block ? 'owed' : 'given', phase);
   }
 }
@@ -345,7 +348,9 @@ function unsent(phase: Phase): Pending[] {
     case 'start': return phase.attempted ? phase.extra : [...phase.prompt, ...phase.extra];
     case 'relay': return [...(phase.send?.prompt ?? []), ...phase.prompt];
     case 'stop': return phase.then;
-    default: return [];
+    case 'poll':
+    case 'idle':
+    case 'closed': return [];
   }
 }
 
@@ -360,7 +365,8 @@ function earlier(state: SessionState, reply: Pending): SessionState {
     case 'stop': return { ...state, phase: { ...phase, then: [...phase.then, reply] } };
     // Shortcut has not taken the failed turn's error, so the reply joins what the turn dropped. After that it is dropped on arrival.
     case 'idle': return phase.dropped ? { ...state, phase: { ...phase, dropped: [...phase.dropped, reply] } } : state;
-    default: return state;
+    case 'poll':
+    case 'closed': return state;
   }
 }
 
@@ -405,7 +411,9 @@ function without(phase: Phase, turn: number): Phase {
       return send?.prompt.some((reply) => reply.turn <= turn) ? { ...phase, prompt: after([...send.prompt, ...phase.prompt]), send: null } : { ...phase, prompt: after(phase.prompt) };
     }
     case 'stop': return { ...phase, then: after(phase.then) };
-    default: return phase;
+    case 'poll':
+    case 'idle':
+    case 'closed': return phase;
   }
 }
 
@@ -439,7 +447,9 @@ function merge(current: SessionState, event: ShortcutSessionEventPayload): Sessi
     case 'start': return { ...state, phase: { ...phase, extra: [...phase.extra, ...request] } };
     case 'relay': return { ...state, phase: { ...phase, prompt: [...phase.prompt, ...request] } };
     case 'poll': return opening(current) && (request.length || owes(state)) ? { ...state, phase: relaying(phase.on, request, true) } : state;
-    default: return state;
+    case 'stop':
+    case 'idle':
+    case 'closed': return state;
   }
 }
 

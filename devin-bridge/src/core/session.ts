@@ -217,6 +217,10 @@ async function execute(state: SessionState, due: Due, backend: Backend<Memo>, io
   switch (due.effect) {
     case 'halt': return guarded(state, () => haltStop(state, due.phase, backend));
     case 'retire': return retire(state, backend);
+    case 'publish':
+    case 'link':
+    case 'check':
+    case 'act': break;
   }
   if (io === null) return close(state);
   switch (due.effect) {
@@ -365,7 +369,8 @@ async function link(state: SessionState, url: string, { shortcut }: Io): Promise
       const count = state.failures.link + 1;
       return count < MAX_FAILURES ? wait(strike(state, 'link', count), 'link', backoffMs(count)) : linked(state, url);
     }
-    default: return linked(state, url);
+    case 'conflict':
+    case 'rejected': return linked(state, url);
   }
 }
 

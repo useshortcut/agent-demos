@@ -86,7 +86,9 @@ function outcome(turn: Turn): Status {
     case 'failed':
       if (turn.code === 'active_turn_not_steerable') return failed('OpenAI could not take your reply while it was working. Reply to try again.', true);
       return failed(`The OpenAI turn failed${turn.code ? ` (${turn.code})` : ''}. Reply to try again.`, true);
-    default: return { kind: 'working' };
+    case 'queued':
+    case 'in_progress':
+    case 'waiting': return { kind: 'working' };
   }
 }
 
