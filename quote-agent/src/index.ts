@@ -136,6 +136,7 @@ class ShortcutRequestRejected extends Error {
 async function getCredentials(kv: KVNamespace, workspaceId: string): Promise<WorkspaceCredentials | null> {
   const raw = await kv.get(`creds:${workspaceId}`);
   if (!raw) return null;
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the demo's own stored record.
   return JSON.parse(raw) as WorkspaceCredentials;
 }
 
@@ -404,6 +405,7 @@ app.post('/webhook', async (c) => {
       return c.json({ error: 'Invalid signature' }, 401);
     }
     if (error.status === 413) return c.json({ error: 'Payload too large' }, 413);
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the library types its 4xx statuses as number.
     return c.json({ error: 'Invalid payload' }, error.status as ContentfulStatusCode);
   }
 

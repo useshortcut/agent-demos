@@ -256,7 +256,7 @@ function logFailure(error: unknown): FailureKind {
     console.error('Shortcut request rejected', { method: 'POST', path: TOKEN_PATH, status: error.status, ...errorCode(error.error) });
     return 'refresh';
   }
-  if ((error as { name?: unknown } | null)?.name === 'TimeoutError' || error instanceof TypeError) {
+  if ((typeof error === 'object' && error !== null && 'name' in error && error.name === 'TimeoutError') || error instanceof TypeError) {
     console.error('Shortcut request failed', { message: 'Network request failed or timed out' });
     return 'network';
   }
@@ -297,6 +297,7 @@ function reportedScopes(tokens: Pick<ShortcutOAuthTokens, 'scope'>, fallback?: s
 
 async function getCredentials(kv: KVNamespace, workspaceId: string): Promise<WorkspaceCredentials | null> {
   const raw = await kv.get(`creds:${workspaceId}`);
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the demo's own stored record.
   return raw ? (JSON.parse(raw) as WorkspaceCredentials) : null;
 }
 
@@ -363,6 +364,7 @@ async function attempt<T>(s: Session, call: (ws: ShortcutWorkspaceApi) => Promis
 /** A single-entity read or write, unwrapped from `{ entity }`, or null when it was rejected. */
 async function apiEntity<T>(s: Session, call: (ws: ShortcutWorkspaceApi) => Promise<{ entity: unknown }>): Promise<T | null> {
   const wrapper = await attempt(s, call);
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- T names the fields the call requested, which the library types as optional.
   return wrapper && typeof wrapper === 'object' && wrapper.entity ? (wrapper.entity as T) : null;
 }
 
@@ -375,6 +377,7 @@ async function listAll<T>(s: Session, list: (ws: ShortcutWorkspaceApi) => Promis
   const out: T[] = [];
   const client = clientFor(s);
   try {
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- T names the fields the call requested, which the library types as optional.
     for await (const item of client.paginate(list(client.workspace(s.creds.slug)))) out.push(item as T);
   } catch (error) {
     const kind = logFailure(error);
@@ -400,6 +403,7 @@ async function startedStateIds(s: Session): Promise<Set<number>> {
   // Old versions could cache a partial list after a later page failed.
   const cacheKey = `started-states:v2:${s.workspaceId}`;
   const cached = await s.kv.get(cacheKey);
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the demo's own cached ids.
   if (cached) return new Set(JSON.parse(cached) as number[]);
 
   const states = await listAll<WorkflowState>(s, (ws) => ws.listWorkflowStates({ fields: WORKFLOW_STATE_FIELDS, limit: 100 }));
