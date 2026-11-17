@@ -38,6 +38,10 @@ Deployment also requires a KV namespace (`npx wrangler kv namespace create TOKEN
 Quote Agent additionally declares a SQLite Durable Object for serialized interaction delivery receipts; deploy its updated Wrangler configuration along with its code. Existing OAuth credentials remain in `TOKENS`.
 Estimate Guardian also declares a SQLite Durable Object per workspace/Story for warning/revert progress and bounded recovery alarms. Deploy its `ESTIMATE_GUARDIAN_STORIES` binding and `v1` migration with the code; OAuth credentials stay in `TOKENS`.
 
+## Lint
+
+`.oxlintrc.json` at the root holds the rules for every demo's `src/`, and `lint/` holds the linter and three rules of this repo's own: `switch-on-discriminant`, `paginate-v4-lists`, and `log-only-summaries`. Run `npm ci && npm run lint` in `lint/`, after `npm ci` in the demos. See `lint/README.md`. When a mistake could have been caught by a rule, add the rule with a fixture of the mistake instead of adding a sentence here.
+
 ## Architecture
 
 Estimate Guardian reads `estimate,workflow_state`, treats zero as estimated, and reacts to workflow-state or estimate updates (not Team-only changes). Team Cop independently handles Team membership reminders without changing workflow state.

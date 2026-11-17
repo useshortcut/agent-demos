@@ -1,0 +1,14 @@
+{
+  "name": "agent-demos-lint",
+  "private": true,
+  "type": "module",
+  "description": "The lint rules every demo in this repo is held to.",
+  "scripts": {
+    "lint": "cd .. && oxlint --type-aware --deny-warnings --ignore-pattern 'lint/fixtures/**' */src lint",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "oxlint": "1.93.0",
+    "oxlint-tsgolint": "7.0.2007"
+  }
+}

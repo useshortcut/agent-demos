@@ -1,0 +1,84 @@
+{
+  "$schema": "./lint/node_modules/oxlint/configuration_schema.json",
+  "plugins": [
+    "typescript",
+    "unicorn",
+    "oxc",
+    "import",
+    "promise"
+  ],
+  "jsPlugins": [
+    "./lint/plugin.mjs"
+  ],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error"
+  },
+  "rules": {
+    "agent-demos/switch-on-discriminant": "error",
+    "agent-demos/paginate-v4-lists": "error",
+    "agent-demos/log-only-summaries": "error",
+    "no-restricted-imports": [
+      "error",
+      {
+        "patterns": [
+          {
+            "group": [
+              "@anthropic-ai/sdk",
+              "@anthropic-ai/sdk/*",
+              "openai",
+              "openai/*"
+            ],
+            "message": "Only a bridge's src/backend.ts, or the wrapper it owns, talks to the vendor. The shared core reaches the vendor through the port in src/core/port.ts."
+          }
+        ]
+      }
+    ],
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/switch-exhaustiveness-check": "error",
+    "typescript/no-explicit-any": "error",
+    "typescript/no-non-null-assertion": "error",
+    "typescript/no-unsafe-argument": "error",
+    "typescript/no-unsafe-assignment": "error",
+    "typescript/no-unsafe-call": "error",
+    "typescript/no-unsafe-member-access": "error",
+    "typescript/no-unsafe-return": "error",
+    "typescript/no-unsafe-type-assertion": "error",
+    "typescript/consistent-type-imports": "error",
+    "consistent-return": "off"
+  },
+  "overrides": [
+    {
+      "files": [
+        "*/src/backend.ts",
+        "*/src/agents.ts",
+        "*/setup.mjs",
+        "*/test/**"
+      ],
+      "rules": {
+        "no-restricted-imports": "off"
+      }
+    },
+    {
+      "files": [
+        "**/*.mjs",
+        "**/*.js"
+      ],
+      "rules": {
+        "agent-demos/switch-on-discriminant": "off",
+        "typescript/no-unsafe-argument": "off",
+        "typescript/no-unsafe-assignment": "off",
+        "typescript/no-unsafe-call": "off",
+        "typescript/no-unsafe-member-access": "off",
+        "typescript/no-unsafe-return": "off"
+      }
+    }
+  ],
+  "ignorePatterns": [
+    "**/node_modules",
+    "**/.wrangler",
+    "claude-bridge/src/core",
+    "openai-bridge/src/core"
+  ]
+}
