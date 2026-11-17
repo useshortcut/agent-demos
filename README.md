@@ -1,4 +1,4 @@
-# Shortcut Agent Demos
+# Shortcut Open Agent Demos
 
 [![CI](https://github.com/useshortcut/agent-demos/actions/workflows/ci.yml/badge.svg)](https://github.com/useshortcut/agent-demos/actions/workflows/ci.yml)
 
