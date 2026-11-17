@@ -28,9 +28,10 @@ function unmarked(text: string): string {
   return inner === text ? text : unmarked(inner);
 }
 
+const devins = (list: DevinMessage[]) => list.filter((m) => m.source === 'devin').map((m) => ({ id: m.id, text: unmarked(m.body) }));
+
 // What Devin said after the relayed reply, so the previous turn's answer never becomes this turn's.
 function spoken(messages: DevinMessage[], memo: Memo): Said[] {
-  const devins = (list: DevinMessage[]) => list.filter((m) => m.source === 'devin').map((m) => ({ id: m.id, text: unmarked(m.body) }));
   if (memo === null) return devins(messages);
   const { last } = memo.baseline;
   const at = last === null ? -1 : messages.findIndex((m) => m.id === last);

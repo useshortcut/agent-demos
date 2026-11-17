@@ -132,6 +132,26 @@ function turnOf(events: Event[], memo: Memo): Observed<Memo> {
   return { memo: { ...memo, asked: question.id }, said: [...said, { id: question.id, text: question.question }], status: { kind: 'asked', on: 'user' } };
 }
 
+// One request. The SDK's own timeout ends when the response headers arrive, so this deadline is the one that covers the body.
+async function claudeRequest<T>(request: string, claudeSessionId: string | null, run: (bound: { signal: AbortSignal }) => Promise<T>): Promise<T> {
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await run({ signal: deadline.signal });
+  } catch (error) {
+    if (error instanceof APIError && typeof error.status === 'number') {
+      console.error('Claude request rejected', { request, claudeSessionId, status: error.status });
+      throw new BackendError(failureOf(error.status, error.headers?.get('Retry-After') ?? null, Date.now()));
+    }
+    // A body cut off at the deadline fails with the runtime's error, not one of the SDK's.
+    if (!(error instanceof AnthropicError) && !deadline.signal.aborted) throw error;
+    console.error('Claude request failed', { request, claudeSessionId, timeoutMs: REQUEST_TIMEOUT_MS });
+    throw new BackendError({ kind: 'transient' });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function connect(env: BackendEnv): Backend<Memo> {
   const client = new Anthropic({
     apiKey: env.ANTHROPIC_API_KEY,
@@ -142,35 +162,15 @@ export function connect(env: BackendEnv): Backend<Memo> {
   const { sessions } = client.beta;
   const workspace = env.CLAUDE_CONSOLE_WORKSPACE_ID?.trim();
 
-  // One request. The SDK's own timeout ends when the response headers arrive, so this deadline is the one that covers the body.
-  async function call<T>(request: string, claudeSessionId: string | null, run: (bound: { signal: AbortSignal }) => Promise<T>): Promise<T> {
-    const deadline = new AbortController();
-    const timer = setTimeout(() => deadline.abort(), REQUEST_TIMEOUT_MS);
-    try {
-      return await run({ signal: deadline.signal });
-    } catch (error) {
-      if (error instanceof APIError && typeof error.status === 'number') {
-        console.error('Claude request rejected', { request, claudeSessionId, status: error.status });
-        throw new BackendError(failureOf(error.status, error.headers?.get('Retry-After') ?? null, Date.now()));
-      }
-      // A body cut off at the deadline fails with the runtime's error, not one of the SDK's.
-      if (!(error instanceof AnthropicError) && !deadline.signal.aborted) throw error;
-      console.error('Claude request failed', { request, claudeSessionId, timeoutMs: REQUEST_TIMEOUT_MS });
-      throw new BackendError({ kind: 'transient' });
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
   const newest = async (id: string, types: BetaManagedAgentsSessionEventType[], limit: number) =>
-    (await call('events.list', id, (bound) => sessions.events.list(id, { types, order: 'desc', limit }, bound))).data.map(parseEvent);
+    (await claudeRequest('events.list', id, (bound) => sessions.events.list(id, { types, order: 'desc', limit }, bound))).data.map(parseEvent);
 
   async function turnEvents(id: string, since: string | null): Promise<{ events: Event[]; complete: boolean }> {
     const events: Event[] = [];
     let cursor: string | null = null;
     for (let pages = 1; ; pages++) {
       const query: EventListParams = { types: TURN_EVENTS, order: 'asc', limit: EVENT_PAGE_SIZE, ...(since ? { 'created_at[gte]': since } : {}), ...(cursor ? { page: cursor } : {}) };
-      const page = await call('events.list', id, (bound) => sessions.events.list(id, query, bound));
+      const page = await claudeRequest('events.list', id, (bound) => sessions.events.list(id, query, bound));
       events.push(...page.data.map(parseEvent));
       if (!page.next_page) return { events, complete: true };
       if (pages === MAX_EVENT_PAGES) return { events, complete: false };
@@ -179,7 +179,7 @@ export function connect(env: BackendEnv): Backend<Memo> {
   }
 
   async function post(id: string, event: BetaManagedAgentsEventParams): Promise<string> {
-    const sent = await call('events.send', id, (bound) => sessions.events.send(id, { events: [event] }, bound));
+    const sent = await claudeRequest('events.send', id, (bound) => sessions.events.send(id, { events: [event] }, bound));
     const created = sent.data?.[0]?.id;
     if (typeof created !== 'string' || created === '') throw new BackendError({ kind: 'transient' });
     return created;
@@ -198,7 +198,7 @@ export function connect(env: BackendEnv): Backend<Memo> {
     // one lost to a crash costs nothing and needs no lookup. The create has no
     // idempotency key and the session list no metadata filter.
     async open({ key, title }) {
-      const session = await call('sessions.create', null, (bound) =>
+      const session = await claudeRequest('sessions.create', null, (bound) =>
         sessions.create({ agent: env.CLAUDE_AGENT_ID, environment_id: env.CLAUDE_ENVIRONMENT_ID, title, metadata: { shortcut_session: key } }, bound));
       if (typeof session?.id !== 'string') throw new BackendError({ kind: 'transient' });
       const url = workspace ? `https://platform.claude.com/workspaces/${encodeURIComponent(workspace)}/sessions/${encodeURIComponent(session.id)}` : null;
@@ -208,7 +208,7 @@ export function connect(env: BackendEnv): Backend<Memo> {
 
     // Whether the session holds a message is looked up only while no send was confirmed.
     async prepare({ id, memo }) {
-      const session = await call('sessions.retrieve', id, (bound) => sessions.retrieve(id, {}, bound));
+      const session = await claudeRequest('sessions.retrieve', id, (bound) => sessions.retrieve(id, {}, bound));
       const empty = memo.anchor === null && (await newest(id, ['user.message'], 1)).length === 0;
       return session.status === 'terminated' ? { kind: 'gone', empty } : { kind: 'ready', empty, memo };
     },
@@ -251,7 +251,7 @@ export function connect(env: BackendEnv): Backend<Memo> {
       const { id, memo } = target.conversation;
       try {
         const queued = !taken(await newest(id, ['user.message', 'user.custom_tool_result'], LOOKUP), memo.anchor);
-        await call('events.send', id, (bound) => sessions.events.send(id, { events: [{ type: 'user.interrupt' }] }, bound));
+        await claudeRequest('events.send', id, (bound) => sessions.events.send(id, { events: [{ type: 'user.interrupt' }] }, bound));
         if (queued) throw new BackendError({ kind: 'transient' });
         return { kind: 'kept' };
       } catch (error) {

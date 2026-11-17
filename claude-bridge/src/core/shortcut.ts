@@ -100,6 +100,15 @@ export function classifyShortcutFailure(error: unknown): Failure {
   return { kind: 'transient' };
 }
 
+async function attempt<T>(run: () => Promise<T>): Promise<Outcome<T>> {
+  try {
+    return { kind: 'ok', value: await run() };
+  } catch (error) {
+    logFailure(error);
+    return classifyShortcutFailure(error);
+  }
+}
+
 export function shortcutSessions(env: Env, workspaceId: string, credentials: Credentials) {
   let token = credentials.token;
   const client = new ShortcutV4Client({
@@ -121,14 +130,6 @@ export function shortcutSessions(env: Env, workspaceId: string, credentials: Cre
   const base = `/api/v4/${encodeURIComponent(credentials.slug)}/agent-sessions`;
   const send = <T>(method: string, path: string, body?: unknown) =>
     client.request<T>({ path: `${base}${path}`, method, body, type: 'application/json' as FullRequestParams['type'], secure: true, format: 'json' });
-  const attempt = async <T>(run: () => Promise<T>): Promise<Outcome<T>> => {
-    try {
-      return { kind: 'ok', value: await run() };
-    } catch (error) {
-      logFailure(error);
-      return classifyShortcutFailure(error);
-    }
-  };
 
   return {
     ensureSubscribed: () => attempt(() => send('PUT', '/subscription', { enabled: true })),
