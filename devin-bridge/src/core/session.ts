@@ -261,10 +261,11 @@ async function publish(state: SessionState, { shortcut }: Io): Promise<SessionSt
       const replacement = rejected(activity, outcome.status);
       return succeeded({ ...state, outbox: replacement ? [replacement, ...rest] : rest }, 'shortcut');
     }
-    // A 409 on the ack of a reply not sent yet may be a turn Shortcut ended on
-    // its own, which drops the reply, so the session is read before the reply is kept.
+    // A 409 on the ack of a request not sent yet, in an open or in a relay,
+    // may be a turn Shortcut ended on its own, which drops the request. So the
+    // session is read before the request is kept.
     case 'conflict':
-      return state.phase.kind === 'relay' ? readTurn(state, shortcut, (current) => endTurn(current, 'conflict'), (current) => endTurn(current, 'ended')) : endTurn(state, 'conflict');
+      return state.phase.kind === 'start' || state.phase.kind === 'relay' ? readTurn(state, shortcut, (current) => endTurn(current, 'conflict'), (current) => endTurn(current, 'ended')) : endTurn(state, 'conflict');
     case 'revoked':
       return endTurn(state, 'revoked');
     case 'closed':
@@ -324,7 +325,7 @@ const check = (state: SessionState, phase: PollPhase, { shortcut }: Io) => readT
 // A read of the Shortcut session. A session that is gone closes the bridge's
 // and a turn Shortcut ended on its own ends it; `open` says what an open turn
 // means to the caller. `unread` settles a read that failed; after a 409 it
-// must not leave a reply that may belong to an ended turn runnable.
+// must not leave a request that may belong to an ended turn runnable.
 async function readTurn(state: SessionState, shortcut: ShortcutSessions, open: (state: SessionState) => SessionState, unread = (state: SessionState) => state): Promise<SessionState> {
   const read = await shortcut.getSession(state.shortcutSessionId);
   switch (read.kind) {

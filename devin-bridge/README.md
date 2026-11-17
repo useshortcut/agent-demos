@@ -171,11 +171,13 @@ No deadline holds another job. The bridge records an event that arrives during a
 
 **Shortcut 4xx.** The bridge retries a 408 or 425 from Shortcut like a server error. Any other 4xx except 401, 403, 404, 409, and 429 means Shortcut rejected the write itself. The bridge drops a rejected thought. It replaces a rejected outcome once with a short `error` naming the status, so the turn still ends.
 
-**Shortcut 409.** A 409 means the turn is over. Shortcut ended it, a newer prompt replaced it, or the session closed. The bridge stops writing and polling for that turn and leaves the Devin session running for the next reply. A 409 on the ack of a reply not yet sent to Devin drops the ack, and the bridge reads the session:
+**Shortcut 409.** A 409 means the turn is over. Shortcut ended it, a newer prompt replaced it, or the session closed. The bridge stops writing and polling for that turn and leaves the Devin session running for the next reply. A 409 on the ack of a request not yet sent to Devin drops the ack, and the bridge reads the session. The request is a reply that waits to be relayed, or whatever a create that has no answer yet carries, the opening request included:
 
-- If Shortcut ended the turn on its own, the bridge drops the reply with it.
-- Otherwise the bridge keeps the reply, because the event behind the 409, a newer reply or a stop, says what to do with it.
-- If that read fails, the bridge drops the reply, so nothing reaches Devin for a turn Shortcut may have ended.
+- If Shortcut ended the turn on its own, the bridge drops the request with it.
+- Otherwise the bridge keeps the request, because the event behind the 409, a newer reply or a stop, says what to do with it.
+- If that read fails, the bridge drops the request, so nothing reaches Devin for a turn Shortcut may have ended.
+
+So when a user replies before the bridge has acknowledged turn 1, the bridge still creates the Devin session with the opening request, and the reply follows as a message to that session.
 
 **Closed sessions.** A 401, 403, or 404 from Shortcut after a refresh means the session is gone. So does a `closed_reason` on the session, or a workspace that leaves `ALLOWED_WORKSPACE_IDS`. The bridge then retires the Devin session, or the tag of an unresolved start. It closes and ignores later events for the session, a stop included. Only the webhook treats a stop specially. It forwards a stop from a workspace that left the list while it drops that workspace's other events, so a session still open for that workspace closes and terminates Devin on the stop.
 

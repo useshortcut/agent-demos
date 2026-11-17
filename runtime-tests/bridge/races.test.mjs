@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { it } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { SID, bridgeHarness } from './harness.mjs';
+import { REQUEST, SID, bridgeHarness, openingText } from './harness.mjs';
 
 const root = pathToFileURL(`${process.cwd()}/`);
 assert.ok(existsSync(new URL('src/core/port.ts', root)), 'races.test.mjs tests the bridge in the current directory. Run `npm test` inside a bridge.');
@@ -76,4 +76,31 @@ it('applies a stop that arrives while a step loads the Shortcut credentials befo
   assert.deepEqual([h.calls('send').length, chat.received], [1, []], 'the send is not tried again');
   assert.equal(chat.halted, true);
   h.assertCleanLogs();
+});
+
+it('opens the conversation with the opening request when the user replies before the bridge has acknowledged turn 1, and sends the reply there', async (t) => {
+  const h = setup(t);
+  await h.connect();
+  const created = h.shortcut.open();
+  const reply = h.shortcut.prompt(SID, 'Also examine Firefox');
+  await h.accept(created);
+  await h.tick();
+  const chat = h.fake.only();
+  assert.equal(chat.opened, openingText(REQUEST), 'Shortcut refused the acknowledgement of turn 1, and the request still went out');
+  await h.accept(reply);
+  await h.tick();
+  assert.deepEqual(chat.received, ['Also examine Firefox']);
+  assert.deepEqual(h.shortcut.activities().map((a) => [a.key, a.content.body]), [['fake-bridge:2:ack', 'Passing your message to Fake.']]);
+  assert.equal(h.calls('open').length, 1);
+  h.assertCleanLogs();
+});
+
+it('opens nothing for an opening request whose turn Shortcut ended on its own before the bridge acknowledged it', async (t) => {
+  const h = setup(t);
+  await h.connect();
+  await h.accept(h.shortcut.open());
+  h.shortcut.failTurn(SID);
+  await h.tick();
+  assert.deepEqual(h.fake.chats, []);
+  assert.equal(await h.alarmIn(), null);
 });

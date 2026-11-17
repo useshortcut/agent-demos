@@ -71,6 +71,13 @@ const BROKEN = [
     scope: { from: ['created', 'reply 2', 'stop 2'], during: ['stop 2'], events: 3, faults: 0, finish: 0, gone: 0, total: 3 },
     breaks: 'stopped',
   },
+  {
+    core: 'gives up an open when Shortcut answers its acknowledgement with a 409, so a reply the user sent early costs the opening request',
+    replace: [['(state.phase.kind === \'start\' || state.phase.kind === \'relay\' || state.phase.kind === \'idle\')', '(state.phase.kind === \'relay\' || state.phase.kind === \'idle\')']],
+    facts: DEVIN,
+    scope: { from: ['created', 'reply 2'], ahead: true, events: 2, faults: 1, only: [], finish: 0, gone: 0, total: 3 },
+    breaks: 'rest',
+  },
 ];
 
 function brokenCopy(replace, name = 'src/core/bridge.ts') {

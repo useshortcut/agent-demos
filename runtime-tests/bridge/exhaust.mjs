@@ -8,6 +8,9 @@
 //   'reply 3'          Shortcut delivers the reply of turn 3
 //   'stop 2'           Shortcut delivers the stop of turn 2
 //   'again'            Shortcut delivers the last event a second time
+//   'ahead 2'          the user sends the reply of turn 2: Shortcut moves to
+//                      that turn and has not delivered the reply yet, so it
+//                      answers a write for an older turn with a 409
 //   'close'            the session is closed in Shortcut
 //   'finish'           the agent finishes its turn in the newest conversation
 //   'gone'             the newest conversation ends on its own
@@ -23,7 +26,8 @@
 //                      first prepare is out, and has the bridge's answer
 //                      before the backend's reaches the step. Any event, and
 //                      any call, as for a fault
-//   'rest'             every agent finishes and the alarms run until none is set
+//   'rest'             Shortcut delivers the reply it is ahead by, every agent
+//                      finishes, and the alarms run until none is set
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { deserialize, serialize } from 'node:v8';
@@ -69,7 +73,7 @@ const parse = (step) => {
     assert.ok(CALLS.includes(fault[1]) && MODES.includes(fault[3]), `no step ${JSON.stringify(step)}`);
     return { kind: 'tick', at: { call: fault[1], nth: Number(fault[2] ?? 1), mode: fault[3] } };
   }
-  const event = step.match(/^(reply|stop) (\d+)$/);
+  const event = step.match(/^(reply|stop|ahead) (\d+)$/);
   if (event) return { kind: event[1], turn: Number(event[2]) };
   assert.ok(['created', 'again', 'close', 'finish', 'gone', 'tick', 'rest'].includes(step), `no step ${JSON.stringify(step)}`);
   return { kind: step, turn: 1 };
@@ -233,6 +237,9 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
   }
 
   async function rest() {
+    // A reply that Shortcut is ahead by is on its way, and the bridge may be waiting for it.
+    const ahead = `reply ${session().turn}`;
+    if (events[ahead] && !delivered.includes(ahead)) await deliver(ahead, parse(ahead));
     const finish = () => fake.chats.forEach((chat) => { if (!chat.gone) chat.status = { kind: 'finished' }; });
     for (let i = 0; i < REST_ALARMS && (await storage.getAlarm()) !== null; i++) {
       finish();
@@ -256,6 +263,8 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
           return void (await deliver(label, parsed));
         case 'again':
           return void assert.equal((await h.deliver(events[delivered.findLast((event) => event !== 'close')])).status, 200);
+        case 'ahead':
+          return void Object.assign(session(), { turn: parsed.turn, stopRequested: false, outcome: null, status: 'active' });
         case 'close':
           delivered.push('close');
           session().closed = true;
@@ -274,10 +283,12 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
     /** The rules the steps since the last call broke, as `rule: what happened`. */
     broken: () => led.broken(),
 
-    /** The steps that could change something now, faults aside, each with what it spends of a scope. */
-    async enabled(events) {
+    /** The steps that could change something now, backend faults aside, each with what it spends of a scope. Shortcut ahead of the bridge is a fault of Shortcut's, and a scope that allows it counts it as one. */
+    async enabled({ from, ahead }) {
+      const waiting = from.filter((label) => !delivered.includes(label));
       return [
-        ...events.filter((label) => !delivered.includes(label)).map((label) => [label, 'events']),
+        ...waiting.map((label) => [label, 'events']),
+        ...(ahead ? waiting.map(parse).filter(({ kind, turn }) => kind === 'reply' && turn > session().turn).map(({ turn }) => [`ahead ${turn}`, 'faults']) : []),
         ...(canFinish() ? [['finish', 'finish']] : []),
         ...(canEnd() ? [['gone', 'gone']] : []),
         ...((await storage.getAlarm()) !== null ? [['tick', null]] : []),
@@ -382,8 +393,10 @@ const waysOf = (calls, scope, left, events) => [
  * the first rule it breaks. `scope` is `{ events, faults, finish, gone }`, how
  * many of each a script may hold, `total`, how many of them together, `from`,
  * the events it may deliver, `during`, those of them that may also arrive
- * while a backend call is out, `refuse`, the calls the backend may refuse when
- * not all, and `only`, the faults it may hold when not all. A
+ * while a backend call is out, `ahead`, whether Shortcut may be a reply
+ * ahead, which then counts as a fault, `refuse`, the calls the backend may
+ * refuse when not all, and `only`, the backend faults it may hold when not
+ * all. A
  * script that reaches a state an earlier one reached with as much of the
  * scope left ends there, since the earlier one's futures hold all of its own.
  * Returns the shortest script that breaks each rule, and how much was run:
@@ -455,7 +468,7 @@ export async function explore(w, scope) {
 
       await w.restore(from);
       const own = await w.name();
-      const enabled = await w.enabled(scope.from);
+      const enabled = await w.enabled(scope);
       const events = enabled.filter(([, budget]) => budget === 'events').map(([label]) => label);
       for (const [label, budget] of enabled) {
         if (!affords(node.left, budget)) continue;
@@ -503,7 +516,7 @@ export async function runEach(w, scope) {
       return calls;
     };
     await w.restore(snapshot);
-    const enabled = await w.enabled(scope.from);
+    const enabled = await w.enabled(scope);
     const events = enabled.filter(([, budget]) => budget === 'events').map(([label]) => label);
     for (const [label, budget] of enabled) {
       if (!affords(left, budget)) continue;

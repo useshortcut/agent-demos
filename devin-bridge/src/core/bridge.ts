@@ -459,15 +459,17 @@ export type TurnEnd = 'conflict' | 'revoked' | 'ended';
 
 /**
  * Shortcut takes no more writes for the turn. A known conversation stays
- * usable; anything less certain is retired. A reply not sent yet survives a
- * 409 alone, once a read of the session has shown the turn still open: the
+ * usable; anything less certain is retired. A request not sent yet survives
+ * a 409 alone, once a read of the session has shown the turn still open: the
  * event behind the 409, a newer reply or a stop, says what becomes of the
- * reply. The other reasons bring no such event, so the reply is dropped and
- * nothing reaches the agent that Shortcut cannot see.
+ * request. That holds for a reply that waits in a relay and for what an open
+ * that has no answer yet carries, the opening request included. The other
+ * reasons bring no such event, so the request is dropped and nothing reaches
+ * the agent that Shortcut cannot see.
  */
 export function endTurn(state: SessionState, reason: TurnEnd): SessionState {
-  // A 409 leaves a relay as it is, and leaves an idle phase what its failed turn dropped. Only the outbox is emptied.
-  if (reason === 'conflict' && (state.phase.kind === 'relay' || state.phase.kind === 'idle')) return { ...state, outbox: [] };
+  // A 409 leaves a start and a relay as they are, and leaves an idle phase what its failed turn dropped. Only the outbox is emptied.
+  if (reason === 'conflict' && (state.phase.kind === 'start' || state.phase.kind === 'relay' || state.phase.kind === 'idle')) return { ...state, outbox: [] };
   const on = conversationOf(state.phase);
   return { ...(on ? state : retiring(state)), phase: { kind: 'idle', on }, outbox: [] };
 }

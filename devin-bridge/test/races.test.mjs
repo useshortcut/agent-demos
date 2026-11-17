@@ -22,3 +22,19 @@ it('sends Devin nothing a stop cancelled when the stop arrives while the step re
   assert.ok(h.shortcut.activities().some((a) => a.key === 'devin-bridge:2:stopped'));
   h.assertCleanLogs();
 });
+
+it('creates the Devin session with the opening request when the user replies before the bridge has acknowledged turn 1', async (t) => {
+  const h = setup(t);
+  await h.connect();
+  const created = h.shortcut.open(SID, { body: 'Only diagnose (private-prompt)' });
+  const reply = h.shortcut.prompt(SID, 'Also examine Firefox (private-prompt)');
+  await accept(h, created);
+  await h.tick();
+  await accept(h, reply);
+  await h.tick();
+  const devin = h.devin.only();
+  assert.match(devin.prompt, /Only diagnose \(private-prompt\)/);
+  assert.deepEqual(devin.received, ['Also examine Firefox (private-prompt)']);
+  assert.deepEqual(h.shortcut.activities().filter((a) => a.content.type === 'error'), []);
+  h.assertCleanLogs();
+});

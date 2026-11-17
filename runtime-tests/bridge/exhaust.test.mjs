@@ -18,7 +18,7 @@ const root = pathToFileURL(`${process.env.EXHAUST_ROOT ?? process.cwd()}/`);
 assert.ok(existsSync(new URL('src/core/port.ts', root)), 'exhaust.test.mjs tests the bridge in the current directory. Run `npm test` inside a bridge.');
 
 const SCOPES = {
-  default: { turns: [2, 3, 4], from: ['created', 'reply 2', 'reply 3', 'stop 1', 'stop 2', 'close'], during: ['stop 1', 'stop 2'], events: 4, faults: 1, refuse: ['prepare', 'send'], finish: 1, gone: 1, total: 4 },
+  default: { turns: [2, 3, 4], from: ['created', 'reply 2', 'reply 3', 'stop 1', 'stop 2', 'close'], during: ['stop 1', 'stop 2'], ahead: true, events: 4, faults: 1, refuse: ['prepare', 'send'], finish: 1, gone: 1, total: 4 },
   deep: { turns: [2, 3, 4], from: ['created', 'reply 2', 'reply 3', 'reply 4', 'stop 1', 'stop 2', 'stop 3', 'close'], during: ['stop 1', 'stop 2', 'stop 3'], events: 5, faults: 2, finish: 1, gone: 1, total: 6 },
 };
 const scope = { ...SCOPES[process.env.EXHAUST ?? 'default'], ...JSON.parse(process.env.EXHAUST_SCOPE ?? '{}') };
@@ -26,7 +26,7 @@ const scope = { ...SCOPES[process.env.EXHAUST ?? 'default'], ...JSON.parse(proce
 // With one fault to a script, a backend that deduplicates sends differs from
 // its twin that repeats them only when that fault is a send that landed. Its
 // other scripts are the twin's, so they are run once.
-const scopeFor = ({ dedupes }) => (dedupes && scope.faults === 1 ? { ...scope, only: ['send lost', 'send dies'] } : scope);
+const scopeFor = ({ dedupes }) => (dedupes && scope.faults === 1 ? { ...scope, only: ['send lost', 'send dies'], ahead: false } : scope);
 
 const explored = (facts) => new Promise((resolve, reject) => {
   const worker = new Worker(new URL('./exhaust-worker.mjs', import.meta.url), { workerData: { root: root.href, facts, scope: scopeFor(facts) } });
@@ -73,6 +73,8 @@ const PINNED = [
   ['goes on reading the agent, and ends no turn, when the backend refuses the prepare of a send that would carry only the context', DEVIN, ['reply 2', 'stop 1', 'tick', 'created', 'tick: prepare refused', 'rest']],
   ['sends nothing a stop cancelled when the stop arrives while the step that would send it waits on the backend', DEVIN, ['created', 'tick', 'reply 2', 'tick: stop 2 during prepare', 'rest']],
   ['introduces nothing to a conversation it opened empty when the stop of the request arrives while that open is out', { keeps: false, empty: true, dedupes: false }, ['created', 'tick: stop 1 during open', 'rest']],
+  ['opens the conversation with the opening request, and sends the newer reply there, when Shortcut refused the first acknowledgement because the user had already replied', DEVIN, ['created', 'ahead 2', 'tick', 'reply 2', 'tick', 'rest']],
+  ['opens the next conversation with the reply that waited on a stop when Shortcut refused its acknowledgement because the user had already replied again', DEVIN, ['created', 'tick', 'stop 1', 'reply 2', 'ahead 3', 'tick', 'rest']],
 ];
 
 const bridge = await loadBridge(root);
@@ -90,10 +92,21 @@ it('counts the scripts of a small scope as running each from its own start does'
   }
 });
 
-for (const [title, facts, steps] of PINNED) {
-  it(title, async (t) => {
-    const w = await world(t, bridge, facts);
-    const broke = await replay(w, steps);
-    assert.ok(broke.length === 0, `${broke.join('\n')}\nThe agent was told:\n${JSON.stringify(told(w), null, 2)}`);
-  });
-}
+// Scripts that still break a rule, each titled with what the bridge should do.
+// Both need a backend fault in a script that also puts Shortcut ahead, which
+// the default scope does not hold. Each runs as a todo, so it shows in the
+// report and fails nothing. Move one to PINNED when the bridge keeps its rule.
+const EMPTY = { keeps: false, empty: true, dedupes: false };
+const OPEN = [
+  ['keeps the reply that waits on a stop when Shortcut refuses its acknowledgement before the stop\'s halt has run', DEVIN, ['created', 'tick', 'reply 2', 'ahead 3', 'tick: prepare fails', 'stop 1', 'tick', 'rest']],
+  ['sends the opening request of a session.created that arrives after a turn failed with an error Shortcut refused, when nothing has reached the agent', EMPTY, ['reply 2', 'ahead 3', 'tick: prepare refused', 'created', 'tick', 'rest']],
+];
+
+const replayed = ([title, facts, steps], options = {}) => it(title, options, async (t) => {
+  const w = await world(t, bridge, facts);
+  const broke = await replay(w, steps);
+  assert.ok(broke.length === 0, `${broke.join('\n')}\nThe agent was told:\n${JSON.stringify(told(w), null, 2)}`);
+});
+
+for (const script of PINNED) replayed(script);
+for (const script of OPEN) replayed(script, { todo: 'the bridge breaks a rule here' });
