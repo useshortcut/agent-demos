@@ -1059,6 +1059,18 @@ it('halts what an unanswered open made when the grant is revoked before the open
   assert.equal(h.fake.only().halted, true, 'the turn is over, so the conversation the open made is given up');
 });
 
+it('drops a stored state under an older tag with one warning that names only the session', async (t) => {
+  const h = setup(t);
+  await h.started();
+  const storage = h.env.SESSIONS.storages.get(SID);
+  storage.data.set('state', { ...storage.data.get('state'), v: 2 });
+  h.env.SESSIONS.restart();
+  h.logs.length = 0;
+  await h.tick();
+  assert.deepEqual(h.logs, [['warn', 'Fake Bridge dropped a stored session state of an older shape', { sessionId: SID }]]);
+  assert.equal(storage.data.has('state'), false);
+});
+
 // The conformance scenarios, for the kinds of backend no bridge here has yet.
 for (const [label, facts] of [
   ['a backend that keeps its session, opens it empty, and has no link', { keeps: true, opensEmpty: true, linked: false }],

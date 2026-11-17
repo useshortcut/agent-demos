@@ -278,25 +278,3 @@ it('still halts a conversation that replaced one that ended, for a stop newer th
   assert.deepEqual(second.received, []);
   assert.match(h.fake.chats[2].opened, /Reply 4/);
 });
-
-it('takes a state stored before it kept what the current conversation holds, and halts nothing for a stop older than the reply that state says was sent', async (t) => {
-  const h = setup(t);
-  const { created, stop } = await withLateStop(h);
-  await h.accept(created);
-  await h.tick();
-  const chat = h.fake.only();
-  await h.accept(h.shortcut.prompt(SID, 'Second'));
-  await h.tick();
-  const storage = h.env.SESSIONS.storages.get(SID);
-  const { landed, ...stored } = storage.data.get('state');
-  assert.deepEqual([stored.v, stored.sent, landed], [3, 2, 2]);
-  storage.data.set('state', stored);
-  h.env.SESSIONS.restart();
-
-  await h.accept(h.shortcut.prompt(SID, 'Third'));
-  await h.accept(stop);
-  await h.tick();
-  assert.equal(h.calls('halt').length, 0);
-  assert.deepEqual(chat.received, ['Second', 'Third']);
-  assert.equal(storage.data.get('state').landed, 3);
-});

@@ -49,7 +49,7 @@ export type StopPhase = Extract<Phase, { kind: 'stop' }>;
 export type Job = 'backend' | 'shortcut' | 'retire' | 'link';
 
 export type SessionState = {
-  /** Names this shape among the ones a deployed bridge can hold. `FirstPortState` is 2, and a state from before the backend port has none. */
+  /** Names this shape. A stored state under any other tag is dropped. */
   v: 3;
   shortcutSessionId: string;
   workspaceId: string;
@@ -90,27 +90,6 @@ export type SessionState = {
   applied: number;
 };
 
-/** A state under today's tag as a deployed bridge can hold it. One stored before `landed` was kept has none. */
-export type StoredState = Omit<SessionState, 'landed'> & { landed?: number };
-
-/**
- * A state as the first version of this file stored it, which a deployed
- * bridge can still hold. It kept the context a conversation was owed in
- * three places: `late`, the `late` of a prepared send, and the text of an
- * `opening` request, which ended with the context. Its sends had no key.
- * Its stop held the replies that waited on it in `then`. A state that
- * `upgradeState` read from before the port has them in `waiting` already.
- */
-export type FirstPortState = Omit<SessionState, 'v' | 'briefing' | 'phase' | 'landed'> & {
-  v: 2;
-  late: Pending | null;
-  phase:
-    | { kind: 'start'; prompt: Pending[]; extra: Pending[]; attempted: boolean }
-    | { kind: 'relay'; on: Live; prompt: Pending[]; send: { prompt: Pending[]; late: Pending | null; text: string; memo: Memo } | null }
-    | { kind: 'stop'; target: Held | null; then: Pending[] }
-    | Exclude<Phase, { kind: 'start' | 'relay' }>;
-};
-
 export const FIRST_POLL_MS = 5_000;
 export const MAX_DELAY_MS = 60_000;
 const PICKUP_TIMEOUT_MS = 600_000;
@@ -132,54 +111,9 @@ export const conversationKey = (shortcutSessionId: string, generation: number) =
  * A relay waits to be prepared only after an event that arrived since the
  * last send was prepared: a reply, a stop, or a late `session.created`. So no
  * two sends of a session share a sequence, and the count needs no state of
- * its own. Sequence 0, which no event has, names the one send a session can
- * hold from before sends had keys.
+ * its own.
  */
-export const sendKey = (state: Pick<SessionState, 'shortcutSessionId' | 'generation' | 'applied'>, sequence = state.applied) => `${conversationKey(state.shortcutSessionId, state.generation)}:${sequence}`;
-
-/**
- * The stored state in today's shape. For a state of the first shape, the
- * context debt moves to `briefing`: owed when any of its three places held
- * it, and given otherwise once there is a context, because that version put
- * a context it knew into every open. A prepared send keeps its text and is
- * marked as carrying the context when it does. The open of an attempted
- * start left the context out when it arrived after the attempt, since it
- * then waited to follow as a message. An `opening` request loses the context
- * that the first shape kept at the end of its text.
- *
- * A state stored before `landed` was kept gets `sent` for the conversation
- * its phase holds. The two differ only when an earlier conversation of the
- * session took a newer reply than the current one has.
- */
-export function restored(stored: StoredState | FirstPortState): SessionState {
-  const landed = 'on' in stored.phase && stored.phase.on ? stored.sent : 0;
-  if (stored.v === 3) return { ...stored, landed: stored.landed ?? landed };
-  const { v, late, phase, ...rest } = stored;
-  const block = stored.context && contextBlock(stored.context);
-  const under = `\n\n${block}`;
-  const bare = (reply: Pending): Pending => (!reply.opening || !block ? reply : { ...reply, text: reply.text === block ? '' : reply.text.endsWith(under) ? reply.text.slice(0, -under.length) : reply.text });
-  const requests = (waiting: Pending[]) => waiting.map(bare).filter((reply) => reply.text !== '');
-  const carried = (waiting: Pending[]) => block !== '' && waiting.some((reply) => reply.opening);
-  const state = (briefing: SessionState['briefing'], current: Phase): SessionState => ({ ...rest, v: 3, briefing, landed, phase: current });
-  switch (phase.kind) {
-    case 'start': {
-      // A start that replaced a conversation that ended took over what waited for it, so its prompt can hold an `opening` request.
-      const waiting = { kind: 'start' as const, prompt: unmarked(requests(phase.prompt)), extra: requests(phase.extra) };
-      return state('owed', phase.attempted ? { ...waiting, attempted: true, briefs: block !== '' && late === null && !carried(phase.extra) } : { ...waiting, attempted: false });
-    }
-    case 'relay': {
-      const send = phase.send && { prompt: requests(phase.send.prompt), briefs: phase.send.late !== null || carried(phase.send.prompt), text: phase.send.text, key: sendKey(stored, 0), memo: phase.send.memo };
-      const owed = late !== null || carried(phase.prompt) || send?.briefs;
-      return state(owed || !block ? 'owed' : 'given', { ...phase, prompt: requests(phase.prompt), send, working: false });
-    }
-    case 'stop':
-      return state(late !== null || !block ? 'owed' : 'given', 'then' in phase ? { kind: 'stop', target: phase.target, waiting: phase.then } : phase);
-    case 'poll':
-    case 'idle':
-    case 'closed':
-      return state(late !== null || !block ? 'owed' : 'given', phase);
-  }
-}
+export const sendKey = (state: Pick<SessionState, 'shortcutSessionId' | 'generation' | 'applied'>) => `${conversationKey(state.shortcutSessionId, state.generation)}:${state.applied}`;
 
 export const entityUrl = (slug: string, entity: SessionState['entity']) =>
   `https://app.shortcut.com/${encodeURIComponent(slug)}/${entity.type === 'epic' ? 'epic' : 'story'}/${entity.id}`;

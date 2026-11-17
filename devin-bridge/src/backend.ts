@@ -1,8 +1,6 @@
 import { devinClient, type DevinMessage, type DevinSession, type DevinState } from './devin';
 import { BackendError, type Backend, type Conversation, type Identity, type Said, type Status } from './core/port';
 
-export { upgradeState } from './upgrade';
-
 export const identity: Identity = { slug: 'devin-bridge', title: 'Devin Bridge', name: 'Devin', aSession: 'a Devin session', linkLabel: 'Open in Devin' };
 
 export type BackendEnv = { DEVIN_API_KEY: string; DEVIN_ORG_ID: string; DEVIN_API_BASE?: string };
