@@ -46,7 +46,14 @@
     "typescript/no-unsafe-return": "error",
     "typescript/no-unsafe-type-assertion": "error",
     "typescript/consistent-type-imports": "error",
-    "consistent-return": "off"
+    "consistent-return": "off",
+    "unicorn/no-array-sort": "off",
+    "no-unused-vars": [
+      "error",
+      {
+        "ignoreRestSiblings": true
+      }
+    ]
   },
   "overrides": [
     {

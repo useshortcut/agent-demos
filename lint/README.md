@@ -26,6 +26,8 @@ CI runs that command in each demo's job. The step does not fail the job yet. The
 - Types: `no-explicit-any`, `no-non-null-assertion`, the `no-unsafe-*` rules, `switch-exhaustiveness-check`, and `consistent-type-imports`. The `no-unsafe-*` rules are off for `.mjs` and `.js` files, where nothing is typed.
 - Imports: only a bridge's `src/backend.ts`, or the wrapper it owns, imports a vendor SDK.
 
+One rule of the `suspicious` category is off: `unicorn/no-array-sort`, because it asks for `toSorted`, which the demos' ES2022 library setting does not have.
+
 Three rules are this repository's own, in this directory. Each encodes an invariant from `AGENTS.md`:
 
 | Rule | Invariant |
