@@ -28,10 +28,7 @@ jobs:
           cache-dependency-path: ${{ matrix.demo }}/package-lock.json
       - run: npm ci
       - run: npm test
-      # Not required yet: the findings on the code as it stands are fixed in
-      # the pull requests that follow. Delete `continue-on-error` after that.
       - name: Lint
-        continue-on-error: true
         run: |
           npm ci --prefix ../lint
           PATH="$PWD/../lint/node_modules/.bin:$PATH" oxlint -c ../.oxlintrc.json --type-aware --deny-warnings src

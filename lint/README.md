@@ -17,7 +17,7 @@ The type-aware rules read each demo's types, so run `npm ci` in a demo before li
 PATH="$PWD/../lint/node_modules/.bin:$PATH" oxlint -c ../.oxlintrc.json --type-aware --deny-warnings src
 ```
 
-CI runs that command in each demo's job. The step does not fail the job yet. The code that was here before the rules has findings, and they are fixed in later pull requests. When they are, remove `continue-on-error` from `.github/workflows/ci.yml`.
+CI runs that command in each demo's job, and a finding fails the job.
 
 ## What is checked
 
