@@ -208,7 +208,7 @@ async function recoverRevert(s: Session, recovery: Recovery) {
     await completeRevert(s, recovery);
   } catch (error) {
     console.error('Estimate Guardian recovery attempt failed', { storyId: recovery.storyId, attempts: recovery.attempts,
-      message: error instanceof ShortcutRequestError ? error.message : 'Could not recover revert' });
+      message: error instanceof ShortcutRequestError ? error.failure : 'Could not recover revert' });
   }
   if (!recovery.outcome && recovery.attempts >= MAX_RECOVERY_ATTEMPTS) {
     await finishRecovery(s, recovery, 'exhausted');
@@ -225,7 +225,14 @@ const TOKEN_PATH = '/oauth-authorization-code-flow/token';
 // Only these diagnostics are ever logged. Never log an Error object or a
 // rejected Response: fetch errors and provider bodies can contain credentials,
 // URLs, or user text.
-class ShortcutRequestError extends Error {}
+type RequestFailure = 'Token refresh failed' | 'Network request failed or timed out' | 'List lookup failed'
+  | 'List returned an invalid, unsafe, or incomplete page';
+
+class ShortcutRequestError extends Error {
+  constructor(readonly failure: RequestFailure) {
+    super(failure);
+  }
+}
 
 /** A provider error code, only when it is an identifier and not free text. */
 function errorCode(code: unknown): { code?: string } {
@@ -249,7 +256,7 @@ function logFailure(error: unknown): FailureKind {
     console.error('Shortcut request rejected', { method: 'POST', path: TOKEN_PATH, status: error.status, ...errorCode(error.error) });
     return 'refresh';
   }
-  if ((error as { name?: unknown } | null)?.name === 'TimeoutError' || error instanceof TypeError) {
+  if ((typeof error === 'object' && error !== null && 'name' in error && error.name === 'TimeoutError') || error instanceof TypeError) {
     console.error('Shortcut request failed', { message: 'Network request failed or timed out' });
     return 'network';
   }
@@ -290,6 +297,7 @@ function reportedScopes(tokens: Pick<ShortcutOAuthTokens, 'scope'>, fallback?: s
 
 async function getCredentials(kv: KVNamespace, workspaceId: string): Promise<WorkspaceCredentials | null> {
   const raw = await kv.get(`creds:${workspaceId}`);
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the demo's own stored record.
   return raw ? (JSON.parse(raw) as WorkspaceCredentials) : null;
 }
 
@@ -356,6 +364,7 @@ async function attempt<T>(s: Session, call: (ws: ShortcutWorkspaceApi) => Promis
 /** A single-entity read or write, unwrapped from `{ entity }`, or null when it was rejected. */
 async function apiEntity<T>(s: Session, call: (ws: ShortcutWorkspaceApi) => Promise<{ entity: unknown }>): Promise<T | null> {
   const wrapper = await attempt(s, call);
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- T names the fields the call requested, which the library types as optional.
   return wrapper && typeof wrapper === 'object' && wrapper.entity ? (wrapper.entity as T) : null;
 }
 
@@ -368,6 +377,7 @@ async function listAll<T>(s: Session, list: (ws: ShortcutWorkspaceApi) => Promis
   const out: T[] = [];
   const client = clientFor(s);
   try {
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- T names the fields the call requested, which the library types as optional.
     for await (const item of client.paginate(list(client.workspace(s.creds.slug)))) out.push(item as T);
   } catch (error) {
     const kind = logFailure(error);
@@ -393,6 +403,7 @@ async function startedStateIds(s: Session): Promise<Set<number>> {
   // Old versions could cache a partial list after a later page failed.
   const cacheKey = `started-states:v2:${s.workspaceId}`;
   const cached = await s.kv.get(cacheKey);
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the demo's own cached ids.
   if (cached) return new Set(JSON.parse(cached) as number[]);
 
   const states = await listAll<WorkflowState>(s, (ws) => ws.listWorkflowStates({ fields: WORKFLOW_STATE_FIELDS, limit: 100 }));
@@ -436,6 +447,8 @@ function couldBreachRule(action: ShortcutObserverAction): boolean {
   );
 }
 
+const isMove = (change: { attribute: string }) => change.attribute === 'workflow_state';
+
 /**
  * The state the story was in before it landed in `currentStateId`.
  *
@@ -454,8 +467,6 @@ async function previousWorkflowStateId(
   storyId: number,
   currentStateId: number,
 ): Promise<number | null> {
-  const isMove = (change: { attribute: string }) => change.attribute === 'workflow_state';
-
   let latest: { adds: ShortcutChangeValue[]; removes: ShortcutChangeValue[] } | undefined = action.changes?.find(isMove);
   if (!latest) {
     const history = await attempt(s, (ws) => ws.getStoryHistory(storyId, { fields: 'workflow_state', limit: 1 }));
@@ -546,7 +557,7 @@ async function guardStory(s: Session, action: ShortcutObserverAction, actorMenti
     await completeRevert(s, recovery);
   } catch (error) {
     console.error('Estimate Guardian initial attempt failed', { storyId,
-      message: error instanceof ShortcutRequestError ? error.message : 'Could not complete warning and revert' });
+      message: error instanceof ShortcutRequestError ? error.failure : 'Could not complete warning and revert' });
   }
 }
 
@@ -575,9 +586,9 @@ export class EstimateGuardianStory {
   fetch(request: Request): Promise<Response> {
     return this.serialize(async () => {
       try {
-        const { workspaceId, deliveryId, action, actor } = await request.json() as {
+        const { workspaceId, deliveryId, action, actor } = await request.json<{
           workspaceId: string; deliveryId: string; action: ShortcutObserverAction; actor: ShortcutWebhookActor;
-        };
+        }>();
         const creds = await getCredentials(this.env.TOKENS, workspaceId);
         if (!creds || actor?.member_id === creds.memberId) return Response.json({ ok: true });
         const session: Session = { env: this.env, kv: this.env.TOKENS, workspaceId, creds, deliveryId, recovery: this.recovery };
@@ -585,7 +596,7 @@ export class EstimateGuardianStory {
         return Response.json({ ok: true });
       } catch (error) {
         console.error('Estimate Guardian story processing failed', {
-          message: error instanceof ShortcutRequestError ? error.message : 'Could not process story',
+          message: error instanceof ShortcutRequestError ? error.failure : 'Could not process story',
         });
         return Response.json({ error: 'Could not process story' }, { status: 503 });
       }
@@ -630,7 +641,7 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024;
 /** The raw request body, or null if it exceeds the cap. */
 async function readBody(request: Request): Promise<Uint8Array | null> {
   if (Number(request.headers.get('Content-Length')) > MAX_BODY_BYTES) return null;
-  const reader = request.body?.getReader();
+  const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = request.body?.getReader();
   if (!reader) return new Uint8Array();
   const chunks: Uint8Array[] = [];
   let size = 0;

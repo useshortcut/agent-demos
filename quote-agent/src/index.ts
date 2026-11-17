@@ -55,7 +55,7 @@ type WorkspaceCredentials = {
 // @shortcut/client/webhooks; `ShortcutInteractionPayload` is what reaches the
 // Durable Object after verification.
 
-const randomQuote = () => (QUOTES as string[])[Math.floor(Math.random() * QUOTES.length)];
+const randomQuote = () => QUOTES[Math.floor(Math.random() * QUOTES.length)];
 
 // ---------------------------------------------------------------------------
 // Shortcut clients
@@ -136,6 +136,7 @@ class ShortcutRequestRejected extends Error {
 async function getCredentials(kv: KVNamespace, workspaceId: string): Promise<WorkspaceCredentials | null> {
   const raw = await kv.get(`creds:${workspaceId}`);
   if (!raw) return null;
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the demo's own stored record.
   return JSON.parse(raw) as WorkspaceCredentials;
 }
 
@@ -236,7 +237,7 @@ class WorkspaceApi {
     } catch (error) {
       logFailure(error);
       if (isShortcutV4RequestError(error)) throw new ShortcutRequestRejected(error.status);
-      throw new Error('Shortcut request failed or timed out');
+      throw new Error('Shortcut request failed or timed out', { cause: error });
     }
   }
 }
@@ -254,7 +255,7 @@ export class QuoteDeliveries {
   }
 
   private async process(request: Request): Promise<Response> {
-    const payload = await request.json() as ShortcutInteractionPayload;
+    const payload = await request.json<ShortcutInteractionPayload>();
     const { trigger, workspace2: { id: workspaceId } } = payload;
     try {
       const creds = await getCredentials(this.env.TOKENS, workspaceId);
@@ -293,7 +294,7 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024;
 /** The raw request body, or null if it exceeds the cap. */
 async function readBody(request: Request): Promise<Uint8Array | null> {
   if (Number(request.headers.get('Content-Length')) > MAX_BODY_BYTES) return null;
-  const reader = request.body?.getReader();
+  const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = request.body?.getReader();
   if (!reader) return new Uint8Array();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -357,8 +358,8 @@ app.get('/oauth/callback', async (c) => {
   let tokens: ShortcutOAuthTokens;
   try {
     tokens = await oauthClient(c.env).exchangeAuthorizationCode(code);
-  } catch (error) {
-    logFailure(error);
+  } catch (exchangeError) {
+    logFailure(exchangeError);
     return c.text('Token exchange failed. Check worker logs.', 500);
   }
 
@@ -404,6 +405,7 @@ app.post('/webhook', async (c) => {
       return c.json({ error: 'Invalid signature' }, 401);
     }
     if (error.status === 413) return c.json({ error: 'Payload too large' }, 413);
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the library types its 4xx statuses as number.
     return c.json({ error: 'Invalid payload' }, error.status as ContentfulStatusCode);
   }
 
