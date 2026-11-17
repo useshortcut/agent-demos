@@ -66,6 +66,9 @@ function parseItem(value: unknown): Item | null {
   return { kind: 'said', id, text: text('output_text') };
 }
 
+// `instanceof` types a generic class's arguments as `any`. This narrows to the SDK's error with the types it declares.
+const isApiError = (error: unknown): error is APIError => error instanceof APIError;
+
 export function agentsClient({ apiKey, baseUrl = 'https://api.openai.com/v1' }: AgentsConfig) {
   // The SDK's own retries would hide failures from the core's budget, and its logs could carry response bodies.
   const openai = new OpenAI({ apiKey, baseURL: baseUrl, maxRetries: 0, timeout: REQUEST_TIMEOUT_MS, logLevel: 'off', fetch: (input, init) => fetch(input, init) });
@@ -75,7 +78,7 @@ export function agentsClient({ apiKey, baseUrl = 'https://api.openai.com/v1' }: 
     try {
       return await run();
     } catch (error) {
-      if (error instanceof APIError && typeof error.status === 'number') {
+      if (isApiError(error) && typeof error.status === 'number') {
         console.error('OpenAI request rejected', { call: name, status: error.status });
         throw new BackendError(failureOf(error.status, error.headers?.get('Retry-After') ?? null, Date.now()));
       }

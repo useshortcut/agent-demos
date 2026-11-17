@@ -132,6 +132,9 @@ function turnOf(events: Event[], memo: Memo): Observed<Memo> {
   return { memo: { ...memo, asked: question.id }, said: [...said, { id: question.id, text: question.question }], status: { kind: 'asked', on: 'user' } };
 }
 
+// `instanceof` types a generic class's arguments as `any`. This narrows to the SDK's error with the types it declares.
+const isApiError = (error: unknown): error is APIError => error instanceof APIError;
+
 // One request. The SDK's own timeout ends when the response headers arrive, so this deadline is the one that covers the body.
 async function claudeRequest<T>(request: string, claudeSessionId: string | null, run: (bound: { signal: AbortSignal }) => Promise<T>): Promise<T> {
   const deadline = new AbortController();
@@ -139,7 +142,7 @@ async function claudeRequest<T>(request: string, claudeSessionId: string | null,
   try {
     return await run({ signal: deadline.signal });
   } catch (error) {
-    if (error instanceof APIError && typeof error.status === 'number') {
+    if (isApiError(error) && typeof error.status === 'number') {
       console.error('Claude request rejected', { request, claudeSessionId, status: error.status });
       throw new BackendError(failureOf(error.status, error.headers?.get('Retry-After') ?? null, Date.now()));
     }
