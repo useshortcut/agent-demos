@@ -119,14 +119,19 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
   };
 
   // The step's next save fails and the object restarts, as when it is evicted after a call and before the save.
+  // One job can make two calls before it saves, so the bridge learns nothing from a call it makes while `dying` either.
   const { put } = storage;
+  let dying = false;
   function dieAtSave() {
+    dying = true;
     storage.put = async () => {
       storage.put = put;
       h.env.SESSIONS.restart();
       throw new Error('evicted');
     };
   }
+  /** The call answered, and the step saves what it learned from it. */
+  const learns = (mode) => mode === null && !dying;
 
   const raw = { ...fake.backend };
   const faulted = (call, run) => async (...args) => {
@@ -158,7 +163,7 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
       const before = fake.chats.length;
       const opened = await raw.open(request);
       const made = fake.chats[before];
-      led.opened(request.key, { conversation: opened.conversation.id, landed: Boolean(made) && made.opened !== null, learned: mode === null });
+      led.opened(request.key, { conversation: opened.conversation.id, landed: Boolean(made) && made.opened !== null, learned: learns(mode) });
       return opened;
     }),
     prepare: faulted('prepare', async (mode, conversation) => {
@@ -169,7 +174,7 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
       }
       const ready = await raw.prepare(conversation);
       // Told only what the bridge was: a prepare whose answer is lost teaches nothing.
-      if (mode === null) led.prepared(conversation.id, { ready: ready.kind === 'ready', empty: ready.empty ?? false });
+      if (learns(mode)) led.prepared(conversation.id, { ready: ready.kind === 'ready', empty: ready.empty ?? false });
       return ready;
     }),
     send: faulted('send', async (mode, conversation, message) => {
@@ -185,7 +190,7 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
       }
       const before = chat.received.length;
       const memo = await raw.send(conversation, message);
-      led.sent(key, { landed: chat.received.length > before, learned: mode === null });
+      led.sent(key, { landed: chat.received.length > before, learned: learns(mode) });
       return memo;
     }),
     observe: faulted('observe', async (mode, conversation) => {
@@ -195,7 +200,7 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
         throw refusal();
       }
       const seen = await raw.observe(conversation);
-      if (mode === null && ['finished', 'failed'].includes(seen.status.kind)) led.ended();
+      if (learns(mode) && ['finished', 'failed'].includes(seen.status.kind)) led.ended();
       return seen;
     }),
     halt: faulted('halt', async (mode, target) => {
@@ -221,6 +226,7 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
 
   async function tick(at = null) {
     armed = at;
+    dying = false;
     step = { calls: [], counts: {} };
     const logged = h.logs.length;
     await h.tick(SID);
@@ -240,7 +246,10 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
     // A reply that Shortcut is ahead by is on its way, and the bridge may be waiting for it.
     const ahead = `reply ${session().turn}`;
     if (events[ahead] && !delivered.includes(ahead)) await deliver(ahead, parse(ahead));
-    const finish = () => fake.chats.forEach((chat) => { if (!chat.gone) chat.status = { kind: 'finished' }; });
+    const finish = () => fake.chats.filter((chat) => !chat.gone).forEach((chat) => {
+      if (chat.status.kind === 'working') led.finished(chat.id);
+      chat.status = { kind: 'finished' };
+    });
     for (let i = 0; i < REST_ALARMS && (await storage.getAlarm()) !== null; i++) {
       finish();
       await tick();
@@ -270,7 +279,8 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
           session().closed = true;
           return void led.arrived({ type: 'close' });
         case 'finish':
-          return void (newest().status = { kind: 'finished' });
+          newest().status = { kind: 'finished' };
+          return void led.finished(newest().id);
         case 'gone':
           return void Object.assign(newest(), { gone: true, status: { kind: 'failed', body: 'The Fake session ended.', keep: false } });
         case 'tick':

@@ -44,6 +44,7 @@ export const RULES = {
   keys: 'A send is prepared before it first goes out. A retried open or send repeats its text, and no two different sends share a key. An open that delivers no text may change its text between attempts, since nothing reads it.',
   single: 'When the bridge comes to rest in a session that Shortcut has not closed, at most one conversation is working.',
   links: 'A conversation without a URL gets no card link, and no activity carries link text for it.',
+  answered: 'An answer the agent gave and the bridge has not read is not skipped. While the bridge is on its starting reply, no text that carries no request lands in a conversation whose agent has finished since the last text landed there. The bridge reads the agent right before it sends such a text. An answer it finds is the turn\'s outcome, and the context waits for the next request.',
   alone: 'A call that only delivers the context ends no turn when the backend refuses it. That is the send of a text that carries no request, or the prepare for one, while no request is still owed, in a conversation the bridge knows to hold a text: it learned that a text landed there, or a prepare found one. The bridge posts no error before its next backend call.',
   redelivered: 'An event that Shortcut delivers a second time changes nothing the bridge holds.',
   loop: 'Every step ends, and without an error of its own. Once no event is waiting and no agent is working the alarms run out.',
@@ -66,6 +67,7 @@ export function ledger(tokens, { opensEmpty }) {
     requests: {},
     texts: {},
     told: {},
+    answered: {},
     preparing: null,
     forgiven: false,
   });
@@ -108,6 +110,8 @@ export function ledger(tokens, { opensEmpty }) {
   function land(id, conversation) {
     const text = s.texts[id];
     Object.assign(text, { conversation, landed: true });
+    if (s.answered[conversation] && text.holds.length === 0 && onOpening()) broke('answered', `a text that carries no request landed in ${conversation} after its agent finished and before the bridge read the answer`);
+    delete s.answered[conversation];
     for (const turn of text.holds) {
       const request = s.requests[turn];
       if (request.landed && request.learned) broke('once', `${named(turn)} landed twice`);
@@ -170,6 +174,10 @@ export function ledger(tokens, { opensEmpty }) {
     /** The bridge read the end of a turn from the backend, or an open or an observe was refused. */
     ended() {
       s.outcome = true;
+    },
+    /** The agent finished its turn in `conversation`. */
+    finished(conversation) {
+      s.answered[conversation] = true;
     },
     /** The bridge makes a backend call. */
     calling() {

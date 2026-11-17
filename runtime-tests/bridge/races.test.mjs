@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { it } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { REQUEST, SID, bridgeHarness, openingText } from './harness.mjs';
+import { CONTEXT, REQUEST, SID, bridgeHarness, openingText } from './harness.mjs';
 
 const root = pathToFileURL(`${process.cwd()}/`);
 assert.ok(existsSync(new URL('src/core/port.ts', root)), 'races.test.mjs tests the bridge in the current directory. Run `npm test` inside a bridge.');
@@ -103,4 +103,69 @@ it('opens nothing for an opening request whose turn Shortcut ended on its own be
   await h.tick();
   assert.deepEqual(h.fake.chats, []);
   assert.equal(await h.alarmIn(), null);
+});
+
+// The bridge started from a reply and the agent is at work. The session.created that follows brings a context and no request, so the context would go alone.
+async function lateContext(h) {
+  await h.connect();
+  const created = h.shortcut.open(SID, { body: '' });
+  await h.accept(h.shortcut.prompt(SID, 'Start here'));
+  await h.tick();
+  return { chat: h.fake.only(), created };
+}
+
+it('posts the answer of an agent that finished before a late context could go to it alone, and sends the context with the next reply', async (t) => {
+  const h = setup(t);
+  const { chat, created } = await lateContext(h);
+  h.fake.say(chat, 'All done');
+  chat.status = { kind: 'finished' };
+  await h.accept(created);
+  await h.tick();
+  assert.deepEqual(chat.received, [], 'the context is not sent past an answer the bridge has not read');
+  assert.deepEqual(h.bodies('response'), [`All done\n\n[Open in Fake](${chat.url})`]);
+  assert.deepEqual(h.bodies('error'), []);
+  assert.equal(await h.alarmIn(), null);
+
+  await h.accept(h.shortcut.prompt(SID, 'One more thing'));
+  await h.tick();
+  assert.deepEqual(chat.received, [`Context from Shortcut:\n\n${CONTEXT}\n\nOne more thing`]);
+  h.assertCleanLogs();
+});
+
+it('sends a late context alone to an agent it has just read as still working', async (t) => {
+  const h = setup(t);
+  const { chat, created } = await lateContext(h);
+  await h.accept(created);
+  await h.tick();
+  assert.deepEqual(chat.received, [`Context from Shortcut:\n\n${CONTEXT}`]);
+  assert.deepEqual(h.requests.filter((r) => r.origin === 'fake').map((r) => r.method).slice(-3), ['prepare', 'observe', 'send']);
+  assert.deepEqual(h.bodies('response'), []);
+});
+
+it('reads the agent again before it retries a send that carries only the context, and posts an answer given since the first try', async (t) => {
+  const h = setup(t);
+  const { chat, created } = await lateContext(h);
+  await h.accept(created);
+  h.fake.failNext('send', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  assert.deepEqual([h.calls('send').length, chat.received], [1, []]);
+  h.fake.say(chat, 'All done');
+  chat.status = { kind: 'finished' };
+  await h.tick();
+  assert.deepEqual([h.calls('send').length, chat.received], [1, []], 'the send is not tried again');
+  assert.deepEqual(h.bodies('response'), [`All done\n\n[Open in Fake](${chat.url})`]);
+});
+
+it('ends no turn when the backend refuses the read before a send that carries only the context, and goes on polling', async (t) => {
+  const h = setup(t);
+  const { chat, created } = await lateContext(h);
+  await h.accept(created);
+  h.fake.failNext('observe', new BackendError({ kind: 'rejected', status: 401 }));
+  await h.tick();
+  assert.deepEqual([chat.received, h.bodies('error')], [[], []]);
+  h.fake.say(chat, 'All done');
+  chat.status = { kind: 'finished' };
+  await h.tick();
+  assert.deepEqual(h.bodies('response'), [`All done\n\n[Open in Fake](${chat.url})`]);
+  assert.deepEqual(chat.received, []);
 });

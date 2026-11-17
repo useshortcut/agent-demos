@@ -523,7 +523,8 @@ export function started(state: SessionState, phase: Attempted, { conversation: o
  * message there also settles an introduction whose answer the bridge never
  * got: it landed, so it is not repeated. A text goes out with no request
  * only while the bridge is on the turn it started from: the introduction of a
- * session created without one, or a context that arrived late.
+ * session created without one, or a context that arrived late. `readsFirst`
+ * says when the second waits behind a read of the agent.
  */
 export function prepared(state: SessionState, phase: RelayPhase, { memo, empty }: Extract<Prepared<Memo>, { kind: 'ready' }>, slug: string, now: number): SessionState {
   const settled: SessionState = !empty && state.briefing === 'introduced' ? { ...state, briefing: 'given' } : state;
@@ -635,6 +636,28 @@ export function observed(state: SessionState, phase: PollPhase, { memo, said, st
     case 'failed':
       return fail(state, linkedBody(status.body, link), status.keep);
   }
+}
+
+/**
+ * A prepared send that has to wait behind a read of the agent: one that
+ * carries only the context, to an agent that holds a text it has not
+ * answered, with no request behind it. Its prepare moved the memo past what
+ * the agent has said so far. An answer given since the bridge last read the
+ * agent would then never be posted, and the turn would wait for a pickup
+ * that does not come.
+ */
+export const readsFirst = (phase: RelayPhase, send: Send) => phase.working && send.prompt.length === 0 && !phase.prompt.some((reply) => !reply.superseded);
+
+/**
+ * What the read before a send of the context alone means, every time the
+ * send is tried. Null while the agent has not answered: the send goes out.
+ * Any other status is handled as a poll handles it. The send is then
+ * dropped, and the context stays owed for the next reply.
+ */
+export function answered(state: SessionState, phase: RelayPhase, seen: Observed<Memo>, now: number): SessionState | null {
+  if (seen.status.kind === 'working' || seen.status.kind === 'pending') return null;
+  const reading = polling(phase.on, now);
+  return observed({ ...state, phase: reading }, reading, seen, now);
 }
 
 /** Every wait passes through here, so the floor holds for a `Retry-After` and a backoff alike. */

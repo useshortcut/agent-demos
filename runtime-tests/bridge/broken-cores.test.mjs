@@ -78,6 +78,13 @@ const BROKEN = [
     scope: { from: ['created', 'reply 2'], ahead: true, events: 2, faults: 1, only: [], finish: 0, gone: 0, total: 3 },
     breaks: 'rest',
   },
+  {
+    core: 'sends the context alone without reading the agent first, so an answer it has not read is passed over',
+    replace: [['export const readsFirst = (phase: RelayPhase, send: Send) => phase.working && send.prompt.length === 0 && !phase.prompt.some((reply) => !reply.superseded);', 'export const readsFirst = (phase: RelayPhase, send: Send) => false;']],
+    facts: DEVIN,
+    scope: { from: ['created', 'reply 2', 'stop 1'], events: 3, faults: 0, finish: 1, gone: 0, total: 4 },
+    breaks: 'answered',
+  },
 ];
 
 function brokenCopy(replace, name = 'src/core/bridge.ts') {

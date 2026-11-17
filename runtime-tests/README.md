@@ -227,7 +227,9 @@ The search cannot reach what its scripts cannot say. Shortcut refuses a write
 only for a turn it has moved past, and never fails. Only a stop arrives
 while a call is out. The ledger takes a send's text as fixed when the send
 goes out, so it cannot place a reply or a `session.created` that arrives
-between a prepare and its send. No backend call is held
+between a prepare and its send. It takes every refused `observe` to end
+the turn, also the read before a send that carries only the context, which
+ends none. No backend call is held
 by a `Retry-After`. A refusal is a 401, apart from the 410 of a send to a
 conversation that ended on its own. No wait runs out: not the pickup timeout, the failure budget, or
 the heartbeat. The agent never asks a question. `session.created` always has a
@@ -242,8 +244,8 @@ before the send that carries it is confirmed, one that introduces a
 conversation twice, one that introduces an empty conversation with nothing to
 be asked, one that ends the turn when the backend refuses a send that
 carried only the context, one that reads its inbox only when a step starts,
-and one that gives up an open when Shortcut answers its acknowledgement with
-a 409. When you add a rule, add the core that breaks it.
+one that gives up an open when Shortcut answers its acknowledgement with
+a 409, and one that sends the context alone without reading the agent first. When you add a rule, add the core that breaks it.
 
 ### Conformance
 

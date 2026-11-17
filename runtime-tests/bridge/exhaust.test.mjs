@@ -75,6 +75,9 @@ const PINNED = [
   ['introduces nothing to a conversation it opened empty when the stop of the request arrives while that open is out', { keeps: false, empty: true, dedupes: false }, ['created', 'tick: stop 1 during open', 'rest']],
   ['opens the conversation with the opening request, and sends the newer reply there, when Shortcut refused the first acknowledgement because the user had already replied', DEVIN, ['created', 'ahead 2', 'tick', 'reply 2', 'tick', 'rest']],
   ['opens the next conversation with the reply that waited on a stop when Shortcut refused its acknowledgement because the user had already replied again', DEVIN, ['created', 'tick', 'stop 1', 'reply 2', 'ahead 3', 'tick', 'rest']],
+  ['posts the answer of an agent that finished before a late context could go to it alone, and sends it no context', DEVIN, ['reply 2', 'tick', 'finish', 'stop 1', 'created', 'tick', 'rest']],
+  ['reads the agent again before it retries a send that carries only the context, and posts an answer given since the first try', DEVIN, ['reply 2', 'tick', 'stop 1', 'created', 'tick: send fails', 'finish', 'tick', 'rest']],
+  ['repeats a send that carries only the context under its key when the step dies after the read that came before it', DEVIN, ['reply 2', 'tick: stop 1 during open', 'created', 'tick: observe dies', 'tick', 'rest']],
 ];
 
 const bridge = await loadBridge(root);

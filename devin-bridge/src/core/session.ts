@@ -3,6 +3,7 @@ import {
   MAX_FAILURES,
   MAX_LOOKUPS,
   abandoned,
+  answered,
   applyEvent,
   attempting,
   backoffMs,
@@ -20,6 +21,7 @@ import {
   openingText,
   prepared,
   published,
+  readsFirst,
   rejected,
   relayed,
   restarted,
@@ -150,9 +152,11 @@ export class Session {
   // Shortcut can deliver an event while a job waits on the backend, on
   // Shortcut, or on the Workspace object for the credentials. The inbox is
   // read again after each of those waits and the plan is made from what it
-  // held. So an event the bridge acknowledged before a backend call goes out
-  // is applied before that call, and a stop cancels what the step was about
-  // to send.
+  // held. So an event the bridge acknowledged before a job's backend call
+  // goes out is applied before that call, and a stop cancels what the step
+  // was about to send. One job makes two calls: a send that carries only the
+  // context goes out right after the read that allows it. A stop cancels no
+  // context, so that send has nothing to lose to an event it has not read.
   private async run(state: SessionState, save: Save): Promise<SessionState> {
     const backend = backendOf(this.env);
     let io: Io | null | undefined;
@@ -311,6 +315,10 @@ async function perform(state: SessionState, phase: ActPhase, { backend, slug }: 
         return ready.kind === 'gone' ? restarted(known, phase, ready.empty, Date.now()) : prepared(known, phase, ready, slug, Date.now());
       }
       const { text, key, memo } = phase.send;
+      if (readsFirst(phase, phase.send)) {
+        const outcome = answered(succeeded(state, 'backend'), phase, await backend.observe(phase.on), Date.now());
+        if (outcome) return outcome;
+      }
       const sent = await backend.send({ ...phase.on, memo }, { text, key });
       return relayed(succeeded(state, 'backend'), phase, phase.send, sent, Date.now());
     }

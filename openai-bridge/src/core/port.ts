@@ -111,7 +111,7 @@ export interface Backend<M> {
   prepare(conversation: Conversation<M>): Promise<Prepared<M>>;
   /** `conversation.memo` is the prepared memo. Returns the memo that places the agent's answer. */
   send(conversation: Conversation<M>, message: Outgoing): Promise<M>;
-  /** Read-only at the backend. The same memo and the same backend state give the same answer. */
+  /** Read-only at the backend. The same memo and the same backend state give the same answer. The core also calls it between a `prepare` and its `send`, with the memo from before that prepare, when the send carries no request. */
   observe(conversation: Conversation<M>): Promise<Observed<M>>;
   /** Stops the work. A session that is already stopped or gone is a success. */
   halt(target: Target<M>): Promise<Halted>;

@@ -38,3 +38,22 @@ it('creates the Devin session with the opening request when the user replies bef
   assert.deepEqual(h.shortcut.activities().filter((a) => a.content.type === 'error'), []);
   h.assertCleanLogs();
 });
+
+it('posts Devin\'s answer when the context of a late session.created arrives after Devin finished and before the bridge read it', async (t) => {
+  const h = setup(t);
+  await h.connect();
+  const created = h.shortcut.open();
+  const stop = h.shortcut.stop(SID);
+  await accept(h, h.shortcut.prompt(SID, 'Start here (private-prompt)'));
+  await h.tick();
+  const devin = h.devin.only();
+  Object.assign(devin, { status: 'running', status_detail: 'finished' });
+  h.devin.say(devin, 'All done');
+  await accept(h, stop);
+  await accept(h, created);
+  await h.tick();
+  assert.deepEqual(devin.received, [], 'the context is not sent past an answer the bridge has not read');
+  assert.deepEqual(h.shortcut.activities().filter((a) => a.content.type !== 'thought').map((a) => [a.key, a.content.body.split('\n')[0]]), [['devin-bridge:2:response', 'All done']]);
+  assert.equal(await h.alarmIn(), null);
+  h.assertCleanLogs();
+});
