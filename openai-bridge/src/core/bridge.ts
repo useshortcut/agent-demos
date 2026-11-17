@@ -74,6 +74,8 @@ export type SessionState = {
   cutoff: number;
   /** The newest turn whose reply reached the agent. An older reply that arrives later is superseded and dropped. */
   sent: number;
+  /** The newest turn whose request the bridge knows the current conversation holds, and 0 when it knows of none. `sent` counts every conversation of the session, and this counts only the current one. A stop of an older turn halts nothing there. */
+  landed: number;
   phase: Phase;
   /** Conversations the bridge gave up and still has to halt. */
   retire: Held[];
@@ -88,13 +90,16 @@ export type SessionState = {
   applied: number;
 };
 
+/** A state under today's tag as a deployed bridge can hold it. One stored before `landed` was kept has none. */
+export type StoredState = Omit<SessionState, 'landed'> & { landed?: number };
+
 /**
  * A state as the first version of this file stored it, which a deployed
  * bridge can still hold. It kept the context a conversation was owed in
  * three places: `late`, the `late` of a prepared send, and the text of an
  * `opening` request, which ended with the context. Its sends had no key.
  */
-export type FirstPortState = Omit<SessionState, 'v' | 'briefing' | 'phase'> & {
+export type FirstPortState = Omit<SessionState, 'v' | 'briefing' | 'phase' | 'landed'> & {
   v: 2;
   late: Pending | null;
   phase:
@@ -138,16 +143,21 @@ export const sendKey = (state: Pick<SessionState, 'shortcutSessionId' | 'generat
  * start left the context out when it arrived after the attempt, since it
  * then waited to follow as a message. An `opening` request loses the context
  * that the first shape kept at the end of its text.
+ *
+ * A state stored before `landed` was kept gets `sent` for the conversation
+ * its phase holds. The two differ only when an earlier conversation of the
+ * session took a newer reply than the current one has.
  */
-export function restored(stored: SessionState | FirstPortState): SessionState {
-  if (stored.v === 3) return stored;
+export function restored(stored: StoredState | FirstPortState): SessionState {
+  const landed = 'on' in stored.phase && stored.phase.on ? stored.sent : 0;
+  if (stored.v === 3) return { ...stored, landed: stored.landed ?? landed };
   const { v, late, phase, ...rest } = stored;
   const block = stored.context && contextBlock(stored.context);
   const under = `\n\n${block}`;
   const bare = (reply: Pending): Pending => (!reply.opening || !block ? reply : { ...reply, text: reply.text === block ? '' : reply.text.endsWith(under) ? reply.text.slice(0, -under.length) : reply.text });
   const requests = (waiting: Pending[]) => waiting.map(bare).filter((reply) => reply.text !== '');
   const carried = (waiting: Pending[]) => block !== '' && waiting.some((reply) => reply.opening);
-  const state = (briefing: SessionState['briefing'], current: Phase): SessionState => ({ ...rest, v: 3, briefing, phase: current });
+  const state = (briefing: SessionState['briefing'], current: Phase): SessionState => ({ ...rest, v: 3, briefing, landed, phase: current });
   switch (phase.kind) {
     case 'start': {
       // A start that replaced a conversation that ended took over what waited for it, so its prompt can hold an `opening` request.
@@ -277,6 +287,7 @@ function initial(event: ShortcutSessionEventPayload): SessionState {
     generation: 1,
     cutoff: 0,
     sent: 0,
+    landed: 0,
     phase: { kind: 'start', prompt: said(event), extra: [], attempted: false },
     retire: [],
     linked: null,
@@ -353,25 +364,29 @@ function earlier(state: SessionState, reply: Pending): SessionState {
   }
 }
 
-// A stop delivered after the replies that followed it still ends the session
-// it meant, and those replies open a new one. The replies up to its turn are
-// cancelled with it, whether they arrived already or arrive later. Once every
-// later reply was sent, the stop is stale: the agent works on what came after
-// it, so nothing is halted, and the cancelled replies that still wait are
-// dropped where they wait. An open that was attempted and not answered is
-// the exception. Its text is fixed and may not be out yet, so if it holds a
-// cancelled reply the open is stopped whole. Whenever the open is stopped,
-// what its text held after the stop's turn opens the next conversation with
-// the replies that waited. The ack has its own suffix because the turn's
-// `ack` may already be posted with another body, and Shortcut answers a
-// reused key with a 409.
+// A stop delivered after the replies that followed it. The replies up to its
+// turn are cancelled with it, whether they arrived already or arrive later.
+// `RULES.halted` in runtime-tests/bridge/ledger.mjs says when it also ends
+// the conversation it meant. Once the conversation holds a request newer
+// than the stop, the stop is stale: the agent works on what came after it,
+// so nothing is halted, the cancelled replies that still wait are dropped
+// where they wait, and the later ones go to the same conversation. The same
+// holds once no later reply is left unsent. Otherwise the conversation is
+// halted and the later replies open a new one. An open that was attempted
+// and not answered is the exception. Its text is fixed and may not be out
+// yet, so if it holds a cancelled reply the open is stopped whole. Whenever
+// the open is stopped, what its text held after the stop's turn opens the
+// next conversation with the replies that waited. The ack has its own suffix
+// because the turn's `ack` may already be posted with another body, and
+// Shortcut answers a reused key with a 409.
 function staleStop(state: SessionState, turn: number): SessionState {
   const { phase } = state;
   const cancelled = { ...state, cutoff: Math.max(state.cutoff, turn) };
   const after = (replies: Pending[]) => replies.filter((reply) => reply.turn > turn);
   const fixed = phase.kind === 'start' && phase.attempted ? phase.prompt : [];
   const waiting = after(unsent(phase));
-  if (waiting.length === 0 && after(fixed).length === fixed.length) {
+  const movedOn = conversationOf(phase) !== null && state.landed > turn;
+  if (movedOn || (waiting.length === 0 && after(fixed).length === fixed.length)) {
     // An open that has not gone out held only what the stop cancelled, so nothing is left to open a conversation for. Only a conversation that replaces one that ended is in that place: the bridge started from a reply the stop cannot cancel.
     const nothing = phase.kind === 'start' && !phase.attempted;
     return nothing ? fail(cancelled, `The ${identity.name} session ended. Reply to start a new one.`, false) : { ...cancelled, phase: without(phase, turn) };
@@ -380,12 +395,15 @@ function staleStop(state: SessionState, turn: number): SessionState {
   return enqueue(stopping, activity(stopping, 'ack:restart', 'thought', `Starting a new ${identity.name} session.`));
 }
 
-/** The phase without the unsent replies up to `turn`. A prepared send that holds one is dropped whole, since its text is fixed. */
+/** The phase without the unsent replies up to `turn`. A prepared send that holds one is dropped whole, since its text is fixed, and what it held after `turn` waits to be prepared again. */
 function without(phase: Phase, turn: number): Phase {
   const after = (replies: Pending[]) => replies.filter((reply) => reply.turn > turn);
   switch (phase.kind) {
     case 'start': return { ...phase, extra: after(phase.extra) };
-    case 'relay': return { ...phase, prompt: after(phase.prompt), send: phase.send?.prompt.some((reply) => reply.turn <= turn) ? null : phase.send };
+    case 'relay': {
+      const { send } = phase;
+      return send?.prompt.some((reply) => reply.turn <= turn) ? { ...phase, prompt: after([...send.prompt, ...phase.prompt]), send: null } : { ...phase, prompt: after(phase.prompt) };
+    }
     case 'stop': return { ...phase, then: after(phase.then) };
     default: return phase;
   }
@@ -430,6 +448,7 @@ const fresh = (state: SessionState, prompt: Pending[]): SessionState => ({
   ...state,
   generation: state.generation + 1,
   briefing: 'owed',
+  landed: 0,
   phase: { kind: 'start', prompt, extra: [], attempted: false },
   failures: { ...state.failures, link: 0 },
   notBefore: { ...state.notBefore, link: null },
@@ -508,7 +527,7 @@ const newest = (sent: number, replies: Pending[]) => Math.max(sent, ...replies.m
 
 export function started(state: SessionState, phase: Attempted, { conversation: on, delivered }: Opened<Memo>, now: number): SessionState {
   if (!delivered) return { ...state, phase: relaying(on, [...phase.prompt, ...phase.extra], false) };
-  const told: SessionState = { ...state, sent: newest(state.sent, phase.prompt), briefing: phase.briefs ? 'given' : state.briefing };
+  const told: SessionState = { ...state, sent: newest(state.sent, phase.prompt), landed: newest(state.landed, phase.prompt), briefing: phase.briefs ? 'given' : state.briefing };
   const extra = phase.extra.filter((reply) => !reply.superseded);
   return { ...told, phase: extra.length || (owes(told) && opening(told)) ? relaying(on, extra, true) : polling(on, now) };
 }
@@ -544,7 +563,7 @@ export function prepared(state: SessionState, phase: RelayPhase, { memo, empty }
 export function relayed(state: SessionState, phase: RelayPhase, send: Send, memo: Memo, now: number): SessionState {
   const sent = newest(state.sent, send.prompt);
   const on: Live = { ...phase.on, memo };
-  const told: SessionState = { ...state, sent, briefing: send.briefs ? 'given' : state.briefing };
+  const told: SessionState = { ...state, sent, landed: newest(state.landed, send.prompt), briefing: send.briefs ? 'given' : state.briefing };
   const waiting = phase.prompt.filter((reply) => reply.opening || reply.turn > sent);
   return { ...told, phase: waiting.length || (owes(told) && opening(told)) ? { ...phase, on, prompt: waiting, send: null, working: true } : polling(on, now) };
 }

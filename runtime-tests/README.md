@@ -245,7 +245,9 @@ conversation twice, one that introduces an empty conversation with nothing to
 be asked, one that ends the turn when the backend refuses a send that
 carried only the context, one that reads its inbox only when a step starts,
 one that gives up an open when Shortcut answers its acknowledgement with
-a 409, and one that sends the context alone without reading the agent first. When you add a rule, add the core that breaks it.
+a 409, one that sends the context alone without reading the agent first, and
+one that halts a conversation for a stop older than a reply that has landed
+there. When you add a rule, add the core that breaks it.
 
 ### Conformance
 

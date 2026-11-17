@@ -57,3 +57,23 @@ it('posts Devin\'s answer when the context of a late session.created arrives aft
   assert.equal(await h.alarmIn(), null);
   h.assertCleanLogs();
 });
+
+it('terminates nothing for a stop of turn 1 that arrives after Devin received the second reply, and sends Devin the third', async (t) => {
+  const h = setup(t);
+  await h.connect();
+  const created = h.shortcut.open();
+  const stop = h.shortcut.stop(SID);
+  h.shortcut.sessions.get(SID).stopRequested = false;
+  await accept(h, created);
+  await h.tick();
+  await accept(h, h.shortcut.prompt(SID, 'Second (private-prompt)'));
+  await h.tick();
+  await accept(h, h.shortcut.prompt(SID, 'Third (private-prompt)'));
+  await accept(h, stop);
+  await h.tick();
+  const devin = h.devin.only();
+  assert.deepEqual(devin.received, ['Second (private-prompt)', 'Third (private-prompt)']);
+  assert.equal(devin.terminated ?? false, false);
+  assert.equal(h.devinCalls('DELETE').length, 0);
+  h.assertCleanLogs();
+});

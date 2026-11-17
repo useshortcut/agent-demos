@@ -206,6 +206,10 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
     halt: faulted('halt', async (mode, target) => {
       if (mode === 'fails') throw transient();
       if (mode === 'refused') throw refusal();
+      // The bridge has learned of nothing in a conversation it knows only by the key of an unanswered open.
+      // A backend that keeps its conversation on a halt clears `gone`, so `ended` remembers one that ended on its own.
+      const halted = target.kind === 'live' && fake.chats.find((chat) => chat.id === target.conversation.id);
+      if (halted) led.halting(halted.id, { over: Boolean(halted.gone || halted.ended) });
       return raw.halt(target);
     }),
   });
@@ -282,7 +286,7 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
           newest().status = { kind: 'finished' };
           return void led.finished(newest().id);
         case 'gone':
-          return void Object.assign(newest(), { gone: true, status: { kind: 'failed', body: 'The Fake session ended.', keep: false } });
+          return void Object.assign(newest(), { gone: true, ended: true, status: { kind: 'failed', body: 'The Fake session ended.', keep: false } });
         case 'tick':
           return tick(parsed.at ?? null);
         case 'rest':
@@ -351,7 +355,7 @@ export async function world(t, bridge, facts, turns = [2, 3, 4]) {
       const alarm = await storage.getAlarm();
       let json = JSON.stringify([
         timeless, inbox, alarm === null ? null : alarm > now,
-        fake.chats.map((chat) => [chat.key, chat.opened, chat.received, chat.sends, chat.status.kind, chat.gone, chat.halted]),
+        fake.chats.map((chat) => [chat.key, chat.opened, chat.received, chat.sends, chat.status.kind, chat.gone, chat.halted, chat.ended ?? false]),
         [s.turn, s.stopRequested, s.outcome, s.closed, s.activities.map((a) => `${a.key} ${a.content.body}`).sort(), s.external_urls],
         led.state, [...delivered].sort(),
       ]);

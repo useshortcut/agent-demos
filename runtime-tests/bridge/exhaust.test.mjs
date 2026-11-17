@@ -78,6 +78,8 @@ const PINNED = [
   ['posts the answer of an agent that finished before a late context could go to it alone, and sends it no context', DEVIN, ['reply 2', 'tick', 'finish', 'stop 1', 'created', 'tick', 'rest']],
   ['reads the agent again before it retries a send that carries only the context, and posts an answer given since the first try', DEVIN, ['reply 2', 'tick', 'stop 1', 'created', 'tick: send fails', 'finish', 'tick', 'rest']],
   ['repeats a send that carries only the context under its key when the step dies after the read that came before it', DEVIN, ['reply 2', 'tick: stop 1 during open', 'created', 'tick: observe dies', 'tick', 'rest']],
+  ['halts nothing for a stop that arrives after a newer reply landed, and sends the reply that waited to the same conversation', DEVIN, ['created', 'tick', 'reply 2', 'tick', 'reply 3', 'stop 1', 'tick', 'rest']],
+  ['halts nothing for a stop that arrives while the open that carries a newer reply is out, and sends the reply that waited beside it to the conversation it opened', DEVIN, ['reply 2', 'reply 3', 'tick: stop 1 during open', 'rest']],
 ];
 
 const bridge = await loadBridge(root);

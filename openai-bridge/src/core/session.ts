@@ -37,6 +37,7 @@ import {
   type PollPhase,
   type SessionState,
   type StopPhase,
+  type StoredState,
 } from './bridge';
 import { connect as backendOf, identity, type BackendEnv, type Memo } from '../backend';
 import * as adapter from '../backend';
@@ -199,7 +200,7 @@ const { upgradeState }: BackendModule<Memo, BackendEnv> = adapter;
 
 // A state of an earlier shape is saved in today's by the step's next save.
 async function load(storage: DurableObjectStorage, sessionId: string): Promise<SessionState | null> {
-  const stored = await storage.get<SessionState | FirstPortState | { v?: undefined }>('state');
+  const stored = await storage.get<StoredState | FirstPortState | { v?: undefined }>('state');
   if (stored === undefined) return null;
   const known = stored.v === 2 || stored.v === 3 ? stored : upgradeState?.(stored) ?? null;
   if (known !== null) return restored(known);

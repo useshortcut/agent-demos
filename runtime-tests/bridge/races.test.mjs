@@ -169,3 +169,134 @@ it('ends no turn when the backend refuses the read before a send that carries on
   assert.deepEqual(h.bodies('response'), [`All done\n\n[Open in Fake](${chat.url})`]);
   assert.deepEqual(chat.received, []);
 });
+
+// A session whose stop of turn 1 Shortcut has not delivered yet.
+async function withLateStop(h) {
+  await h.connect();
+  const created = h.shortcut.open();
+  const stop = h.shortcut.stop(SID);
+  h.shortcut.sessions.get(SID).stopRequested = false;
+  return { created, stop };
+}
+
+it('halts nothing for a stop that arrives after a newer reply reached the agent, and sends the reply that waited to the same conversation', async (t) => {
+  const h = setup(t);
+  const { created, stop } = await withLateStop(h);
+  await h.accept(created);
+  await h.tick();
+  const chat = h.fake.only();
+  await h.accept(h.shortcut.prompt(SID, 'Second'));
+  await h.tick();
+  assert.deepEqual(chat.received, ['Second']);
+  await h.accept(h.shortcut.prompt(SID, 'Third'));
+  await h.accept(stop);
+  await h.tick();
+  assert.equal(h.calls('halt').length, 0, 'the agent keeps what it did with the second request');
+  assert.deepEqual(chat.received, ['Second', 'Third']);
+  assert.equal(h.fake.chats.length, 1);
+  assert.deepEqual(h.bodies('thought').filter((body) => /new Fake session/.test(body)), []);
+  h.assertCleanLogs();
+});
+
+it('still halts the conversation for a stop that arrives before the reply after it was sent, and opens a new one with that reply', async (t) => {
+  const h = setup(t);
+  const { created, stop } = await withLateStop(h);
+  await h.accept(created);
+  await h.tick();
+  const first = h.fake.only();
+  await h.accept(h.shortcut.prompt(SID, 'Second'));
+  await h.accept(stop);
+  await h.tick();
+  assert.equal(first.halted, true, 'the agent held only the request the stop cancelled');
+  assert.deepEqual(first.received, []);
+  assert.equal(h.fake.chats.length, 2);
+  assert.match(h.fake.chats[1].opened, /Second/);
+});
+
+it('sends a reply again, in a new message to the same conversation, when a stale stop cancels the opening request that was to go with it', async (t) => {
+  const h = setup(t);
+  const { created, stop } = await withLateStop(h);
+  await h.accept(h.shortcut.prompt(SID, 'Second'));
+  await h.tick();
+  const chat = h.fake.only();
+  await h.accept(created);
+  await h.accept(h.shortcut.prompt(SID, 'Third'));
+  h.fake.failNext('send', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  assert.deepEqual([h.calls('send').length, chat.received], [1, []], 'the message with the opening request and the third reply is prepared and has failed once');
+  await h.accept(stop);
+  await h.tick();
+  await h.tick();
+  assert.equal(h.calls('halt').length, 0);
+  assert.deepEqual(chat.received, [`Context from Shortcut:\n\n${CONTEXT}\n\nThird`], 'the cancelled opening request is gone, and the reply and the context are not');
+  assert.equal(h.fake.chats.length, 1);
+});
+
+/** Shortcut holds every event of the session from the start. `on(turn)` puts its session on the turn of the event it delivers next. */
+async function heldEvents(h) {
+  await h.connect();
+  h.shortcut.open();
+  const events = { stop: {}, reply: {} };
+  for (const turn of [2, 3, 4]) {
+    events.reply[turn] = h.shortcut.prompt(SID, `Reply ${turn}`);
+    events.stop[turn] = h.shortcut.stop(SID);
+  }
+  const on = (turn) => Object.assign(h.shortcut.sessions.get(SID), { turn, stopRequested: false, outcome: null, status: 'active' });
+  return { events, on };
+}
+
+it('still halts a conversation that replaced one that ended, for a stop newer than all it holds, though the ended one had taken a newer reply', async (t) => {
+  const h = setup(t);
+  const { events, on } = await heldEvents(h);
+  on(3);
+  await h.accept(events.reply[3]);
+  h.fake.failNext('open', new BackendError({ kind: 'transient' }));
+  await h.tick();
+  await h.accept(events.reply[2]);
+  // The first conversation takes reply 3 and ends on its own before reply 2 can follow.
+  const { backend } = h.fake;
+  const { open } = backend;
+  backend.open = async (request) => {
+    backend.open = open;
+    const opened = await open(request);
+    h.fake.chats[0].gone = true;
+    return opened;
+  };
+  await h.tick();
+  await h.tick();
+  const [first, second] = h.fake.chats;
+  assert.match(first.opened, /Reply 3/);
+  assert.match(second.opened, /Reply 2/);
+  assert.doesNotMatch(second.opened, /Reply 3/);
+
+  on(4);
+  await h.accept(events.reply[4]);
+  await h.accept(events.stop[2]);
+  await h.tick();
+  await h.tick();
+  assert.equal(second.halted, true, 'the second conversation held only the reply the stop cancelled');
+  assert.deepEqual(second.received, []);
+  assert.match(h.fake.chats[2].opened, /Reply 4/);
+});
+
+it('takes a state stored before it kept what the current conversation holds, and halts nothing for a stop older than the reply that state says was sent', async (t) => {
+  const h = setup(t);
+  const { created, stop } = await withLateStop(h);
+  await h.accept(created);
+  await h.tick();
+  const chat = h.fake.only();
+  await h.accept(h.shortcut.prompt(SID, 'Second'));
+  await h.tick();
+  const storage = h.env.SESSIONS.storages.get(SID);
+  const { landed, ...stored } = storage.data.get('state');
+  assert.deepEqual([stored.v, stored.sent, landed], [3, 2, 2]);
+  storage.data.set('state', stored);
+  h.env.SESSIONS.restart();
+
+  await h.accept(h.shortcut.prompt(SID, 'Third'));
+  await h.accept(stop);
+  await h.tick();
+  assert.equal(h.calls('halt').length, 0);
+  assert.deepEqual(chat.received, ['Second', 'Third']);
+  assert.equal(storage.data.get('state').landed, 3);
+});

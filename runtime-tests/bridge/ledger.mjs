@@ -35,7 +35,7 @@ export const RULES = {
     'A reply that arrives while a newer reply waits in an open that has no answer yet is not superseded. It follows the open.',
     'The request of a `session.created` is accepted when it arrives while no text is fixed that may have landed, or while the bridge is on its starting reply. Otherwise it is superseded. Once accepted it is never superseded. A text the backend refused before any attempt of it landed has not landed, and neither has the text of an open that delivers none.',
   ].join(' '),
-  once: 'No text carries a request twice, and no request lands twice, unless the bridge never learned that its earlier landing happened. Then it may land once more: as that send\'s retry under its key, or, after a stop halted the conversation, in a new text under a new key. The stop interrupted what the agent did with the first, so the bridge sends the request again, also to a conversation the backend kept.',
+  once: 'No text carries a request twice, and no request lands twice, unless the bridge never learned that its earlier landing happened. Then it may land once more: as that send\'s retry under its key, or, after a stop, in a new text under a new key. A stop that halted the conversation interrupted what the agent did with the first, so the bridge sends the request again, also to a conversation the backend kept. A stale stop that cancelled another request of the first text keeps that text from going out again, so the bridge fixes what else it carried in a new one.',
   ordered: 'A text carries its requests in turn order.',
   briefed: 'A text that is fixed after `session.created` arrived carries the context when it lands in a conversation that no earlier text told it to. A stop cancels requests and never the context.',
   briefedOnce: 'No text carries the context twice, and no conversation is told it twice, unless the bridge never learned that the earlier text landed. A conversation\'s first text is never such an exception once a prepare has found a message in it.',
@@ -44,6 +44,7 @@ export const RULES = {
   keys: 'A send is prepared before it first goes out. A retried open or send repeats its text, and no two different sends share a key. An open that delivers no text may change its text between attempts, since nothing reads it.',
   single: 'When the bridge comes to rest in a session that Shortcut has not closed, at most one conversation is working.',
   links: 'A conversation without a URL gets no card link, and no activity carries link text for it.',
+  halted: 'A conversation that holds a request the bridge has learned of is halted only for a stop of that request\'s turn or a later one, unless the conversation ended on its own or Shortcut closed the session. A stop that arrives after the bridge learned that a newer request landed there is stale for the conversation: it cancels the requests at or below its turn that still wait, and it halts nothing, so the agent keeps what it did with the newer request.',
   answered: 'An answer the agent gave and the bridge has not read is not skipped. While the bridge is on its starting reply, no text that carries no request lands in a conversation whose agent has finished since the last text landed there. The bridge reads the agent right before it sends such a text. An answer it finds is the turn\'s outcome, and the context waits for the next request.',
   alone: 'A call that only delivers the context ends no turn when the backend refuses it. That is the send of a text that carries no request, or the prepare for one, while no request is still owed, in a conversation the bridge knows to hold a text: it learned that a text landed there, or a prepare found one. The bridge posts no error before its next backend call.',
   redelivered: 'An event that Shortcut delivers a second time changes nothing the bridge holds.',
@@ -117,7 +118,7 @@ export function ledger(tokens, { opensEmpty }) {
       if (request.landed && request.learned) broke('once', `${named(turn)} landed twice`);
       Object.assign(request, { landed: request.landed + 1, learned: false, last: id });
     }
-    const told = (s.told[conversation] ??= { context: 0, learned: true, last: null, first: id });
+    const told = (s.told[conversation] ??= { context: 0, learned: true, last: null, first: id, newest: 0 });
     if (text.text.includes(tokens.context)) {
       if (told.context && told.learned) broke('briefedOnce', `${conversation} was told the context twice`);
       Object.assign(told, { context: told.context + 1, learned: false, last: id });
@@ -133,6 +134,7 @@ export function ledger(tokens, { opensEmpty }) {
     s.learnedNewest = Math.max(s.learnedNewest, ...text.holds);
     const told = s.told[text.conversation];
     told.known = true;
+    told.newest = Math.max(told.newest, ...text.holds);
     if (told.last === id) Object.assign(told, { learned: true, last: null });
     for (const request of Object.values(s.requests)) if (request.waits === id) Object.assign(request, { waits: null, superseded: !request.landed });
     // Nothing more can happen to a text the bridge knows has landed.
@@ -174,6 +176,11 @@ export function ledger(tokens, { opensEmpty }) {
     /** The bridge read the end of a turn from the backend, or an open or an observe was refused. */
     ended() {
       s.outcome = true;
+    },
+    /** A halt reaches `conversation`. `over`: it had ended on its own or was halted before. */
+    halting(conversation, { over }) {
+      const newest = s.told[conversation]?.newest ?? 0;
+      if (!s.closed && !over && newest > s.cutoff) broke('halted', `${conversation} was halted though the bridge had learned that ${named(newest)} landed there, and ${s.cutoff ? `the newest stop is of turn ${s.cutoff}` : 'no stop has arrived'}`);
     },
     /** The agent finished its turn in `conversation`. */
     finished(conversation) {

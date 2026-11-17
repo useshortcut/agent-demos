@@ -85,6 +85,13 @@ const BROKEN = [
     scope: { from: ['created', 'reply 2', 'stop 1'], events: 3, faults: 0, finish: 1, gone: 0, total: 4 },
     breaks: 'answered',
   },
+  {
+    core: 'halts a conversation for a stop older than a reply that has landed there, whenever a later reply still waits',
+    replace: [['  const movedOn = conversationOf(phase) !== null && state.landed > turn;', '  const movedOn = false;']],
+    facts: DEVIN,
+    scope: { from: ['created', 'reply 2', 'reply 3', 'stop 1'], events: 4, faults: 0, finish: 0, gone: 0, total: 4 },
+    breaks: 'halted',
+  },
 ];
 
 function brokenCopy(replace, name = 'src/core/bridge.ts') {
