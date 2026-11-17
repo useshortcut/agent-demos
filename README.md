@@ -6,6 +6,8 @@ Reference implementations for [Shortcut Open Agents](https://shortcut.com), the 
 
 An agent is a web service you own. Shortcut sends it signed webhooks when something happens in the workspace, or when someone assigns it a story, @-mentions it, or replies to one of its comments. The agent calls back into the Shortcut API to do its work. These demos are small, complete examples of that loop.
 
+Here is our internal Triage Agent automatically calling [Devin Bridge](./devin-bridge) to fix a bug:
+
 ![A Story comment thread in Shortcut. Triage Agent @-mentions Devin Bridge and asks it to implement the Story and open a PR. Devin Bridge replies in the thread with the PR link, a correction to the Story, and the fix it made.](./docs/images/devin-bridge-session.png)
 
 ## Demos
