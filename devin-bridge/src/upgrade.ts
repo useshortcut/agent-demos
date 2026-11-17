@@ -115,7 +115,7 @@ function phase(value: unknown): Phase {
       };
     }
     case 'stop':
-      return { kind: 'stop', target: nullable(stored.target, target), then: list(stored.then, pending) };
+      return { kind: 'stop', target: nullable(stored.target, target), waiting: list(stored.then, pending) };
     case 'idle':
       return { kind: 'idle', on: nullable(stored.link, (link) => conversation(link)) };
     case 'closed':

@@ -34,7 +34,7 @@ export type Phase =
   | { kind: 'relay'; on: Live; prompt: Pending[]; send: Send | null; working: boolean }
   /** `check` asks for a Shortcut read of the session with the next poll. `posted` is the id of the last message written to Shortcut, and `asked` the key suffix of the elicitation. `sentAt` starts the pickup clock. `heartbeatAt` is when a quiet, working agent is next reported to Shortcut. */
   | { kind: 'poll'; on: Live; at: number; delayMs: number; check: boolean; posted: string | null; asked: string | null; sentAt: number; heartbeatAt: number }
-  | { kind: 'stop'; target: Held | null; then: Pending[] }
+  | { kind: 'stop'; target: Held | null; waiting: Pending[] }
   /** `dropped`: the requests of a turn that ended in an error before they reached the agent. Set until Shortcut takes that error, and a newer reply that arrives before then takes them along. */
   | { kind: 'idle'; on: Live | null; dropped?: Pending[] }
   | { kind: 'closed' };
@@ -98,6 +98,8 @@ export type StoredState = Omit<SessionState, 'landed'> & { landed?: number };
  * bridge can still hold. It kept the context a conversation was owed in
  * three places: `late`, the `late` of a prepared send, and the text of an
  * `opening` request, which ended with the context. Its sends had no key.
+ * Its stop held the replies that waited on it in `then`. A state that
+ * `upgradeState` read from before the port has them in `waiting` already.
  */
 export type FirstPortState = Omit<SessionState, 'v' | 'briefing' | 'phase' | 'landed'> & {
   v: 2;
@@ -105,6 +107,7 @@ export type FirstPortState = Omit<SessionState, 'v' | 'briefing' | 'phase' | 'la
   phase:
     | { kind: 'start'; prompt: Pending[]; extra: Pending[]; attempted: boolean }
     | { kind: 'relay'; on: Live; prompt: Pending[]; send: { prompt: Pending[]; late: Pending | null; text: string; memo: Memo } | null }
+    | { kind: 'stop'; target: Held | null; then: Pending[] }
     | Exclude<Phase, { kind: 'start' | 'relay' }>;
 };
 
@@ -169,8 +172,9 @@ export function restored(stored: StoredState | FirstPortState): SessionState {
       const owed = late !== null || carried(phase.prompt) || send?.briefs;
       return state(owed || !block ? 'owed' : 'given', { ...phase, prompt: requests(phase.prompt), send, working: false });
     }
-    case 'poll':
     case 'stop':
+      return state(late !== null || !block ? 'owed' : 'given', 'then' in phase ? { kind: 'stop', target: phase.target, waiting: phase.then } : phase);
+    case 'poll':
     case 'idle':
     case 'closed':
       return state(late !== null || !block ? 'owed' : 'given', phase);
@@ -329,7 +333,7 @@ export function applyEvent(current: SessionState | null, event: ShortcutSessionE
     case 'relay':
       return enqueue({ ...state, phase: { ...phase, prompt: [...phase.prompt, reply] } }, ack(`Passing your message to ${identity.name}.`));
     case 'stop':
-      return enqueue({ ...state, phase: { ...phase, then: [...phase.then, reply] } }, ack(`Starting a new ${identity.name} session.`));
+      return enqueue({ ...state, phase: { ...phase, waiting: [...phase.waiting, reply] } }, ack(`Starting a new ${identity.name} session.`));
     case 'poll':
       return enqueue({ ...state, phase: relaying(phase.on, [reply], true) }, ack(`Passing your message to ${identity.name}.`));
     case 'idle': {
@@ -347,7 +351,7 @@ function unsent(phase: Phase): Pending[] {
   switch (phase.kind) {
     case 'start': return phase.attempted ? phase.extra : [...phase.prompt, ...phase.extra];
     case 'relay': return [...(phase.send?.prompt ?? []), ...phase.prompt];
-    case 'stop': return phase.then;
+    case 'stop': return phase.waiting;
     case 'poll':
     case 'idle':
     case 'closed': return [];
@@ -362,7 +366,7 @@ function earlier(state: SessionState, reply: Pending): SessionState {
   switch (phase.kind) {
     case 'start': return phase.attempted ? { ...state, phase: { ...phase, extra: [...phase.extra, reply] } } : { ...state, phase: { ...phase, prompt: [...phase.prompt, reply] } };
     case 'relay': return { ...state, phase: { ...phase, prompt: [...phase.prompt, reply] } };
-    case 'stop': return { ...state, phase: { ...phase, then: [...phase.then, reply] } };
+    case 'stop': return { ...state, phase: { ...phase, waiting: [...phase.waiting, reply] } };
     // Shortcut has not taken the failed turn's error, so the reply joins what the turn dropped. After that it is dropped on arrival.
     case 'idle': return phase.dropped ? { ...state, phase: { ...phase, dropped: [...phase.dropped, reply] } } : state;
     case 'poll':
@@ -410,7 +414,7 @@ function without(phase: Phase, turn: number): Phase {
       const { send } = phase;
       return send?.prompt.some((reply) => reply.turn <= turn) ? { ...phase, prompt: after([...send.prompt, ...phase.prompt]), send: null } : { ...phase, prompt: after(phase.prompt) };
     }
-    case 'stop': return { ...phase, then: after(phase.then) };
+    case 'stop': return { ...phase, waiting: after(phase.waiting) };
     case 'poll':
     case 'idle':
     case 'closed': return phase;
@@ -469,9 +473,9 @@ const startNew = (state: SessionState, prompt: Pending[]): SessionState =>
 
 // Shortcut accepts only a response or an error on a turn with a stop request.
 const acceptedAfterStop = (unpublished: Activity) => unpublished.content.type === 'response' || unpublished.content.type === 'error';
-function stop(state: SessionState, turn: number, then: Pending[] = []): SessionState {
+function stop(state: SessionState, turn: number, waiting: Pending[] = []): SessionState {
   const current = Math.max(state.turn, turn);
-  return { ...state, turn: current, cutoff: Math.max(state.cutoff, turn), phase: { kind: 'stop', target: targetOf(state), then }, outbox: state.outbox.filter((a) => acceptedAfterStop(a) && a.turn >= current) };
+  return { ...state, turn: current, cutoff: Math.max(state.cutoff, turn), phase: { kind: 'stop', target: targetOf(state), waiting }, outbox: state.outbox.filter((a) => acceptedAfterStop(a) && a.turn >= current) };
 }
 
 // Shortcut refused the activity itself, so a retry cannot help. An outcome
@@ -620,10 +624,10 @@ export function restarted(state: SessionState, phase: RelayPhase, empty: boolean
  */
 export function stopped(state: SessionState, phase: StopPhase, halted: Halted): SessionState {
   const kept = halted.kind === 'kept' && phase.target?.kind === 'live' ? phase.target.conversation : null;
-  if (phase.then.length) {
-    if (kept === null) return fresh(state, phase.then);
+  if (phase.waiting.length) {
+    if (kept === null) return fresh(state, phase.waiting);
     // The replies were acknowledged as starting a new session before the halt was answered. This takes that ack's place under its own suffix, since the ack may already be posted.
-    return enqueue({ ...state, phase: relaying(kept, phase.then, false) }, activity(state, 'ack:kept', 'thought', `Passing your message to ${identity.name}.`));
+    return enqueue({ ...state, phase: relaying(kept, phase.waiting, false) }, activity(state, 'ack:kept', 'thought', `Passing your message to ${identity.name}.`));
   }
   const url = halted.kind === 'ended' ? halted.url : null;
   const body = url ? `Stopped. The ${identity.name} session was terminated: ${url}` : 'Stopped.';
