@@ -1,0 +1,28 @@
+# Copy this file to .dev.vars and fill in your values.
+# Never commit .dev.vars: it contains secrets.
+
+# From your agent app on Shortcut's Agents page (in the sidebar)
+CLIENT_ID=
+CLIENT_SECRET=
+WEBHOOK_SECRET=
+
+# Where Shortcut will redirect after OAuth; must match what's set on the agent app
+REDIRECT_URI=http://localhost:8787/oauth/callback
+
+# From Claude Console: Settings > API keys
+ANTHROPIC_API_KEY=
+# Printed by `npm run setup`
+CLAUDE_AGENT_ID=
+CLAUDE_ENVIRONMENT_ID=
+
+# Comma-separated Shortcut workspace ids this bridge serves. Activating from any
+# other workspace shows a page with that workspace's id.
+ALLOWED_WORKSPACE_IDS=
+
+# Optional: the Claude Console workspace id the API key belongs to, or `default`
+# for the Default workspace. When set, the card links to the session in Console.
+# CLAUDE_CONSOLE_WORKSPACE_ID=
+# Optional: override the Shortcut API host. Defaults to https://api.app.shortcut.com
+# SHORTCUT_API_BASE=
+# Optional: override the Claude API host. Defaults to https://api.anthropic.com
+# ANTHROPIC_API_BASE=

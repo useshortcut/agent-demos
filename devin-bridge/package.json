@@ -5,18 +5,19 @@
   "scripts": {
     "dev": "wrangler dev --local",
     "deploy": "wrangler deploy",
-    "test": "node --test test/*.test.mjs",
+    "test": "node ../runtime-tests/bridge/sync.mjs check && node --test test/*.test.mjs ../runtime-tests/bridge/*.test.mjs",
+    "core:sync": "node ../runtime-tests/bridge/sync.mjs sync",
     "test:runtime": "node --test ../runtime-tests/smoke.mjs"
   },
   "dependencies": {
     "@shortcut/client": "^3.6.0",
-    "hono": "^4.13.11"
+    "hono": "^4.13.19"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260923.1",
+    "@cloudflare/workers-types": "^5.20261116.1",
     "esbuild": "^0.28.2",
-    "miniflare": "5.20260921.0-alpha",
+    "miniflare": "5.20261116.0-beta",
     "typescript": "^7.0.2",
-    "wrangler": "^4.137.0"
+    "wrangler": "^4.163.0"
   }
 }

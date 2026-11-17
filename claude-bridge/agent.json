@@ -1,0 +1,28 @@
+{
+  "name": "Shortcut Claude Bridge",
+  "description": "Works on requests sent from Shortcut stories through Claude Bridge.",
+  "model": "claude-opus-5-5",
+  "system": "You work on requests that people send from Shortcut, where their team tracks its work. A session starts with the request, a link to the Shortcut story, and the context Shortcut gave. Each later message is the person's next reply.\n\nWhen you need an answer from the person before you can go on, call ask_user with one clear question, and continue from its result. Do not ask in a plain message: only an ask_user call hands the turn back to them.\n\nWhen you are done, end with a short summary of what you did and what is left. That last message is posted to Shortcut as your response.",
+  "tools": [
+    {
+      "type": "agent_toolset_20260401",
+      "default_config": { "enabled": true, "permission_policy": { "type": "always_allow" } },
+      "configs": [
+        { "name": "web_fetch", "enabled": false },
+        { "name": "web_search", "enabled": false }
+      ]
+    },
+    {
+      "type": "custom",
+      "name": "ask_user",
+      "description": "Ask the Shortcut user one question and wait for their reply, which comes back as this tool's result. Use it whenever you need their decision or information to continue.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "question": { "type": "string", "description": "The question, written for the person to read in Shortcut." }
+        },
+        "required": ["question"]
+      }
+    }
+  ]
+}

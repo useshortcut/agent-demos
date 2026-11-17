@@ -12,7 +12,7 @@ import {
 import type { ShortcutAgentSession, ShortcutAgentSessionExternalUrl } from '@shortcut/client/webhooks';
 import type { Activity } from './bridge';
 import { retryAfterMs } from './http';
-import type { Env } from './index';
+import type { Env } from './app';
 
 export type Credentials = {
   token: string;
@@ -26,7 +26,7 @@ export type Credentials = {
 const REQUEST_TIMEOUT_MS = 15_000;
 const TOKEN_PATH = '/oauth-authorization-code-flow/token';
 
-/** Every connected workspace spends this deployment's Devin organization, so only listed workspaces are served. */
+/** Every connected workspace spends this deployment's backend account, so only listed workspaces are served. */
 export const workspaceAllowed = (env: Env, workspaceId: string) =>
   workspaceId !== '' && (env.ALLOWED_WORKSPACE_IDS ?? '').split(',').map((id) => id.trim()).includes(workspaceId);
 
@@ -100,6 +100,15 @@ export function classifyShortcutFailure(error: unknown): Failure {
   return { kind: 'transient' };
 }
 
+async function attempt<T>(run: () => Promise<T>): Promise<Outcome<T>> {
+  try {
+    return { kind: 'ok', value: await run() };
+  } catch (error) {
+    logFailure(error);
+    return classifyShortcutFailure(error);
+  }
+}
+
 export function shortcutSessions(env: Env, workspaceId: string, credentials: Credentials) {
   let token = credentials.token;
   const client = new ShortcutV4Client({
@@ -120,15 +129,8 @@ export function shortcutSessions(env: Env, workspaceId: string, credentials: Cre
   });
   const base = `/api/v4/${encodeURIComponent(credentials.slug)}/agent-sessions`;
   const send = <T>(method: string, path: string, body?: unknown) =>
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion, typescript/no-unsafe-enum-assignment -- the library takes this string as its ContentType enum and does not export the enum.
     client.request<T>({ path: `${base}${path}`, method, body, type: 'application/json' as FullRequestParams['type'], secure: true, format: 'json' });
-  const attempt = async <T>(run: () => Promise<T>): Promise<Outcome<T>> => {
-    try {
-      return { kind: 'ok', value: await run() };
-    } catch (error) {
-      logFailure(error);
-      return classifyShortcutFailure(error);
-    }
-  };
 
   return {
     ensureSubscribed: () => attempt(() => send('PUT', '/subscription', { enabled: true })),

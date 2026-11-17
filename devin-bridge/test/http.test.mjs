@@ -102,7 +102,7 @@ it('applies an event that arrives while a step is waiting on Devin', async (t) =
   assert.deepEqual(devin.received, []);
   release();
   await stepping;
-  assertAbout(await h.alarmIn(), 0, 'the step reschedules itself for the event');
+  assert.deepEqual(devin.received, ['More (private-prompt)'], 'the step applies the event before it ends');
   await h.tick();
   assert.deepEqual(devin.received, ['More (private-prompt)']);
 });
@@ -206,7 +206,7 @@ it('forwards a stop from a workspace taken off the allowlist to its session, whi
 });
 
 it('keeps http.ts free of bridge imports', async () => {
-  const http = await readFile(new URL('../src/http.ts', import.meta.url), 'utf8');
+  const http = await readFile(new URL('../src/core/http.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(http, /from '\.\/bridge'/);
 });
 

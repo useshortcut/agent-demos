@@ -1,5 +1,6 @@
 import { ShortcutOAuthError } from '@shortcut/client/v4';
-import type { Env } from './index';
+import { identity } from '../backend';
+import type { Env } from './app';
 import { credentialsFromTokens, logFailure, oauthClient, type Credentials } from './shortcut';
 
 // Shortcut rotates the refresh token on every refresh, and every session in a
@@ -33,7 +34,7 @@ export class Workspace {
     try {
       const refreshed = credentialsFromTokens(await oauthClient(this.env).refreshAccessToken(current.refreshToken), current);
       await storage.put('credentials', refreshed);
-      console.log('Devin Bridge OAuth refreshed', { workspaceId, scopes: refreshed.scopes ?? 'unknown', expiresAt: refreshed.expiresAt });
+      console.log(`${identity.title} OAuth refreshed`, { workspaceId, scopes: refreshed.scopes ?? 'unknown', expiresAt: refreshed.expiresAt });
       return Response.json(refreshed);
     } catch (error) {
       logFailure(error);
