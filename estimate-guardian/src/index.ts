@@ -582,9 +582,9 @@ export class EstimateGuardianStory {
   fetch(request: Request): Promise<Response> {
     return this.serialize(async () => {
       try {
-        const { workspaceId, deliveryId, action, actor } = await request.json() as {
+        const { workspaceId, deliveryId, action, actor } = await request.json<{
           workspaceId: string; deliveryId: string; action: ShortcutObserverAction; actor: ShortcutWebhookActor;
-        };
+        }>();
         const creds = await getCredentials(this.env.TOKENS, workspaceId);
         if (!creds || actor?.member_id === creds.memberId) return Response.json({ ok: true });
         const session: Session = { env: this.env, kv: this.env.TOKENS, workspaceId, creds, deliveryId, recovery: this.recovery };

@@ -55,7 +55,7 @@ type WorkspaceCredentials = {
 // @shortcut/client/webhooks; `ShortcutInteractionPayload` is what reaches the
 // Durable Object after verification.
 
-const randomQuote = () => (QUOTES as string[])[Math.floor(Math.random() * QUOTES.length)];
+const randomQuote = () => QUOTES[Math.floor(Math.random() * QUOTES.length)];
 
 // ---------------------------------------------------------------------------
 // Shortcut clients
@@ -254,7 +254,7 @@ export class QuoteDeliveries {
   }
 
   private async process(request: Request): Promise<Response> {
-    const payload = await request.json() as ShortcutInteractionPayload;
+    const payload = await request.json<ShortcutInteractionPayload>();
     const { trigger, workspace2: { id: workspaceId } } = payload;
     try {
       const creds = await getCredentials(this.env.TOKENS, workspaceId);
