@@ -237,7 +237,7 @@ class WorkspaceApi {
     } catch (error) {
       logFailure(error);
       if (isShortcutV4RequestError(error)) throw new ShortcutRequestRejected(error.status);
-      throw new Error('Shortcut request failed or timed out');
+      throw new Error('Shortcut request failed or timed out', { cause: error });
     }
   }
 }
