@@ -12,6 +12,14 @@ Reference implementations for Shortcut Open Agents — web services that receive
 - `devin-bridge/` — agent-session agent: relays each Shortcut agent session (`session.created`, `session.prompted`, stop) to a Devin v3 session and publishes progress, questions, and outcomes as idempotent activities. A `Workspace` SQLite Durable Object owns credentials and serializes refresh. A `Session` object per Shortcut session runs an inbox, an outbox, and an alarm loop over the pure state machine in `src/bridge.ts`. No KV. See its README.
 - `team-cop/` — observer agent that comments when stories are created or started without a Team. Uses a SQLite Durable Object for credentials, receipts, and capped alarm retries. Plain JavaScript, no Hono or KV; run `npm test`, `npm run dev`, and `npm run deploy:check` from its directory. The Hono/KV conventions below apply to Quote Agent and Estimate Guardian. Devin Bridge uses Hono but no KV, and its README documents its commands, secrets, and state machine.
 
+## General principles
+
+- Before adding complexity for a speculative or vanishingly unlikely race or security edge case, explain the concrete failure mode, likelihood, and complexity cost to the user and get their buy-in. Do not silently expand scope for theoretical robustness.
+- Validate unknown values once, at the boundary that owns them (API input, config, external data). Pass typed values inward. Do not defensively revalidate values already guaranteed by a schema, constructor, or type.
+- Do not extract single-use helpers preemptively. Inline the logic at the call site unless the helper is reused, hides a genuinely complex boundary, or has a clear name that makes the caller easier to read.
+- Add comments for non-obvious constraints and surprising behavior, not for obvious assignments or control flow.
+- In tests, exercise the actual implementation. Do not duplicate the code's logic in the test to compute expected values.
+
 ## Commands
 
 For Quote Agent and Estimate Guardian, run everything from inside the demo directory you're working on (`estimate-guardian/` or `quote-agent/`). Devin Bridge adds `npm run test:runtime` and has no KV namespace; see `devin-bridge/README.md`.
