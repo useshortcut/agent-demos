@@ -68,7 +68,7 @@ export function devinClient({ apiKey, orgId, baseUrl = 'https://api.devin.ai' }:
   async function call(method: string, path: string, { query, body, reply = true }: { query?: URLSearchParams; body?: unknown; reply?: boolean } = {}): Promise<unknown> {
     const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     try {
-      const response = await fetch(`${root}${path}${query ? `?${query}` : ''}`, {
+      const response = await fetch(`${root}${path}${query ? `?${query.toString()}` : ''}`, {
         method,
         headers: { Authorization: `Bearer ${apiKey}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
