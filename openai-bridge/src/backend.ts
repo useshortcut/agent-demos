@@ -117,9 +117,12 @@ export function connect(env: BackendEnv): Backend<Memo> {
   // One that still requires action lists only calls the bridge answered, so
   // the agent has not picked the answer up yet.
   async function progress(session: AgentSession, { turn }: Memo): Promise<Status> {
-    if (session.status === 'requires_action') return { kind: 'pending' };
-    if (session.status !== 'idle') return { kind: 'working' };
-    return turn === null ? { kind: 'pending' } : outcome(await agents.getTurn(session.id, turn));
+    switch (session.status) {
+      case 'requires_action': return { kind: 'pending' };
+      case 'in_progress':
+      case 'failed': return { kind: 'working' };
+      case 'idle': return turn === null ? { kind: 'pending' } : outcome(await agents.getTurn(session.id, turn));
+    }
   }
 
   // Looks for the send's message among the items after the cursor. A user
