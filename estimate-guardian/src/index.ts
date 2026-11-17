@@ -208,7 +208,7 @@ async function recoverRevert(s: Session, recovery: Recovery) {
     await completeRevert(s, recovery);
   } catch (error) {
     console.error('Estimate Guardian recovery attempt failed', { storyId: recovery.storyId, attempts: recovery.attempts,
-      message: error instanceof ShortcutRequestError ? error.message : 'Could not recover revert' });
+      message: error instanceof ShortcutRequestError ? error.failure : 'Could not recover revert' });
   }
   if (!recovery.outcome && recovery.attempts >= MAX_RECOVERY_ATTEMPTS) {
     await finishRecovery(s, recovery, 'exhausted');
@@ -225,7 +225,14 @@ const TOKEN_PATH = '/oauth-authorization-code-flow/token';
 // Only these diagnostics are ever logged. Never log an Error object or a
 // rejected Response: fetch errors and provider bodies can contain credentials,
 // URLs, or user text.
-class ShortcutRequestError extends Error {}
+type RequestFailure = 'Token refresh failed' | 'Network request failed or timed out' | 'List lookup failed'
+  | 'List returned an invalid, unsafe, or incomplete page';
+
+class ShortcutRequestError extends Error {
+  constructor(readonly failure: RequestFailure) {
+    super(failure);
+  }
+}
 
 /** A provider error code, only when it is an identifier and not free text. */
 function errorCode(code: unknown): { code?: string } {
@@ -546,7 +553,7 @@ async function guardStory(s: Session, action: ShortcutObserverAction, actorMenti
     await completeRevert(s, recovery);
   } catch (error) {
     console.error('Estimate Guardian initial attempt failed', { storyId,
-      message: error instanceof ShortcutRequestError ? error.message : 'Could not complete warning and revert' });
+      message: error instanceof ShortcutRequestError ? error.failure : 'Could not complete warning and revert' });
   }
 }
 
@@ -585,7 +592,7 @@ export class EstimateGuardianStory {
         return Response.json({ ok: true });
       } catch (error) {
         console.error('Estimate Guardian story processing failed', {
-          message: error instanceof ShortcutRequestError ? error.message : 'Could not process story',
+          message: error instanceof ShortcutRequestError ? error.failure : 'Could not process story',
         });
         return Response.json({ error: 'Could not process story' }, { status: 503 });
       }

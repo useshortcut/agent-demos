@@ -107,7 +107,7 @@ export class TeamCop {
           headers: { "content-type": "text/plain; charset=utf-8" },
         });
       } catch (error) {
-        console.error("Team Cop OAuth failed", { status: error.status, message: error.message });
+        console.error("Team Cop OAuth failed", { status: error.status, name: error.name });
         return json({ error: "Token exchange failed. Check Worker logs." }, 502);
       }
     });
@@ -126,7 +126,7 @@ export class TeamCop {
           } catch (error) {
             const failure = await this.state.failDelivery(item.key, error);
             console.error(failure.exhausted ? `Team Cop delivery exhausted after ${MAX_ATTEMPTS} attempts` : "Team Cop delivery failed; retry scheduled", {
-              ...failure, deliveryId: delivery.payload.id, message: error.message, status: error.status,
+              ...failure, deliveryId: delivery.payload.id, name: error.name, status: error.status,
             });
           }
         }
