@@ -33,6 +33,9 @@ const SESSION_STATUSES = new Set<string>(['idle', 'in_progress', 'requires_actio
 const TURN_STATUSES = new Set<string>(['queued', 'in_progress', 'waiting', 'completed', 'failed', 'cancelled']);
 const IDENTIFIER = /^[a-z_]{1,64}$/;
 
+const isSessionStatus = (status: string): status is SessionStatus => SESSION_STATUSES.has(status);
+const isTurnStatus = (status: string): status is TurnStatus => TURN_STATUSES.has(status);
+
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
 function parseAction(value: unknown): Action {
@@ -47,7 +50,7 @@ function parseAction(value: unknown): Action {
 // A status the bridge does not know counts as in progress, so it keeps polling.
 function parseSession(value: unknown): AgentSession {
   if (!isRecord(value) || typeof value.id !== 'string' || typeof value.status !== 'string') throw new BackendError({ kind: 'transient' });
-  const status = SESSION_STATUSES.has(value.status) ? (value.status as SessionStatus) : 'in_progress';
+  const status = isSessionStatus(value.status) ? value.status : 'in_progress';
   return { id: value.id, status, actions: Array.isArray(value.required_actions) ? value.required_actions.map(parseAction) : [] };
 }
 
@@ -161,7 +164,7 @@ export function agentsClient({ apiKey, baseUrl = 'https://api.openai.com/v1' }: 
       const turn: unknown = await call('sessions.turns.retrieve', () => sessions.turns.retrieve(turnId, { session_id: sessionId }));
       if (!isRecord(turn) || typeof turn.status !== 'string') throw new BackendError({ kind: 'transient' });
       const code = isRecord(turn.error) && typeof turn.error.code === 'string' && IDENTIFIER.test(turn.error.code) ? turn.error.code : null;
-      return { status: TURN_STATUSES.has(turn.status) ? (turn.status as TurnStatus) : 'in_progress', code };
+      return { status: isTurnStatus(turn.status) ? turn.status : 'in_progress', code };
     },
 
     async submit(id: string, event: AgentSessionInputParam, key?: string): Promise<void> {

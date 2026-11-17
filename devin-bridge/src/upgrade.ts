@@ -10,33 +10,35 @@ type Fields = Record<string, unknown>;
 
 class Unrecognized extends Error {}
 
-function check(ok: boolean): void {
+function check(ok: boolean): asserts ok {
   if (!ok) throw new Unrecognized();
 }
 
+const isFields = (value: unknown): value is Fields => typeof value === 'object' && value !== null && !Array.isArray(value);
+
 function fields(value: unknown): Fields {
-  check(typeof value === 'object' && value !== null && !Array.isArray(value));
-  return value as Fields;
+  check(isFields(value));
+  return value;
 }
 
 function text(value: unknown): string {
   check(typeof value === 'string');
-  return value as string;
+  return value;
 }
 
 function count(value: unknown): number {
   check(typeof value === 'number' && Number.isFinite(value));
-  return value as number;
+  return value;
 }
 
 function flag(value: unknown): boolean {
   check(typeof value === 'boolean');
-  return value as boolean;
+  return value;
 }
 
 function list<T>(value: unknown, item: (value: unknown) => T): T[] {
   check(Array.isArray(value));
-  return (value as unknown[]).map(item);
+  return value.map(item);
 }
 
 const nullable = <T>(value: unknown, read: (value: unknown) => T): T | null => (value === null ? null : read(value));
@@ -52,13 +54,14 @@ function activity(value: unknown): Activity {
   const { key, turn, content, ephemeral } = fields(value);
   const { type, body } = fields(content);
   check((type === 'thought' || type === 'elicitation' || type === 'response' || type === 'error') && (ephemeral === undefined || ephemeral === true));
-  return { key: text(key), turn: count(turn), content: { type: type as Activity['content']['type'], body: text(body) }, ...(ephemeral ? { ephemeral: true as const } : {}) };
+  return { key: text(key), turn: count(turn), content: { type, body: text(body) }, ...(ephemeral ? { ephemeral: true as const } : {}) };
 }
 
 // Kept as stored: the adapter compares it with Devin's status as JSON.
 function devinState(value: unknown): DevinState {
   const state = fields(value);
-  check(['working', 'waiting', 'finished', 'failed'].includes(state.kind as string));
+  check(typeof state.kind === 'string' && ['working', 'waiting', 'finished', 'failed'].includes(state.kind));
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the bridge's own stored Devin status, kept whole, so only its kind is checked.
   return state as DevinState;
 }
 

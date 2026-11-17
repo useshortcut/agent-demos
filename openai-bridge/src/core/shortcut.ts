@@ -129,6 +129,7 @@ export function shortcutSessions(env: Env, workspaceId: string, credentials: Cre
   });
   const base = `/api/v4/${encodeURIComponent(credentials.slug)}/agent-sessions`;
   const send = <T>(method: string, path: string, body?: unknown) =>
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion, typescript/no-unsafe-enum-assignment -- the library takes this string as its ContentType enum and does not export the enum.
     client.request<T>({ path: `${base}${path}`, method, body, type: 'application/json' as FullRequestParams['type'], secure: true, format: 'json' });
 
   return {
