@@ -223,7 +223,7 @@ export function connect(env: BackendEnv): Backend<Memo> {
     // message goes as that call's result, worded so that it is no answer. A
     // message has no idempotency key, so a step that dies after it sends twice.
     async send({ id, memo }, { text }) {
-      const result = (call: string, said: string) => post(id, { type: 'user.custom_tool_result', custom_tool_use_id: call, content: [{ type: 'text', text: said }] });
+      const result = (toolUseId: string, said: string) => post(id, { type: 'user.custom_tool_result', custom_tool_use_id: toolUseId, content: [{ type: 'text', text: said }] });
       if (memo.asked !== null) {
         const results = await newest(id, ['user.custom_tool_result'], LOOKUP);
         const landed = results.find((e) => e.kind === 'input' && e.answers === memo.asked);

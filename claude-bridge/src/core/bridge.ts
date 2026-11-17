@@ -198,25 +198,25 @@ export const attempting = (state: SessionState, phase: StartPhase): SessionState
 
 export const openingText = (state: SessionState, phase: Attempted, slug: string): string => introduction(state, promptText(phase.prompt), slug, phase.briefs);
 
-function truncate(text: string, max: number): string {
-  if (text.length <= max) return text;
+function truncate(body: string, max: number): string {
+  if (body.length <= max) return body;
   let cut = Math.max(0, max - 1);
-  if (cut > 0 && /[\uD800-\uDBFF]/.test(text[cut - 1])) cut--;
-  return `${text.slice(0, cut)}…`;
+  if (cut > 0 && /[\uD800-\uDBFF]/.test(body[cut - 1])) cut--;
+  return `${body.slice(0, cut)}…`;
 }
 
 function activity(state: SessionState, suffix: string, type: Activity['content']['type'], body: string, footer = ''): Activity {
-  const text = truncate(footer ? `${truncate(body, MAX_BODY - footer.length - 2)}\n\n${footer}` : body, MAX_BODY);
-  return { key: `${identity.slug}:${state.turn}:${suffix}`, turn: state.turn, content: { type, body: text }, ...(type === 'thought' ? { ephemeral: true as const } : {}) };
+  const capped = truncate(footer ? `${truncate(body, MAX_BODY - footer.length - 2)}\n\n${footer}` : body, MAX_BODY);
+  return { key: `${identity.slug}:${state.turn}:${suffix}`, turn: state.turn, content: { type, body: capped }, ...(type === 'thought' ? { ephemeral: true as const } : {}) };
 }
 
 // Only the newest progress matters, so a thought replaces an unpublished
 // thought of its turn and the outbox stays bounded while Shortcut is down. It
 // goes last, so Shortcut sees activities in the order they were produced.
 // Outcomes are never dropped.
-function queued(outbox: Activity[], activity: Activity): Activity[] {
-  const kept = activity.content.type === 'thought' ? outbox.filter((a) => !(a.content.type === 'thought' && a.turn === activity.turn)) : outbox;
-  return [...kept, activity];
+function queued(outbox: Activity[], added: Activity): Activity[] {
+  const kept = added.content.type === 'thought' ? outbox.filter((a) => !(a.content.type === 'thought' && a.turn === added.turn)) : outbox;
+  return [...kept, added];
 }
 
 const enqueue = (state: SessionState, ...activities: Activity[]): SessionState => ({ ...state, outbox: activities.reduce(queued, state.outbox) });
@@ -229,8 +229,8 @@ function text(event: ShortcutSessionEventPayload): string {
 
 function contextOf(event: ShortcutSessionEventPayload): string {
   if (event.type !== 'session.created') return '';
-  const { text, truncated } = event.prompt_context;
-  return truncated ? `${text}\n\n(Shortcut cut this context short.)` : text;
+  const { text: context, truncated } = event.prompt_context;
+  return truncated ? `${context}\n\n(Shortcut cut this context short.)` : context;
 }
 
 const joined = (...parts: string[]) => parts.filter(Boolean).join('\n\n');
@@ -253,7 +253,7 @@ function briefedText(pending: Pending[], context: string): string {
 }
 
 /** The requests without their `opening` and `superseded` marks, for an opening text or an introduction. Nothing has reached the conversation, so both take every request alike. */
-const unmarked = (pending: Pending[]): Pending[] => pending.map(({ turn, text }) => ({ turn, text }));
+const unmarked = (pending: Pending[]): Pending[] => pending.map((reply) => ({ turn: reply.turn, text: reply.text }));
 
 export const live = (conversation: Live): Held => ({ kind: 'live', conversation });
 
@@ -468,7 +468,7 @@ const startNew = (state: SessionState, prompt: Pending[]): SessionState =>
   enqueue(fresh(state, prompt), activity(state, 'ack', 'thought', `Starting a new ${identity.name} session.`));
 
 // Shortcut accepts only a response or an error on a turn with a stop request.
-const acceptedAfterStop = (activity: Activity) => activity.content.type === 'response' || activity.content.type === 'error';
+const acceptedAfterStop = (unpublished: Activity) => unpublished.content.type === 'response' || unpublished.content.type === 'error';
 function stop(state: SessionState, turn: number, then: Pending[] = []): SessionState {
   const current = Math.max(state.turn, turn);
   return { ...state, turn: current, cutoff: Math.max(state.cutoff, turn), phase: { kind: 'stop', target: targetOf(state), then }, outbox: state.outbox.filter((a) => acceptedAfterStop(a) && a.turn >= current) };
@@ -476,9 +476,9 @@ function stop(state: SessionState, turn: number, then: Pending[] = []): SessionS
 
 // Shortcut refused the activity itself, so a retry cannot help. An outcome
 // still has to end the turn, so a short error takes its place, once.
-export function rejected(activity: Activity, status: number): Activity | null {
-  if (activity.content.type === 'thought' || activity.key.endsWith(':error:rejected')) return null;
-  return { key: `${identity.slug}:${activity.turn}:error:rejected`, turn: activity.turn, content: { type: 'error', body: `Shortcut rejected ${identity.name}'s ${activity.content.type} (HTTP ${status}).` } };
+export function rejected(refused: Activity, status: number): Activity | null {
+  if (refused.content.type === 'thought' || refused.key.endsWith(':error:rejected')) return null;
+  return { key: `${identity.slug}:${refused.turn}:error:rejected`, turn: refused.turn, content: { type: 'error', body: `Shortcut rejected ${identity.name}'s ${refused.content.type} (HTTP ${status}).` } };
 }
 
 const conversationOf = (phase: Phase): Live | null => ('on' in phase ? phase.on : null);
@@ -565,6 +565,7 @@ export function prepared(state: SessionState, phase: RelayPhase, { memo, empty }
     // A stop cancelled all this relay held, or all it held was superseded. An empty conversation that is not the first replaced one that ended, and nothing is left to open it for. An agent that was told something still works on it, so the bridge goes back to reading it.
     return empty ? fail(settled, `The ${identity.name} session ended. Reply to start a new one.`, false) : { ...settled, phase: polling(phase.on, now) };
   }
+  // oxlint-disable-next-line eslint/no-shadow -- runtime-tests/bridge/broken-cores.test.mjs breaks this function by these lines, and both names are in them
   const text = empty ? introduction(settled, promptText(prompt), slug, briefs) : briefs ? briefedText(prompt, settled.context) : promptText(prompt);
   return { ...settled, briefing: empty && briefs ? 'introduced' : settled.briefing, phase: { ...phase, prompt: [], send: { prompt, briefs, text, key: sendKey(state), memo } } };
 }
@@ -629,9 +630,9 @@ export function stopped(state: SessionState, phase: StopPhase, halted: Halted): 
   return enqueue({ ...state, phase: { kind: 'idle', on: kept } }, activity(state, 'stopped', 'response', body));
 }
 
-export function observed(state: SessionState, phase: PollPhase, { memo, said, status }: Observed<Memo>, now: number): SessionState {
-  const unposted = said.slice(said.findIndex((m) => m.id === phase.posted) + 1);
-  const last = said[said.length - 1] ?? null;
+export function observed(state: SessionState, phase: PollPhase, { memo, said: messages, status }: Observed<Memo>, now: number): SessionState {
+  const unposted = messages.slice(messages.findIndex((m) => m.id === phase.posted) + 1);
+  const last = messages[messages.length - 1] ?? null;
   const link = phase.on.url ? `[${identity.linkLabel}](${phase.on.url})` : '';
   const current: PollPhase = { ...phase, on: { ...phase.on, memo } };
   const quiet = (beat: boolean): SessionState => {

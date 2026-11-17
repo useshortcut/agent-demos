@@ -129,11 +129,11 @@ export class Session {
   // inbox. An event recorded after this read sets `arrivedMidStep` again.
   private absorb(state: SessionState, save: Save): Promise<SessionState>;
   private absorb(state: SessionState | null, save: Save): Promise<SessionState | null>;
-  private async absorb(held: SessionState | null, save: Save): Promise<SessionState | null> {
+  private async absorb(before: SessionState | null, save: Save): Promise<SessionState | null> {
     const storage = this.ctx.storage;
     this.arrivedMidStep = false;
     const inbox = await storage.list<ShortcutSessionEventPayload>({ prefix: INBOX });
-    let state = held;
+    let state = before;
     for (const [key, event] of inbox) {
       const seq = Number(key.slice(INBOX.length));
       if (state !== null && seq <= state.applied) continue;
@@ -339,7 +339,7 @@ const check = (state: SessionState, phase: PollPhase, { shortcut }: Io) => readT
 // and a turn Shortcut ended on its own ends it; `open` says what an open turn
 // means to the caller. `unread` settles a read that failed; after a 409 it
 // must not leave a request that may belong to an ended turn runnable.
-async function readTurn(state: SessionState, shortcut: ShortcutSessions, open: (state: SessionState) => SessionState, unread = (state: SessionState) => state): Promise<SessionState> {
+async function readTurn(state: SessionState, shortcut: ShortcutSessions, open: (state: SessionState) => SessionState, unread = (deferred: SessionState) => deferred): Promise<SessionState> {
   const read = await shortcut.getSession(state.shortcutSessionId);
   switch (read.kind) {
     case 'ok':
@@ -412,7 +412,7 @@ async function setLink(shortcut: ShortcutSessions, sessionId: string, url: strin
     if (read.kind !== 'ok') return read;
     const session = read.value;
     if (session.closed_reason) return { kind: 'closed' };
-    const others = session.external_urls.filter((link) => link.label !== identity.linkLabel && link.url !== url).slice(0, 19);
+    const others = session.external_urls.filter((existing) => existing.label !== identity.linkLabel && existing.url !== url).slice(0, 19);
     return shortcut.setExternalUrls(sessionId, session.version, [...others, { label: identity.linkLabel, url }]);
   };
   const first = await once();
