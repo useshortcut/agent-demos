@@ -293,7 +293,7 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024;
 /** The raw request body, or null if it exceeds the cap. */
 async function readBody(request: Request): Promise<Uint8Array | null> {
   if (Number(request.headers.get('Content-Length')) > MAX_BODY_BYTES) return null;
-  const reader = request.body?.getReader();
+  const reader: ReadableStreamDefaultReader<Uint8Array> | undefined = request.body?.getReader();
   if (!reader) return new Uint8Array();
   const chunks: Uint8Array[] = [];
   let size = 0;
