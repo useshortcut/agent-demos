@@ -186,7 +186,7 @@ You will move between a terminal in this directory, Claude Console, and Shortcut
 
 ## Local development
 
-Copy `.dev.vars.example` to `.dev.vars`, fill in the agent app's credentials with `REDIRECT_URI=http://localhost:8787/oauth/callback` and the Anthropic values, and run `npx wrangler dev`. Add that redirect URI to the agent app as a second entry. Signatures are always required, so either point a tunnel at the worker or sign test bodies yourself with `signShortcutWebhookHeaders` from `@shortcut/client/webhooks` and the webhook secret.
+Create a separate agent app for local development, with `http://localhost:8787/oauth/callback` as its only redirect URI. Shortcut sends the OAuth flow only to an agent app's first redirect URI, so a second entry on your deployed app is never used. Copy `.dev.vars.example` to `.dev.vars`, fill in that app's credentials with `REDIRECT_URI=http://localhost:8787/oauth/callback` and the Anthropic values, and run `npx wrangler dev`. Signatures are always required, so either point a tunnel at the worker or sign test bodies yourself with `signShortcutWebhookHeaders` from `@shortcut/client/webhooks` and the webhook secret.
 
 Before deploying a change:
 
